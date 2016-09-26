@@ -214,6 +214,8 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateGraphStmt:
 		case T_CreateLabelStmt:
 		case T_AlterLabelStmt:
+		case T_CreateConstraintStmt:
+		case T_DropConstraintStmt:
 			PreventCommandIfReadOnly(CreateCommandTag(parsetree));
 			PreventCommandIfParallelMode(CreateCommandTag(parsetree));
 			break;
@@ -1550,6 +1552,10 @@ ProcessUtilitySlow(Node *parsetree,
 				address = ExecSecLabelStmt((SecLabelStmt *) parsetree);
 				break;
 
+			case T_CreateAmStmt:
+				address = CreateAccessMethod((CreateAmStmt *) parsetree);
+				break;
+
 			case T_CreateGraphStmt:
 				CreateGraphCommand((CreateGraphStmt *) parsetree, queryString);
 				commandCollected = true;
@@ -1562,8 +1568,16 @@ ProcessUtilitySlow(Node *parsetree,
 				commandCollected = true;
 				break;
 
-			case T_CreateAmStmt:
-				address = CreateAccessMethod((CreateAmStmt *) parsetree);
+			case T_CreateConstraintStmt:
+				CreateConstraintCommand((CreateConstraintStmt *) parsetree,
+										queryString, params);
+				commandCollected = true;
+				break;
+
+			case T_DropConstraintStmt:
+				DropConstraintCommand((DropConstraintStmt *) parsetree,
+									  queryString, params);
+				commandCollected = true;
 				break;
 
 			default:
@@ -1619,6 +1633,7 @@ ExecDropStmt(DropStmt *stmt, bool isTopLevel)
 		case OBJECT_FOREIGN_TABLE:
 			RemoveRelations(stmt);
 			break;
+
 		default:
 			RemoveObjects(stmt);
 			break;
@@ -2087,6 +2102,12 @@ CreateCommandTag(Node *parsetree)
 						break;
 				}
 			}
+			break;
+		case T_CreateConstraintStmt:
+			tag = "CREATE CONSTRAINT";
+			break;
+		case T_DropConstraintStmt:
+			tag = "DROP CONSTRAINT";
 			break;
 
 		case T_AlterLabelStmt:
@@ -2863,6 +2884,8 @@ GetCommandLogLevel(Node *parsetree)
 
 		case T_CreateLabelStmt:
 		case T_AlterLabelStmt:
+		case T_CreateConstraintStmt:
+		case T_DropConstraintStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

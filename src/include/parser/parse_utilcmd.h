@@ -31,4 +31,9 @@ extern List *transformCreateLabelStmt(CreateLabelStmt *labelStmt,
 									  const char *queryString);
 extern AlterTableStmt *transformAlterLabelStmt(AlterTableStmt *stmt);
 
+extern Node *transformCreateConstraintStmt(ParseState *pstate,
+										   CreateConstraintStmt *stmt);
+extern Node *transformDropConstraintStmt(ParseState *pstate,
+										 DropConstraintStmt *stmt);
+
 #endif   /* PARSE_UTILCMD_H */

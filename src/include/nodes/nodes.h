@@ -411,6 +411,8 @@ typedef enum NodeTag
 	T_CreateGraphStmt,
 	T_CreateLabelStmt,
 	T_AlterLabelStmt,
+	T_CreateConstraintStmt,
+	T_DropConstraintStmt,
 	T_CypherStmt,
 
 	/*
