@@ -92,10 +92,11 @@ typedef struct
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
+static void preprocess_graph_pattern(PlannerInfo *root, List *pattern);
+static void preprocess_graph_sets(PlannerInfo *root, List *sets);
 static void inheritance_planner(PlannerInfo *root);
 static void grouping_planner(PlannerInfo *root, bool inheritance_update,
 				 double tuple_fraction);
-static void preprocess_graph_pattern(PlannerInfo *root, List *pattern);
 static void preprocess_rowmarks(PlannerInfo *root);
 static double preprocess_limit(PlannerInfo *root,
 				 double tuple_fraction,
@@ -700,6 +701,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	parse->graph.exprs = (List *)
 		preprocess_expression(root, (Node *) parse->graph.exprs,
 							  EXPRKIND_TARGET);
+	preprocess_graph_sets(root, parse->graph.sets);
 
 	/*
 	 * In some cases we may want to transfer a HAVING clause into WHERE. We
@@ -966,6 +968,21 @@ preprocess_graph_pattern(PlannerInfo *root, List *pattern)
 												EXPRKIND_VALUES);
 			}
 		}
+	}
+}
+
+static void
+preprocess_graph_sets(PlannerInfo *root, List *sets)
+{
+	ListCell *ls;
+
+	foreach(ls, sets)
+	{
+		GraphSetProp *gsp = lfirst(ls);
+
+		gsp->elem = preprocess_expression(root, gsp->elem, EXPRKIND_TARGET);
+		gsp->path = preprocess_expression(root, gsp->path, EXPRKIND_VALUES);
+		gsp->expr = preprocess_expression(root, gsp->expr, EXPRKIND_VALUES);
 	}
 }
 
@@ -2040,15 +2057,15 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 
 		if (parse->commandType == CMD_GRAPHWRITE && !inheritance_update)
 		{
-
 			path = (Path *) create_modifygraph_path(root, final_rel,
-			                                        parse->canSetTag,
-			                                        parse->graph.writeOp,
-			                                        parse->graph.last,
-			                                        parse->graph.detach,
-			                                        path,
-			                                        parse->graph.pattern,
-			                                        parse->graph.exprs);
+													parse->canSetTag,
+													parse->graph.writeOp,
+													parse->graph.last,
+													parse->graph.detach,
+													path,
+													parse->graph.pattern,
+													parse->graph.exprs,
+													parse->graph.sets);
 		}
 		/*
 		 * If this is an INSERT/UPDATE/DELETE, and we're not being called from
