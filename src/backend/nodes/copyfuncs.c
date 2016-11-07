@@ -4181,6 +4181,27 @@ _copyAlterPolicyStmt(const AlterPolicyStmt *from)
 	return newnode;
 }
 
+static JsonObject *
+_copyJsonObject(const JsonObject *from)
+{
+	JsonObject *newnode = makeNode(JsonObject);
+
+	COPY_NODE_FIELD(keyvals);
+
+	return newnode;
+}
+
+static JsonKeyVal *
+_copyJsonKeyVal(const JsonKeyVal *from)
+{
+	JsonKeyVal *newnode = makeNode(JsonKeyVal);
+
+	COPY_NODE_FIELD(key);
+	COPY_NODE_FIELD(val);
+
+	return newnode;
+}
+
 static CreateGraphStmt *
 _copyCreateGraphStmt(const CreateGraphStmt *from)
 {
@@ -4245,23 +4266,42 @@ _copyDropConstraintStmt(const DropConstraintStmt *from)
 	return newnode;
 }
 
-static JsonObject *
-_copyJsonObject(const JsonObject *from)
+static CreatePropertyIndexStmt *
+_copyCreatePropertyIndexStmt(const CreatePropertyIndexStmt *from)
 {
-	JsonObject *newnode = makeNode(JsonObject);
+	CreatePropertyIndexStmt *newnode = makeNode(CreatePropertyIndexStmt);
 
-	COPY_NODE_FIELD(keyvals);
+	COPY_STRING_FIELD(idxname);
+	COPY_NODE_FIELD(relation);
+	COPY_STRING_FIELD(accessMethod);
+	COPY_STRING_FIELD(tableSpace);
+	COPY_NODE_FIELD(indexParams);
+	COPY_NODE_FIELD(options);
+	COPY_NODE_FIELD(whereClause);
+	COPY_NODE_FIELD(excludeOpNames);
+	COPY_STRING_FIELD(idxcomment);
+	COPY_SCALAR_FIELD(indexOid);
+	COPY_SCALAR_FIELD(oldNode);
+	COPY_SCALAR_FIELD(unique);
+	COPY_SCALAR_FIELD(primary);
+	COPY_SCALAR_FIELD(isconstraint);
+	COPY_SCALAR_FIELD(deferrable);
+	COPY_SCALAR_FIELD(initdeferred);
+	COPY_SCALAR_FIELD(transformed);
+	COPY_SCALAR_FIELD(concurrent);
+	COPY_SCALAR_FIELD(if_not_exists);
 
 	return newnode;
 }
 
-static JsonKeyVal *
-_copyJsonKeyVal(const JsonKeyVal *from)
+static DropPropertyIndexStmt *
+_copyDropPropertyIndexStmt(const DropPropertyIndexStmt *from)
 {
-	JsonKeyVal *newnode = makeNode(JsonKeyVal);
+	DropPropertyIndexStmt *newnode = makeNode(DropPropertyIndexStmt);
 
-	COPY_NODE_FIELD(key);
-	COPY_NODE_FIELD(val);
+	COPY_STRING_FIELD(idxname);
+	COPY_SCALAR_FIELD(behavior);
+	COPY_SCALAR_FIELD(missing_ok);
 
 	return newnode;
 }
@@ -5284,6 +5324,12 @@ copyObject(const void *from)
 		case T_DropConstraintStmt:
 			retval = _copyDropConstraintStmt(from);
 			break;
+		case T_CreatePropertyIndexStmt:
+			retval = _copyCreatePropertyIndexStmt(from);
+			break;
+		case T_DropPropertyIndexStmt:
+			retval = _copyDropPropertyIndexStmt(from);
+			break;
 		case T_CypherStmt:
 			retval = _copyCypherStmt(from);
 			break;
@@ -5410,13 +5456,6 @@ copyObject(const void *from)
 		case T_RoleSpec:
 			retval = _copyRoleSpec(from);
 			break;
-
-			/*
-			 * MISCELLANEOUS NODES
-			 */
-		case T_ForeignKeyCacheInfo:
-			retval = _copyForeignKeyCacheInfo(from);
-			break;
 		case T_JsonObject:
 			retval = _copyJsonObject(from);
 			break;
@@ -5474,6 +5513,13 @@ copyObject(const void *from)
 			break;
 		case T_GraphSetProp:
 			retval = _copyGraphSetProp(from);
+			break;
+
+			/*
+			 * MISCELLANEOUS NODES
+			 */
+		case T_ForeignKeyCacheInfo:
+			retval = _copyForeignKeyCacheInfo(from);
 			break;
 
 		default:
