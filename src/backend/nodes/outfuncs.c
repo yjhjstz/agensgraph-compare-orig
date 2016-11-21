@@ -427,6 +427,7 @@ _outRecursiveUnion(StringInfo str, const RecursiveUnion *node)
 		appendStringInfo(str, " %u", node->dupOperators[i]);
 
 	WRITE_LONG_FIELD(numGroups);
+	WRITE_INT_FIELD(maxDepth);
 }
 
 static void
@@ -1938,6 +1939,7 @@ _outRecursiveUnionPath(StringInfo str, const RecursiveUnionPath *node)
 	WRITE_NODE_FIELD(distinctList);
 	WRITE_INT_FIELD(wtParam);
 	WRITE_FLOAT_FIELD(numGroups, "%.0f");
+	WRITE_INT_FIELD(maxDepth);
 }
 
 static void
@@ -2808,6 +2810,7 @@ _outCommonTableExpr(StringInfo str, const CommonTableExpr *node)
 	WRITE_NODE_FIELD(ctecoltypes);
 	WRITE_NODE_FIELD(ctecoltypmods);
 	WRITE_NODE_FIELD(ctecolcollations);
+	WRITE_INT_FIELD(maxdepth);
 }
 
 static void
@@ -2823,6 +2826,7 @@ _outSetOperationStmt(StringInfo str, const SetOperationStmt *node)
 	WRITE_NODE_FIELD(colTypmods);
 	WRITE_NODE_FIELD(colCollations);
 	WRITE_NODE_FIELD(groupClauses);
+	WRITE_INT_FIELD(maxDepth);
 }
 
 static void
