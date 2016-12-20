@@ -2719,6 +2719,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_ENUM_FIELD(graph.writeOp, GraphWriteOp);
 	WRITE_BOOL_FIELD(graph.last);
 	WRITE_BOOL_FIELD(graph.detach);
+	WRITE_NODE_FIELD(graph.resultRel);
 	WRITE_NODE_FIELD(graph.pattern);
 	WRITE_NODE_FIELD(graph.exprs);
 	WRITE_NODE_FIELD(graph.sets);
@@ -3532,7 +3533,6 @@ _outGraphVertex(StringInfo str, const GraphVertex *node)
 
 	WRITE_STRING_FIELD(variable);
 	WRITE_STRING_FIELD(label);
-	WRITE_NODE_FIELD(prop_map);
 	WRITE_BOOL_FIELD(create);
 }
 
@@ -3544,7 +3544,6 @@ _outGraphEdge(StringInfo str, const GraphEdge *node)
 	WRITE_INT_FIELD(direction);
 	WRITE_STRING_FIELD(variable);
 	WRITE_STRING_FIELD(label);
-	WRITE_NODE_FIELD(prop_map);
 }
 
 static void

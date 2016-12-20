@@ -92,7 +92,6 @@ typedef struct
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
-static void preprocess_graph_pattern(PlannerInfo *root, List *pattern);
 static void preprocess_graph_sets(PlannerInfo *root, List *sets);
 static void inheritance_planner(PlannerInfo *root);
 static void grouping_planner(PlannerInfo *root, bool inheritance_update,
@@ -698,7 +697,6 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	}
 
 	/* expressions for graph */
-	preprocess_graph_pattern(root, parse->graph.pattern);
 	parse->graph.exprs = (List *)
 		preprocess_expression(root, (Node *) parse->graph.exprs,
 							  EXPRKIND_TARGET);
@@ -933,43 +931,6 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
 	else
 		elog(ERROR, "unrecognized node type: %d",
 			 (int) nodeTag(jtnode));
-}
-
-static void
-preprocess_graph_pattern(PlannerInfo *root, List *pattern)
-{
-	ListCell *lp;
-
-	foreach(lp, pattern)
-	{
-		GraphPath  *p = (GraphPath *) lfirst(lp);
-		ListCell   *le;
-
-		foreach(le, p->chain)
-		{
-			Node *elem = (Node *) lfirst(le);
-
-			if (nodeTag(elem) == T_GraphVertex)
-			{
-				GraphVertex *gvertex = (GraphVertex *) elem;
-
-				if (gvertex->create)
-					gvertex->prop_map = preprocess_expression(root,
-												(Node *) gvertex->prop_map,
-												EXPRKIND_VALUES);
-			}
-			else
-			{
-				GraphEdge *gedge = (GraphEdge *) elem;
-
-				Assert(nodeTag(elem) == T_GraphEdge);
-
-				gedge->prop_map = preprocess_expression(root,
-												(Node *) gedge->prop_map,
-												EXPRKIND_VALUES);
-			}
-		}
-	}
 }
 
 static void
@@ -2064,6 +2025,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 													parse->graph.last,
 													parse->graph.detach,
 													path,
+													parse->graph.resultRel,
 													parse->graph.pattern,
 													parse->graph.exprs,
 													parse->graph.sets);
