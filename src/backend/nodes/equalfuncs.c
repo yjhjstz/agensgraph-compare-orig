@@ -943,6 +943,7 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(graph.targets);
 	COMPARE_NODE_FIELD(graph.exprs);
 	COMPARE_NODE_FIELD(graph.sets);
+	COMPARE_NODE_FIELD(graph.mergepattern);
 
 	return true;
 }
@@ -2820,6 +2821,16 @@ _equalCypherSetClause(const CypherSetClause *a, const CypherSetClause *b)
 }
 
 static bool
+_equalCypherMergeClause(const CypherMergeClause *a,
+						const CypherMergeClause *b)
+{
+	COMPARE_NODE_FIELD(pattern);
+	COMPARE_NODE_FIELD(setitems);
+
+	return true;
+}
+
+static bool
 _equalCypherLoadClause(const CypherLoadClause *a, const CypherLoadClause *b)
 {
 	COMPARE_NODE_FIELD(relation);
@@ -2891,6 +2902,8 @@ _equalGraphVertex(const GraphVertex *a, const GraphVertex *b)
 	COMPARE_STRING_FIELD(variable);
 	COMPARE_SCALAR_FIELD(create);
 	COMPARE_SCALAR_FIELD(relid);
+	COMPARE_NODE_FIELD(expr);
+	COMPARE_NODE_FIELD(qual);
 
 	return true;
 }
@@ -2901,6 +2914,19 @@ _equalGraphEdge(const GraphEdge *a, const GraphEdge *b)
 	COMPARE_SCALAR_FIELD(direction);
 	COMPARE_STRING_FIELD(variable);
 	COMPARE_SCALAR_FIELD(relid);
+	COMPARE_NODE_FIELD(expr);
+	COMPARE_NODE_FIELD(qual);
+
+	return true;
+}
+
+static bool
+_equalGraphSetProp(const GraphSetProp *a, const GraphSetProp *b)
+{
+	COMPARE_SCALAR_FIELD(kind);
+	COMPARE_STRING_FIELD(variable);
+	COMPARE_NODE_FIELD(elem);
+	COMPARE_NODE_FIELD(expr);
 
 	return true;
 }
@@ -3711,6 +3737,9 @@ equal(const void *a, const void *b)
 		case T_CypherSetClause:
 			retval = _equalCypherSetClause(a, b);
 			break;
+		case T_CypherMergeClause:
+			retval = _equalCypherMergeClause(a, b);
+			break;
 		case T_CypherLoadClause:
 			retval = _equalCypherLoadClause(a, b);
 			break;
@@ -3741,6 +3770,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_GraphEdge:
 			retval = _equalGraphEdge(a, b);
+			break;
+		case T_GraphSetProp:
+			retval = _equalGraphSetProp(a, b);
 			break;
 
 		default:
