@@ -138,7 +138,6 @@ static List *makeVertexElements(void);
 static List *makeEdgeElements(void);
 static List *makeEdgeIndex(RangeVar *label);
 static bool isLabelKind(RangeVar *label, char labkind);
-static char getLabelKind(char *labname, Oid graphid);
 static void transformLabelIdDefinition(CreateStmtContext *cxt, ColumnDef *col);
 static CommentStmt *makeComment(ObjectType type, RangeVar *name, char *desc);
 static Node *makePropertiesIndirectionMutator(Node *node);
@@ -3439,7 +3438,7 @@ isLabelKind(RangeVar *label, char labkind)
 	return (getLabelKind(label->relname, graphid) == labkind);
 }
 
-static char
+char
 getLabelKind(char *labname, Oid graphid)
 {
 	HeapTuple	tuple;
