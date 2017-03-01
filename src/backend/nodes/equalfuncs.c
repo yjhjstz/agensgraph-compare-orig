@@ -2774,7 +2774,7 @@ _equalCypherMatchClause(const CypherMatchClause *a, const CypherMatchClause *b)
 {
 	COMPARE_NODE_FIELD(pattern);
 	COMPARE_NODE_FIELD(where);
-	COMPARE_SCALAR_FIELD(optional);
+	COMPARE_SCALAR_FIELD(kind);
 
 	return true;
 }
