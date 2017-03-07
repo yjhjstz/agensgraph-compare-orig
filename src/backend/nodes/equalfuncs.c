@@ -943,7 +943,6 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(graph.targets);
 	COMPARE_NODE_FIELD(graph.exprs);
 	COMPARE_NODE_FIELD(graph.sets);
-	COMPARE_NODE_FIELD(graph.mergepattern);
 
 	return true;
 }
@@ -2774,7 +2773,7 @@ _equalCypherMatchClause(const CypherMatchClause *a, const CypherMatchClause *b)
 {
 	COMPARE_NODE_FIELD(pattern);
 	COMPARE_NODE_FIELD(where);
-	COMPARE_SCALAR_FIELD(kind);
+	COMPARE_SCALAR_FIELD(optional);
 
 	return true;
 }
@@ -2815,6 +2814,7 @@ _equalCypherDeleteClause(const CypherDeleteClause *a,
 static bool
 _equalCypherSetClause(const CypherSetClause *a, const CypherSetClause *b)
 {
+	COMPARE_SCALAR_FIELD(kind);
 	COMPARE_NODE_FIELD(items);
 
 	return true;
@@ -2825,7 +2825,7 @@ _equalCypherMergeClause(const CypherMergeClause *a,
 						const CypherMergeClause *b)
 {
 	COMPARE_NODE_FIELD(pattern);
-	COMPARE_NODE_FIELD(setitems);
+	COMPARE_NODE_FIELD(sets);
 
 	return true;
 }
@@ -2899,7 +2899,7 @@ _equalGraphPath(const GraphPath *a, const GraphPath *b)
 static bool
 _equalGraphVertex(const GraphVertex *a, const GraphVertex *b)
 {
-	COMPARE_STRING_FIELD(variable);
+	COMPARE_SCALAR_FIELD(resno);
 	COMPARE_SCALAR_FIELD(create);
 	COMPARE_SCALAR_FIELD(relid);
 	COMPARE_NODE_FIELD(expr);
@@ -2912,7 +2912,7 @@ static bool
 _equalGraphEdge(const GraphEdge *a, const GraphEdge *b)
 {
 	COMPARE_SCALAR_FIELD(direction);
-	COMPARE_STRING_FIELD(variable);
+	COMPARE_SCALAR_FIELD(resno);
 	COMPARE_SCALAR_FIELD(relid);
 	COMPARE_NODE_FIELD(expr);
 	COMPARE_NODE_FIELD(qual);
