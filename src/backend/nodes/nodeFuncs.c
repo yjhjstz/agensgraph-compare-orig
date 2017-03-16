@@ -254,6 +254,12 @@ exprType(const Node *expr)
 		case T_PlaceHolderVar:
 			type = exprType((Node *) ((const PlaceHolderVar *) expr)->phexpr);
 			break;
+		case T_EdgeRefProp:
+			type = JSONBOID;
+			break;
+		case T_EdgeRefRow:
+			type = EDGEOID;
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
 			type = InvalidOid;	/* keep compiler quiet */
@@ -487,6 +493,10 @@ exprTypmod(const Node *expr)
 			return ((const SetToDefault *) expr)->typeMod;
 		case T_PlaceHolderVar:
 			return exprTypmod((Node *) ((const PlaceHolderVar *) expr)->phexpr);
+		case T_EdgeRefProp:
+			return -1;
+		case T_EdgeRefRow:
+			return -1;
 		default:
 			break;
 	}
@@ -919,6 +929,12 @@ exprCollation(const Node *expr)
 		case T_PlaceHolderVar:
 			coll = exprCollation((Node *) ((const PlaceHolderVar *) expr)->phexpr);
 			break;
+		case T_EdgeRefProp:
+			coll = InvalidOid;
+			break;
+		case T_EdgeRefRow:
+			coll = InvalidOid;
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
 			coll = InvalidOid;	/* keep compiler quiet */
@@ -1113,6 +1129,12 @@ exprSetCollation(Node *expr, Oid collation)
 			break;
 		case T_CurrentOfExpr:
 			Assert(!OidIsValid(collation));		/* result is always boolean */
+			break;
+		case T_EdgeRefProp:
+			Assert(!OidIsValid(collation));
+			break;
+		case T_EdgeRefRow:
+			Assert(!OidIsValid(collation));
 			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
@@ -2192,6 +2214,12 @@ expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
+		case T_EdgeRefProp:
+			return walker(((EdgeRefProp *) node)->arg, context);
+			break;
+		case T_EdgeRefRow:
+			return walker(((EdgeRefRow *) node)->arg, context);
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
@@ -2987,6 +3015,26 @@ expression_tree_mutator(Node *node,
 				return (Node *) newnode;
 			}
 			break;
+		case T_EdgeRefProp:
+			{
+				EdgeRefProp *erf = (EdgeRefProp *) node;
+				EdgeRefProp *newnode;
+
+				FLATCOPY(newnode, erf, EdgeRefProp);
+				MUTATE(newnode->arg, erf->arg, Node *);
+				return (Node *) newnode;
+			}
+			break;
+		case T_EdgeRefRow:
+			{
+				EdgeRefRow *err = (EdgeRefRow *) node;
+				EdgeRefRow *newnode;
+
+				FLATCOPY(newnode, err, EdgeRefRow);
+				MUTATE(newnode->arg, err->arg, Node *);
+				return (Node *) newnode;
+			}
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
@@ -3616,6 +3664,10 @@ raw_expression_tree_walker(Node *node,
 				}
 			}
 			break;
+		case T_EdgeRefProp:
+			return walker(((EdgeRefProp *) node)->arg, context);
+		case T_EdgeRefRow:
+			return walker(((EdgeRefRow *) node)->arg, context);
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
@@ -4324,6 +4376,26 @@ raw_expression_tree_mutator(Node *node,
 				 * recurse into the sub-query if it wants to.
 				 */
 				MUTATE(newnode->ctequery, cte->ctequery, Node *);
+				return (Node *) newnode;
+			}
+			break;
+		case T_EdgeRefProp:
+			{
+				EdgeRefProp *erf = (EdgeRefProp *) node;
+				EdgeRefProp *newnode;
+
+				FLATCOPY(newnode, erf, EdgeRefProp);
+				MUTATE(newnode->arg, erf->arg, Node *);
+				return (Node *) newnode;
+			}
+			break;
+		case T_EdgeRefRow:
+			{
+				EdgeRefRow *err = (EdgeRefRow *) node;
+				EdgeRefRow *newnode;
+
+				FLATCOPY(newnode, err, EdgeRefRow);
+				MUTATE(newnode->arg, err->arg, Node *);
 				return (Node *) newnode;
 			}
 			break;
