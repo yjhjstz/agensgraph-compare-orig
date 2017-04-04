@@ -186,6 +186,7 @@ typedef enum NodeTag
 	T_IntoClause,
 	T_EdgeRefProp,
 	T_EdgeRefRow,
+	T_EdgeRefRows,
 
 	/*
 	 * TAGS FOR EXPRESSION STATE NODES (execnodes.h)
@@ -223,6 +224,7 @@ typedef enum NodeTag
 	T_DomainConstraintState,
 	T_EdgeRefPropState,
 	T_EdgeRefRowState,
+	T_EdgeRefRowsState,
 
 	/*
 	 * TAGS FOR PLANNER NODES (relation.h)
