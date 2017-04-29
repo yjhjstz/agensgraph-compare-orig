@@ -60,6 +60,7 @@
 #include "parser/gramparse.h"
 #include "parser/parser.h"
 #include "parser/parse_expr.h"
+#include "parser/scansup.h"
 #include "storage/lmgr.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
@@ -129,6 +130,9 @@ typedef struct ImportQual
 #define CAS_NO_INHERIT				0x20
 
 
+bool case_compat_type_func = false;
+
+
 #define parser_yyerror(msg)  scanner_yyerror(msg, yyscanner)
 #define parser_errposition(pos)  scanner_errposition(pos, yyscanner)
 
@@ -179,6 +183,8 @@ static void processCASbits(int cas_bits, int location, const char *constrType,
 static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 static Node *makeCypherSetOp(SetOperation op, bool all, Node *larg, Node *rarg);
 static Node *wrapCypherWithSelect(Node *stmt);
+static char *preserve_downcasing_type_func_name(char *name);
+static List *preserve_downcasing_type_func_namelist(List *namelist);
 
 %}
 
@@ -2336,7 +2342,7 @@ alter_table_cmd:
 			| OF any_name
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
-					TypeName *def = makeTypeNameFromNameList($2);
+					TypeName *def = makeTypeNameFromNameList(preserve_downcasing_type_func_namelist($2));
 					def->location = @2;
 					n->subtype = AT_AddOf;
 					n->def = (Node *) def;
@@ -2533,7 +2539,7 @@ AlterCompositeTypeStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 
 					/* can't use qualified_name, sigh */
-					n->relation = makeRangeVarFromAnyName($3, @3, yyscanner);
+					n->relation = makeRangeVarFromAnyName(preserve_downcasing_type_func_namelist($3), @3, yyscanner);
 					n->cmds = $4;
 					n->relkind = OBJECT_TYPE;
 					$$ = (Node *)n;
@@ -2904,7 +2910,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->relation = $4;
 					n->tableElts = $7;
 					n->inhRelations = NIL;
-					n->ofTypename = makeTypeNameFromNameList($6);
+					n->ofTypename = makeTypeNameFromNameList(preserve_downcasing_type_func_namelist($6));
 					n->ofTypename->location = @6;
 					n->constraints = NIL;
 					n->options = $8;
@@ -2921,7 +2927,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->relation = $7;
 					n->tableElts = $10;
 					n->inhRelations = NIL;
-					n->ofTypename = makeTypeNameFromNameList($9);
+					n->ofTypename = makeTypeNameFromNameList(preserve_downcasing_type_func_namelist($9));
 					n->ofTypename->location = @9;
 					n->constraints = NIL;
 					n->options = $11;
@@ -3803,8 +3809,16 @@ opt_trusted:
  * Work around by using simple names, instead.
  */
 handler_name:
-			name						{ $$ = list_make1(makeString($1)); }
-			| name attrs				{ $$ = lcons(makeString($1), $2); }
+			name
+				{
+					List *namelist = list_make1(makeString($1));
+					$$ = preserve_downcasing_type_func_namelist(namelist);
+				}
+			| name attrs
+				{
+					List *namelist = lcons(makeString($1), $2);
+					$$ = preserve_downcasing_type_func_namelist(namelist);
+				}
 		;
 
 opt_inline_handler:
@@ -5162,7 +5176,7 @@ DefineStmt:
 					DefineStmt *n = makeNode(DefineStmt);
 					n->kind = OBJECT_TYPE;
 					n->oldstyle = false;
-					n->defnames = $3;
+					n->defnames = preserve_downcasing_type_func_namelist($3);
 					n->args = NIL;
 					n->definition = $4;
 					$$ = (Node *)n;
@@ -5173,7 +5187,7 @@ DefineStmt:
 					DefineStmt *n = makeNode(DefineStmt);
 					n->kind = OBJECT_TYPE;
 					n->oldstyle = false;
-					n->defnames = $3;
+					n->defnames = preserve_downcasing_type_func_namelist($3);
 					n->args = NIL;
 					n->definition = NIL;
 					$$ = (Node *)n;
@@ -5183,21 +5197,21 @@ DefineStmt:
 					CompositeTypeStmt *n = makeNode(CompositeTypeStmt);
 
 					/* can't use qualified_name, sigh */
-					n->typevar = makeRangeVarFromAnyName($3, @3, yyscanner);
+					n->typevar = makeRangeVarFromAnyName(preserve_downcasing_type_func_namelist($3), @3, yyscanner);
 					n->coldeflist = $6;
 					$$ = (Node *)n;
 				}
 			| CREATE TYPE_P any_name AS ENUM_P '(' opt_enum_val_list ')'
 				{
 					CreateEnumStmt *n = makeNode(CreateEnumStmt);
-					n->typeName = $3;
+					n->typeName = preserve_downcasing_type_func_namelist($3);
 					n->vals = $7;
 					$$ = (Node *)n;
 				}
 			| CREATE TYPE_P any_name AS RANGE definition
 				{
 					CreateRangeStmt *n = makeNode(CreateRangeStmt);
-					n->typeName = $3;
+					n->typeName = preserve_downcasing_type_func_namelist($3);
 					n->params	= $6;
 					$$ = (Node *)n;
 				}
@@ -5321,7 +5335,7 @@ AlterEnumStmt:
 		ALTER TYPE_P any_name ADD_P VALUE_P opt_if_not_exists Sconst
 			{
 				AlterEnumStmt *n = makeNode(AlterEnumStmt);
-				n->typeName = $3;
+				n->typeName = preserve_downcasing_type_func_namelist($3);
 				n->newVal = $7;
 				n->newValNeighbor = NULL;
 				n->newValIsAfter = true;
@@ -5331,7 +5345,7 @@ AlterEnumStmt:
 		 | ALTER TYPE_P any_name ADD_P VALUE_P opt_if_not_exists Sconst BEFORE Sconst
 			{
 				AlterEnumStmt *n = makeNode(AlterEnumStmt);
-				n->typeName = $3;
+				n->typeName = preserve_downcasing_type_func_namelist($3);
 				n->newVal = $7;
 				n->newValNeighbor = $9;
 				n->newValIsAfter = false;
@@ -5341,7 +5355,7 @@ AlterEnumStmt:
 		 | ALTER TYPE_P any_name ADD_P VALUE_P opt_if_not_exists Sconst AFTER Sconst
 			{
 				AlterEnumStmt *n = makeNode(AlterEnumStmt);
-				n->typeName = $3;
+				n->typeName = preserve_downcasing_type_func_namelist($3);
 				n->newVal = $7;
 				n->newValNeighbor = $9;
 				n->newValIsAfter = true;
@@ -6485,9 +6499,14 @@ privilege_target:
 			| TYPE_P any_name_list
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
+					ListCell *l;
 					n->targtype = ACL_TARGET_OBJECT;
 					n->objtype = ACL_OBJECT_TYPE;
 					n->objs = $2;
+					foreach(l, n->objs)
+					{
+						preserve_downcasing_type_func_namelist(lfirst(l));
+					}
 					$$ = n;
 				}
 			| ALL TABLES IN_P SCHEMA name_list
@@ -8096,8 +8115,8 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 				{
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_TYPE;
-					n->object = $3;
-					n->newname = $6;
+					n->object = preserve_downcasing_type_func_namelist($3);
+					n->newname = preserve_downcasing_type_func_name($6);
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -8106,7 +8125,7 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_ATTRIBUTE;
 					n->relationType = OBJECT_TYPE;
-					n->relation = makeRangeVarFromAnyName($3, @3, yyscanner);
+					n->relation = makeRangeVarFromAnyName(preserve_downcasing_type_func_namelist($3), @3, yyscanner);
 					n->subname = $6;
 					n->newname = $8;
 					n->behavior = $9;
@@ -8442,7 +8461,7 @@ AlterObjectSchemaStmt:
 				{
 					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
 					n->objectType = OBJECT_TYPE;
-					n->object = $3;
+					n->object = preserve_downcasing_type_func_namelist($3);
 					n->newschema = $6;
 					n->missing_ok = false;
 					$$ = (Node *)n;
@@ -8585,7 +8604,7 @@ AlterOwnerStmt: ALTER AGGREGATE func_name aggr_args OWNER TO RoleSpec
 				{
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_TYPE;
-					n->object = $3;
+					n->object = preserve_downcasing_type_func_namelist($3);
 					n->newowner = $6;
 					$$ = (Node *)n;
 				}
@@ -9395,7 +9414,7 @@ CreateConversionStmt:
 				n->conversion_name = $4;
 				n->for_encoding_name = $6;
 				n->to_encoding_name = $8;
-				n->func_name = $10;
+				n->func_name = preserve_downcasing_type_func_namelist($10);
 				n->def = $2;
 				$$ = (Node *)n;
 			}
@@ -13718,10 +13737,11 @@ file_name:	Sconst									{ $$ = $1; };
 func_name:	type_function_name
 					{ $$ = list_make1(makeString($1)); }
 			| ColId indirection
-					{
-						$$ = check_func_name(lcons(makeString($1), $2),
-											 yyscanner);
-					}
+				{
+					List *namelist = check_func_name(lcons(makeString($1), $2),
+													 yyscanner);
+					$$ = preserve_downcasing_type_func_namelist(namelist);
+				}
 		;
 
 
@@ -13925,9 +13945,12 @@ ColId:		IDENT									{ $$ = $1; }
 
 /* Type/function identifier --- names that can be type or function names.
  */
-type_function_name:	IDENT							{ $$ = $1; }
-			| unreserved_keyword					{ $$ = pstrdup($1); }
-			| type_func_name_keyword				{ $$ = pstrdup($1); }
+type_function_name:	IDENT
+					{ $$ = preserve_downcasing_type_func_name($1); }
+			| unreserved_keyword
+					{ $$ = preserve_downcasing_type_func_name(pstrdup($1)); }
+			| type_func_name_keyword
+					{ $$ = preserve_downcasing_type_func_name(pstrdup($1)); }
 		;
 
 /* Any not-fully-reserved word --- these names can be, eg, role names.
@@ -16288,6 +16311,38 @@ wrapCypherWithSelect(Node *stmt)
 	select->fromClause = list_make1(sub);
 
 	return (Node *) select;
+}
+
+/*
+ * downcase type/function name for user convenience
+ * if case_sensitive_ident and case_compat_type_func is on
+ */
+static char *
+preserve_downcasing_type_func_name(char *name)
+{
+	if (case_sensitive_ident && case_compat_type_func)
+		name = downcase_identifier(name, strlen(name), false, false);
+
+	return name;
+}
+
+/*
+ * downcase type/function name list for user convenience
+ * if case_sensitive_ident and case_compat_type_func is on
+ */
+static List *
+preserve_downcasing_type_func_namelist(List *namelist)
+{
+	if (case_sensitive_ident && case_compat_type_func)
+	{
+		Value	   *objstrval = llast(namelist);
+		char	   *objname = strVal(objstrval);
+
+		objname = downcase_identifier(objname, strlen(objname), false, false);
+		objstrval->val.str = objname;
+	}
+
+	return namelist;
 }
 
 /* parser_init()
