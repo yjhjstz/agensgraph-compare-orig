@@ -1576,6 +1576,7 @@ exprLocation(const Node *expr)
 				loc = leftmostLoc(m->location,
 								  exprLocation((Node *) m->keyvals));
 			}
+			break;
 		default:
 			/* for any other node type it's just unknown... */
 			loc = -1;
