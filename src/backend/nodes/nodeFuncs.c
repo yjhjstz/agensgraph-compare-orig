@@ -2295,6 +2295,8 @@ expression_tree_walker(Node *node,
 			{
 				CypherAccessExpr *a = (CypherAccessExpr *) node;
 
+				if (walker(a->arg, context))
+					return true;
 				if (expression_tree_walker((Node *) a->path, walker, context))
 					return true;
 			}
@@ -3160,6 +3162,7 @@ expression_tree_mutator(Node *node,
 				CypherAccessExpr *newnode;
 
 				FLATCOPY(newnode, a, CypherAccessExpr);
+				MUTATE(newnode->arg, a->arg, Expr *);
 				MUTATE(newnode->path, a->path, List *);
 				return (Node *) newnode;
 			}
@@ -3824,6 +3827,8 @@ raw_expression_tree_walker(Node *node,
 			{
 				CypherAccessExpr *a = (CypherAccessExpr *) node;
 
+				if (walker(a->arg, context))
+					return true;
 				if (walker(a->path, context))
 					return true;
 			}
@@ -4595,6 +4600,7 @@ raw_expression_tree_mutator(Node *node,
 				CypherAccessExpr *newnode;
 
 				FLATCOPY(newnode, a, CypherAccessExpr);
+				MUTATE(newnode->arg, a->arg, Expr *);
 				MUTATE(newnode->path, a->path, List *);
 				return (Node *) newnode;
 			}
