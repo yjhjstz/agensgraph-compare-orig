@@ -490,6 +490,7 @@ typedef enum NodeTag
 	 */
 	T_JsonObject,
 	T_JsonKeyVal,
+	T_CypherGenericExpr,
 	T_CypherSubPattern,
 	T_CypherClause,
 	T_CypherMatchClause,
