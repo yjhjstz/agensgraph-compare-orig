@@ -4,6 +4,7 @@
  *	  Definitions for tagged nodes.
  *
  *
+ * Portions Copyright (c) 2016, Bitnine Inc.
  * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -193,6 +194,8 @@ typedef enum NodeTag
 	T_EdgeRefRows,
 	T_CypherMapExpr,
 	T_CypherListExpr,
+	T_CypherListCompExpr,
+	T_CypherListCompVar,
 	T_CypherAccessExpr,
 	T_CypherIndices,
 
@@ -235,6 +238,7 @@ typedef enum NodeTag
 	T_EdgeRefRowsState,
 	T_CypherMapExprState,
 	T_CypherListExprState,
+	T_CypherListCompExprState,
 	T_CypherAccessExprState,
 
 	/*
@@ -488,8 +492,7 @@ typedef enum NodeTag
 	/**
 	 * AgensGraph
 	 */
-	T_JsonObject,
-	T_JsonKeyVal,
+	T_CypherListComp,
 	T_CypherGenericExpr,
 	T_CypherSubPattern,
 	T_CypherClause,
