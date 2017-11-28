@@ -1668,7 +1668,7 @@ typedef struct NestLoopState
 	bool		nl_NeedNewOuter;
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
-	Snapshot	nl_MergeMatchSnapshot;
+	CommandId	nl_mergematch_cid;
 } NestLoopState;
 
 typedef struct VLEArrayExpr
@@ -2184,6 +2184,7 @@ typedef struct ModifyGraphState
 	int			numOldRtable;
 	ResultRelInfo *resultRelations;
 	int			numResultRelations;
+	uint32		modify_cid;
 	List	   *pattern;		/* graph pattern (list of paths) for CREATE
 								   with `es_prop_map` */
 	List	   *exprs;			/* expression state list for DELETE */
