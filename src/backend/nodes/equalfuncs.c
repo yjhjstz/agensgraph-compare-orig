@@ -2903,6 +2903,7 @@ _equalCypherDeleteClause(const CypherDeleteClause *a,
 static bool
 _equalCypherSetClause(const CypherSetClause *a, const CypherSetClause *b)
 {
+	COMPARE_SCALAR_FIELD(is_remove);
 	COMPARE_SCALAR_FIELD(kind);
 	COMPARE_NODE_FIELD(items);
 

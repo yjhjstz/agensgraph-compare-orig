@@ -4550,6 +4550,7 @@ _copyCypherSetClause(const CypherSetClause *from)
 {
 	CypherSetClause *newnode = makeNode(CypherSetClause);
 
+	COPY_SCALAR_FIELD(is_remove);
 	COPY_SCALAR_FIELD(kind);
 	COPY_NODE_FIELD(items);
 

@@ -16466,9 +16466,9 @@ cypher_set:	SET cypher_setitem_list
 					CypherSetClause *n;
 
 					n = makeNode(CypherSetClause);
+					n->is_remove = false;
 					n->kind = CSET_NORMAL;
 					n->items = $2;
-					n->is_set = true;
 					$$ = (Node *) n;
 				}
 		;
@@ -16509,9 +16509,9 @@ cypher_remove:
 					CypherSetClause *n;
 
 					n = makeNode(CypherSetClause);
+					n->is_remove = true;
 					n->kind = CSET_NORMAL;
 					n->items = $2;
-					n->is_set = false;
 					$$ = (Node *) n;
 				}
 		;
@@ -16566,9 +16566,9 @@ cypher_merge_set:
 					CypherSetClause *n;
 
 					n = makeNode(CypherSetClause);
+					n->is_remove = false;
 					n->kind = CSET_ON_CREATE;
 					n->items = $4;
-					n->is_set = true;
 					$$ = (Node *) n;
 				}
 			| ON MATCH SET cypher_setitem_list
@@ -16576,9 +16576,9 @@ cypher_merge_set:
 					CypherSetClause *n;
 
 					n = makeNode(CypherSetClause);
+					n->is_remove = false;
 					n->kind = CSET_ON_MATCH;
 					n->items = $4;
-					n->is_set = true;
 					$$ = (Node *) n;
 				}
 		;
