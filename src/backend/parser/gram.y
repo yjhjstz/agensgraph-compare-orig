@@ -668,7 +668,7 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COMMENT COMMENTS COMMIT
 	COMMITTED CONCURRENTLY CONFIGURATION CONFLICT CONNECTION CONSTRAINT
-	CONSTRAINTS CONTENT_P CONTINUE_P CONVERSION_P COPY COST CREATE
+	CONSTRAINTS CONTAINS CONTENT_P CONTINUE_P CONVERSION_P COPY COST CREATE
 	CROSS CSV CUBE CURRENT_P
 	CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE CURRENT_SCHEMA
 	CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR CYCLE
@@ -678,7 +678,7 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 	DICTIONARY DIJKSTRA DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
-	EACH ELABEL ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVENT
+	EACH ELABEL ELSE ENABLE_P ENCODING ENCRYPTED END_P ENDS ENUM_P ESCAPE EVENT
 	EXCEPT EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
 	EXTENSION EXTERNAL EXTRACT
 
@@ -727,8 +727,8 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHORTESTPATH
 	SHOW SIMILAR
 	SIMPLE SINGLE SIZE_P SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
-	START STATEMENT STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P SUBSTRING
-	SYMMETRIC SYSID SYSTEM_P
+	START STARTS STATEMENT STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P 
+	SUBSTRING SYMMETRIC SYSID SYSTEM_P
 
 	TABLE TABLES TABLESAMPLE TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN
 	TIME TIMESTAMP TO TRAILING TRANSACTION TRANSFORM TREAT TRIGGER TRIM TRUE_P
@@ -804,9 +804,9 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
  * SHORTESTPATH, SIZE_P and SKIP must be the same as that of IDENT.
  */
 %nonassoc	UNBOUNDED		/* ideally should have same precedence as IDENT */
-%nonassoc	IDENT NULL_P PARTITION RANGE ROWS PRECEDING FOLLOWING CUBE ROLLUP
-			ALLSHORTESTPATHS DELETE_P DETACH DIJKSTRA LOAD OPTIONAL_P REMOVE
-			SHORTESTPATH SINGLE SIZE_P SKIP
+%nonassoc	IDENT NULL_P PARTITION RANGE ROWS PRECEDING FOLLOWING CONTAINS CUBE ROLLUP
+			ALLSHORTESTPATHS DELETE_P DETACH DIJKSTRA ENDS LOAD OPTIONAL_P REMOVE
+			SHORTESTPATH SINGLE SIZE_P SKIP STARTS
 %left		Op OPERATOR		/* multi-character ops and user-defined operators */
 %left		'+' '-'
 %left		'*' '/' '%'
@@ -14032,6 +14032,7 @@ unreserved_keyword:
 			| CONFLICT
 			| CONNECTION
 			| CONSTRAINTS
+			| CONTAINS
 			| CONTENT_P
 			| CONTINUE_P
 			| CONVERSION_P
@@ -14068,6 +14069,7 @@ unreserved_keyword:
 			| ENABLE_P
 			| ENCODING
 			| ENCRYPTED
+			| ENDS
 			| ENUM_P
 			| ESCAPE
 			| EVENT
@@ -14224,6 +14226,7 @@ unreserved_keyword:
 			| STABLE
 			| STANDALONE_P
 			| START
+			| STARTS
 			| STATEMENT
 			| STATISTICS
 			| STDIN
@@ -14397,6 +14400,7 @@ reserved_keyword:
 			| COLLATE
 			| COLUMN
 			| CONSTRAINT
+//			| CONTAINS
 			| CREATE
 			| CURRENT_CATALOG
 			| CURRENT_DATE
@@ -14411,6 +14415,7 @@ reserved_keyword:
 			| DO
 			| ELSE
 			| END_P
+//			| ENDS
 			| EXCEPT
 			| FALSE_P
 			| FETCH
@@ -14446,6 +14451,7 @@ reserved_keyword:
 			| SELECT
 			| SESSION_USER
 			| SOME
+//			| STARTS
 			| SYMMETRIC
 			| TABLE
 			| THEN
@@ -15075,6 +15081,21 @@ cypher_expr:
 						$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "`-`",
 													   NULL, $2, @1);
 					}
+				}
+			| cypher_expr STARTS cypher_expr
+				{
+					$$ = (Node *) makeFuncCall(SystemFuncName("string_starts_with"),
+											   list_make2($1, $3), @1);
+				} 
+			| cypher_expr ENDS cypher_expr
+				{
+					$$ = (Node *) makeFuncCall(SystemFuncName("string_ends_with"),
+											   list_make2($1, $3), @1);
+				}
+			| cypher_expr CONTAINS cypher_expr
+				{
+					$$ = (Node *) makeFuncCall(SystemFuncName("string_contains"),
+											   list_make2($1, $3), @1);
 				}
 			| cypher_expr '[' cypher_expr ']'
 				{
