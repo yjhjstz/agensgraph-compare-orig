@@ -15132,12 +15132,6 @@ cypher_expr:
 				{
 					$$ = (Node *) makeSimpleA_Expr(AEXPR_IN, "=", $1, $3, @2);
 				}
-			| cypher_expr EQUALS_TILDE cypher_expr
-				{
-					$$ = (Node *) makeFuncCall(
-										SystemFuncName("string_regex"),
-										list_make2($1, $3), @2);
-				}
 			| cypher_expr STARTS WITH cypher_expr			%prec STARTS
 				{
 					$$ = (Node *) makeFuncCall(
@@ -15154,6 +15148,12 @@ cypher_expr:
 				{
 					$$ = (Node *) makeFuncCall(
 										SystemFuncName("string_contains"),
+										list_make2($1, $3), @2);
+				}
+			| cypher_expr EQUALS_TILDE cypher_expr
+				{
+					$$ = (Node *) makeFuncCall(
+										SystemFuncName("string_regex"),
 										list_make2($1, $3), @2);
 				}
 			| cypher_expr IS NULL_P							%prec IS
