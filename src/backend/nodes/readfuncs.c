@@ -266,6 +266,7 @@ _readQuery(void)
 	/* withCheckOptions intentionally omitted, see comment in parsenodes.h */
 	READ_LOCATION_FIELD(stmt_location);
 	READ_LOCATION_FIELD(stmt_len);
+
 	READ_INT_FIELD(dijkstraWeight);
 	READ_BOOL_FIELD(dijkstraWeightOut);
 	READ_NODE_FIELD(dijkstraEndId);
@@ -1503,7 +1504,6 @@ _readPlannedStmt(void)
 	READ_NODE_FIELD(utilityStmt);
 	READ_LOCATION_FIELD(stmt_location);
 	READ_LOCATION_FIELD(stmt_len);
-	READ_BOOL_FIELD(nVlePaths);
 
 	READ_DONE();
 }
@@ -1708,7 +1708,6 @@ ReadCommonScan(Scan *local_node)
 	ReadCommonPlan(&local_node->plan);
 
 	READ_UINT_FIELD(scanrelid);
-	READ_INT_FIELD(edgerefid);
 }
 
 /*
@@ -2446,38 +2445,6 @@ _readExtensibleNode(void)
 	READ_DONE();
 }
 
-/*
- * _readPartitionBoundSpec
- */
-static PartitionBoundSpec *
-_readPartitionBoundSpec(void)
-{
-	READ_LOCALS(PartitionBoundSpec);
-
-	READ_CHAR_FIELD(strategy);
-	READ_NODE_FIELD(listdatums);
-	READ_NODE_FIELD(lowerdatums);
-	READ_NODE_FIELD(upperdatums);
-	READ_LOCATION_FIELD(location);
-
-	READ_DONE();
-}
-
-/*
- * _readPartitionRangeDatum
- */
-static PartitionRangeDatum *
-_readPartitionRangeDatum(void)
-{
-	READ_LOCALS(PartitionRangeDatum);
-
-	READ_ENUM_FIELD(kind, PartitionRangeDatumKind);
-	READ_NODE_FIELD(value);
-	READ_LOCATION_FIELD(location);
-
-	READ_DONE();
-}
-
 static GraphPath *
 _readGraphPath(void)
 {
@@ -2524,36 +2491,6 @@ _readGraphSetProp(void)
 	READ_STRING_FIELD(variable);
 	READ_NODE_FIELD(elem);
 	READ_NODE_FIELD(expr);
-
-	READ_DONE();
-}
-
-static EdgeRefProp *
-_readEdgeRefProp(void)
-{
-	READ_LOCALS(EdgeRefProp);
-
-	READ_NODE_FIELD(arg);
-
-	READ_DONE();
-}
-
-static EdgeRefRow *
-_readEdgeRefRow(void)
-{
-	READ_LOCALS(EdgeRefRow);
-
-	READ_NODE_FIELD(arg);
-
-	READ_DONE();
-}
-
-static EdgeRefRows *
-_readEdgeRefRows(void)
-{
-	READ_LOCALS(EdgeRefRows);
-
-	READ_NODE_FIELD(arg);
 
 	READ_DONE();
 }
@@ -2638,6 +2575,38 @@ _readCypherIndices(void)
 	READ_BOOL_FIELD(is_slice);
 	READ_NODE_FIELD(lidx);
 	READ_NODE_FIELD(uidx);
+
+	READ_DONE();
+}
+
+/*
+ * _readPartitionBoundSpec
+ */
+static PartitionBoundSpec *
+_readPartitionBoundSpec(void)
+{
+	READ_LOCALS(PartitionBoundSpec);
+
+	READ_CHAR_FIELD(strategy);
+	READ_NODE_FIELD(listdatums);
+	READ_NODE_FIELD(lowerdatums);
+	READ_NODE_FIELD(upperdatums);
+	READ_LOCATION_FIELD(location);
+
+	READ_DONE();
+}
+
+/*
+ * _readPartitionRangeDatum
+ */
+static PartitionRangeDatum *
+_readPartitionRangeDatum(void)
+{
+	READ_LOCALS(PartitionRangeDatum);
+
+	READ_ENUM_FIELD(kind, PartitionRangeDatumKind);
+	READ_NODE_FIELD(value);
+	READ_LOCATION_FIELD(location);
 
 	READ_DONE();
 }
@@ -2900,12 +2869,6 @@ parseNodeString(void)
 		return_value = _readGraphEdge();
 	else if (MATCH("GRAPHSETPROP", 12))
 		return_value = _readGraphSetProp();
-	else if (MATCH("EDGEREFPROP", 11))
-		return_value = _readEdgeRefProp();
-	else if (MATCH("EDGEREFROW", 10))
-		return_value = _readEdgeRefRow();
-	else if (MATCH("EDGEREFROWS", 11))
-		return_value = _readEdgeRefRows();
 	else if (MATCH("CYPHERLISTCOMP", 14))
 		return_value = _readCypherListComp();
 	else if (MATCH("CYPHERMAPEXPR", 13))

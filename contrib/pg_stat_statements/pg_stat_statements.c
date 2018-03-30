@@ -2915,25 +2915,57 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 				JumbleExpr(jstate, (Node *) tsc->repeatable);
 			}
 			break;
-		case T_EdgeRefProp:
+		case T_CypherMapExpr:
 			{
-				EdgeRefProp *erp = (EdgeRefProp *) node;
+				CypherMapExpr *m = (CypherMapExpr *) node;
 
-				JumbleExpr(jstate, (Node *) erp->arg);
+				JumbleExpr(jstate, (Node *) m->keyvals);
 			}
 			break;
-		case T_EdgeRefRow:
+		case T_CypherListExpr:
 			{
-				EdgeRefRow *err = (EdgeRefRow *) node;
+				CypherListExpr *cl = (CypherListExpr *) node;
 
-				JumbleExpr(jstate, (Node *) err->arg);
+				JumbleExpr(jstate, (Node *) cl->elems);
 			}
 			break;
-		case T_EdgeRefRows:
+		case T_CypherListCompExpr:
 			{
-				EdgeRefRows *err = (EdgeRefRows *) node;
+				CypherListCompExpr *clc = (CypherListCompExpr *) node;
 
-				JumbleExpr(jstate, (Node *) err->arg);
+				JumbleExpr(jstate, (Node *) clc->list);
+				JumbleExpr(jstate, (Node *) clc->cond);
+				JumbleExpr(jstate, (Node *) clc->elem);
+			}
+			break;
+		case T_CypherListCompVar:
+			{
+				CypherListCompVar *clv = (CypherListCompVar *) node;
+
+				APP_JUMB_STRING(clv->varname);
+			}
+			break;
+		case T_CypherAccessExpr:
+			{
+				CypherAccessExpr *a = (CypherAccessExpr *) node;
+
+				JumbleExpr(jstate, (Node *) a->arg);
+				foreach(temp, a->path)
+				{
+					Node	   *elem = lfirst(temp);
+
+					if (IsA(elem, CypherIndices))
+					{
+						CypherIndices *cind = (CypherIndices *) elem;
+
+						JumbleExpr(jstate, (Node *) cind->lidx);
+						JumbleExpr(jstate, (Node *) cind->uidx);
+					}
+					else
+					{
+						JumbleExpr(jstate, elem);
+					}
+				}
 			}
 			break;
 		default:
