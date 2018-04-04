@@ -100,7 +100,7 @@ pi.unique AS "Unique",
 pi.owner AS "Owner",
 pi.indexdef AS "Indexdef"
 FROM pg_catalog.ag_property_indexes pi;
-DROP VLABEL regv1;
+DROP VLABEL regv1 CASCADE;
 
 -- Multi-column unique property index
 CREATE VLABEL regv1;
@@ -120,7 +120,7 @@ pi.unique AS "Unique",
 pi.owner AS "Owner",
 pi.indexdef AS "Indexdef"
 FROM pg_catalog.ag_property_indexes pi;
-DROP VLABEL regv1;
+DROP VLABEL regv1 CASCADE;
 
 -- DROP PROPERTY INDEX
 CREATE VLABEL regv1;
