@@ -37,8 +37,6 @@
 #define GRAPHID_FMTSTR			"%hu." UINT64_FORMAT
 #define GRAPHID_BUFLEN			32	/* "65535.281474976710655" */
 
-#define DATUM_NULL	PointerGetDatum(NULL)
-
 typedef struct LabelOutData {
 	uint16		label_labid;
 	NameData	label;
@@ -355,7 +353,7 @@ edgeref_in(PG_FUNCTION_ARGS)
 Datum
 edgeref_out(PG_FUNCTION_ARGS)
 {
-	EdgeRef	    eref = PG_GETARG_EDGEREF(0);
+	EdgeRef		eref = PG_GETARG_EDGEREF(0);
 	StringInfoData buf;
 	Oid			typiofunc;
 	bool		typisvarlena;
@@ -1268,7 +1266,6 @@ getVertexTidDatum(Datum datum)
 	return tuple_getattr(tuphdr, Anum_vertex_tid);
 }
 
-
 Datum
 getEdgeIdDatum(Datum datum)
 {
@@ -1300,7 +1297,6 @@ getEdgePropDatum(Datum datum)
 
 	return tuple_getattr(tuphdr, Anum_edge_properties);
 }
-
 
 Datum
 getEdgeTidDatum(Datum datum)
