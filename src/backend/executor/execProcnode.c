@@ -88,6 +88,7 @@
 #include "executor/nodeGatherMerge.h"
 #include "executor/nodeGroup.h"
 #include "executor/nodeHash.h"
+#include "executor/nodeHash2Side.h"
 #include "executor/nodeHashjoin.h"
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
@@ -107,6 +108,7 @@
 #include "executor/nodeSamplescan.h"
 #include "executor/nodeSeqscan.h"
 #include "executor/nodeSetOp.h"
+#include "executor/nodeShortestpath.h"
 #include "executor/nodeSort.h"
 #include "executor/nodeSubplan.h"
 #include "executor/nodeSubqueryscan.h"
@@ -377,6 +379,16 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 												 estate, eflags);
 			break;
 
+		case T_Shortestpath:
+			result = (PlanState *) ExecInitShortestpath((Shortestpath *) node,
+														estate, eflags);
+			break;
+
+		case T_Hash2Side:
+			result = (PlanState *) ExecInitHash2Side((Hash2Side *) node,
+													 estate, eflags);
+			break;
+
 		case T_Dijkstra:
 			result = (PlanState *) ExecInitDijkstra((Dijkstra *) node,
 													estate, eflags);
@@ -514,6 +526,10 @@ MultiExecProcNode(PlanState *node)
 
 		case T_BitmapOrState:
 			result = MultiExecBitmapOr((BitmapOrState *) node);
+			break;
+
+		case T_Hash2SideState:
+			result = MultiExecHash2Side((Hash2SideState *) node);
 			break;
 
 		default:
@@ -735,6 +751,14 @@ ExecEndNode(PlanState *node)
 
 		case T_LimitState:
 			ExecEndLimit((LimitState *) node);
+			break;
+
+		case T_ShortestpathState:
+			ExecEndShortestpath((ShortestpathState *) node);
+			break;
+
+		case T_Hash2SideState:
+			ExecEndHash2Side((Hash2SideState *) node);
 			break;
 
 		case T_DijkstraState:
