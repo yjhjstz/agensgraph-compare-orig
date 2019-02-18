@@ -187,8 +187,9 @@ if "$MAKE" -C "$oldsrc" installcheck; then
 		psql -X -d regression -c "$fix_sql;" || psql_fix_sql_status=$?
 	fi
 
-	pg_dumpall --no-sync -f "$temp_root"/dump1.sql || pg_dumpall1_status=$?
+	psql -X -d regression -c "SELECT regather_graphmeta()"
 	psql -X -d regression -c "SELECT * FROM ag_graphmeta_view" -o "$temp_root"/meta1.out
+	pg_dumpall --no-sync -f "$temp_root"/dump1.sql || pg_dumpall1_status=$?
 
 	if [ "$newsrc" != "$oldsrc" ]; then
 		# update references to old source tree's regress.so etc
@@ -239,6 +240,7 @@ case $testhost in
 esac
 
 pg_dumpall --no-sync -f "$temp_root"/dump2.sql || pg_dumpall2_status=$?
+psql -X -d regression -c "SELECT * FROM ag_graphmeta_view" -o "$temp_root"/meta2.out
 pg_ctl -m fast stop
 
 # no need to echo commands anymore
