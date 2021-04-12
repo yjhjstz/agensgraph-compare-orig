@@ -33,6 +33,7 @@
 #include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "catalog/ag_graph_fn.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
 #include "commands/async.h"
@@ -41,6 +42,7 @@
 #include "commands/vacuum.h"
 #include "commands/variable.h"
 #include "commands/trigger.h"
+#include "executor/nodeModifyGraph.h"
 #include "funcapi.h"
 #include "libpq/auth.h"
 #include "libpq/be-fsstubs.h"
@@ -51,7 +53,9 @@
 #include "optimizer/geqo.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
+#include "parser/parse_cypher_expr.h"
 #include "parser/parse_expr.h"
+#include "parser/parse_graph.h"
 #include "parser/parse_type.h"
 #include "parser/parser.h"
 #include "parser/scansup.h"
@@ -517,6 +521,7 @@ static bool data_checksums;
 static int	wal_segment_size;
 static bool integer_datetimes;
 static bool assert_enabled;
+static char *agversion_string;
 
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
@@ -793,8 +798,8 @@ static const unit_conversion time_unit_conversion_table[] =
  *
  * 6. Don't forget to document the option (at least in config.sgml).
  *
- * 7. If it's a new GUC_LIST option you must edit pg_dumpall.c to ensure
- *	  it is not single quoted at dump time.
+ * 7. If it's a new GUC_LIST_QUOTE option, you must add it to
+ *	  variable_is_guc_list_quote() in src/bin/pg_dump/dumputils.c.
  */
 
 
@@ -910,7 +915,33 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
-
+	{
+		{"enable_eager", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of eager plans."),
+			NULL
+		},
+		&enable_eager,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_multiple_update", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables multiple update on the same graph element."),
+			NULL
+		},
+		&enable_multiple_update,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"auto_gather_graphmeta", PGC_SUSET, STATS_COLLECTOR,
+			gettext_noop("Enables auto gather graph meta data."),
+			NULL
+		},
+		&auto_gather_graphmeta,
+		false,
+		NULL, NULL, NULL
+	},
 	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
@@ -1552,6 +1583,26 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"case_sensitive_ident", PGC_USERSET, COMPAT_OPTIONS_CLIENT,
+			gettext_noop("Use case-sensitive identifiers."),
+			NULL
+		},
+		&case_sensitive_ident,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"case_compat_type_func", PGC_USERSET, COMPAT_OPTIONS_CLIENT,
+			gettext_noop("If case_sensitive_ident is on, use case-insensitive identifiers for type and function names."),
+			NULL
+		},
+		&case_compat_type_func,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"synchronize_seqscans", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
 			gettext_noop("Enable synchronized sequential scans."),
 			NULL
@@ -1663,6 +1714,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&syslog_split_messages,
 		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"allow_null_properties", PGC_USERSET, COMPAT_OPTIONS_CLIENT,
+			gettext_noop("Enables the insertion of null properties into vertices and edges"),
+			NULL
+		},
+		&allow_null_properties,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -1956,6 +2017,17 @@ static struct config_int ConfigureNamesInt[] =
 		&max_stack_depth,
 		100, 100, MAX_KILOBYTES,
 		check_max_stack_depth, assign_max_stack_depth, NULL
+	},
+
+	{
+		{"eager_mem", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Sets the maximum memory to be used for eager plan."),
+			gettext_noop("This much memory can be used by each eager plan."),
+			GUC_UNIT_KB
+		},
+		&eager_mem,
+		4096, 1024, MAX_KILOBYTES,
+		NULL, NULL, NULL
 	},
 
 	{
@@ -2715,7 +2787,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"max_parallel_workers", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
-			gettext_noop("Sets the maximum number of parallel workers than can be active at one time."),
+			gettext_noop("Sets the maximum number of parallel workers that can be active at one time."),
 			NULL
 		},
 		&max_parallel_workers,
@@ -3298,6 +3370,18 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
+		/* Can't be set in postgresql.conf */
+		{"agversion", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Shows the AgensGraph server version."),
+			NULL,
+			GUC_REPORT | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&agversion_string,
+		AG_VERSION,
+		NULL, NULL, NULL
+	},
+
+	{
 		/* Not for general use --- used by SET ROLE */
 		{"role", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the current role."),
@@ -3648,6 +3732,17 @@ static struct config_string ConfigureNamesString[] =
 		&wal_consistency_checking_string,
 		"",
 		check_wal_consistency_checking, assign_wal_consistency_checking, NULL
+	},
+
+	{
+		{"graph_path", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the graph search path for all names."),
+			NULL,
+			GUC_IS_NAME
+		},
+		&graph_path,
+		"",
+		check_graph_path, NULL, NULL
 	},
 
 	/* End-of-list marker */
@@ -4707,7 +4802,14 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 	if (userDoption)
 		configdir = make_absolute_path(userDoption);
 	else
-		configdir = make_absolute_path(getenv("PGDATA"));
+	{
+		char *datadir;
+
+		datadir = getenv("AGDATA");
+		if (!datadir)
+			datadir = getenv("PGDATA");
+		configdir = make_absolute_path(datadir);
+	}
 
 	if (configdir && stat(configdir, &stat_buf) != 0)
 	{
@@ -6800,6 +6902,30 @@ GetConfigOptionResetString(const char *name)
 											   ((struct config_enum *) record)->reset_val);
 	}
 	return NULL;
+}
+
+/*
+ * Get the GUC flags associated with the given option.
+ *
+ * If the option doesn't exist, return 0 if missing_ok is true,
+ * otherwise throw an ereport and don't return.
+ */
+int
+GetConfigOptionFlags(const char *name, bool missing_ok)
+{
+	struct config_generic *record;
+
+	record = find_option(name, false, WARNING);
+	if (record == NULL)
+	{
+		if (missing_ok)
+			return 0;
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("unrecognized configuration parameter \"%s\"",
+						name)));
+	}
+	return record->flags;
 }
 
 

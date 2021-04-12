@@ -25,7 +25,10 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
+#include "catalog/ag_graph_fn.h"
 #include "catalog/pg_type.h"
+#include "catalog/objectaddress.h"
+#include "commands/graphcmds.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -36,6 +39,8 @@
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_cte.h"
+#include "parser/parse_cypher_expr.h"
+#include "parser/parse_graph.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_param.h"
 #include "parser/parse_relation.h"
@@ -79,6 +84,8 @@ static void transformLockingClause(ParseState *pstate, Query *qry,
 #ifdef RAW_EXPRESSION_COVERAGE_TEST
 static bool test_raw_expression_coverage(Node *node, void *context);
 #endif
+static Query *transformCypherStmt(ParseState *pstate, CypherStmt *stmt);
+static Query *transformCypherClause(ParseState *pstate, CypherClause *clause);
 
 
 /*
@@ -300,6 +307,18 @@ transformStmt(ParseState *pstate, Node *parseTree)
 			}
 			break;
 
+		case T_CypherStmt:
+			result = transformCypherStmt(pstate, (CypherStmt *) parseTree);
+			break;
+		case T_CypherSubPattern:
+			result = transformCypherSubPattern(pstate,
+											   (CypherSubPattern *) parseTree);
+			break;
+		case T_CypherClause:
+			/* Cypher clauses are transformed into a Query recursively */
+			result = transformCypherClause(pstate, (CypherClause *) parseTree);
+			break;
+
 			/*
 			 * Special cases
 			 */
@@ -361,6 +380,10 @@ analyze_requires_snapshot(RawStmt *parseTree)
 			result = true;
 			break;
 
+		case T_CypherStmt:
+			result = true;
+			break;
+
 			/*
 			 * Special cases
 			 */
@@ -392,6 +415,9 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 	Node	   *qual;
 
 	qry->commandType = CMD_DELETE;
+
+	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+		elog(ERROR, "DML query to graph objects is not allowed");
 
 	/* process the WITH clause independently of all else */
 	if (stmt->withClause)
@@ -472,6 +498,9 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 	ListCell   *lc;
 	bool		isOnConflictUpdate;
 	AclMode		targetPerms;
+
+	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+		elog(ERROR, "DML query to graph objects is not allowed");
 
 	/* There can't be any outer WITH to worry about */
 	Assert(pstate->p_ctenamespace == NIL);
@@ -1953,7 +1982,11 @@ transformSetOperationTree(ParseState *pstate, SelectStmt *stmt,
 		if (isTopLevel &&
 			pstate->p_parent_cte &&
 			pstate->p_parent_cte->cterecursive)
+		{
 			determineRecursiveColTypes(pstate, op->larg, ltargetlist);
+			op->maxDepth = pstate->p_parent_cte->maxdepth;
+			op->shortestpath = pstate->p_parent_cte->ctestop;
+		}
 
 		/*
 		 * Recursively transform the right child node.
@@ -2201,6 +2234,9 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 	Query	   *qry = makeNode(Query);
 	ParseNamespaceItem *nsitem;
 	Node	   *qual;
+
+	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+		elog(ERROR, "DML query to graph objects is not allowed");
 
 	qry->commandType = CMD_UPDATE;
 	pstate->p_is_insert = false;
@@ -2908,3 +2944,149 @@ test_raw_expression_coverage(Node *node, void *context)
 }
 
 #endif							/* RAW_EXPRESSION_COVERAGE_TEST */
+
+
+/*
+ * transformCypherStmt - transforms a Cypher statement
+ */
+static Query *
+transformCypherStmt(ParseState *pstate, CypherStmt *stmt)
+{
+	CypherClause *clause;
+	NodeTag		type;
+	bool		valid = true;
+	NodeTag		update_type = T_Invalid;
+	bool		read = false;
+
+	clause = (CypherClause *) stmt->last;
+	type = cypherClauseTag(clause);
+	switch (type)
+	{
+		case T_CypherProjection:
+			if (cypherProjectionKind(clause->detail) != CP_RETURN)
+				valid = false;
+			break;
+		case T_CypherCreateClause:
+		case T_CypherDeleteClause:
+		case T_CypherSetClause:
+		case T_CypherMergeClause:
+			update_type = type;
+			break;
+		default:
+			valid = false;
+			break;
+	}
+
+	if (!valid)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("Cypher query must end with RETURN or update clause")));
+
+	clause = (CypherClause *) clause->prev;
+	while (clause != NULL)
+	{
+		type = cypherClauseTag(clause);
+		switch (type)
+		{
+			case T_CypherMatchClause:
+				read = true;
+				break;
+			case T_CypherProjection:
+				if (cypherProjectionKind(clause->detail) == CP_RETURN)
+				{
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("RETURN must be at the end of the query")));
+				}
+				else
+				{
+					/* CP_WITH */
+					if (update_type != T_Invalid &&
+						update_type != T_CypherCreateClause)
+						read = true;
+				}
+				break;
+			case T_CypherCreateClause:
+				if (update_type == T_Invalid ||
+					update_type == T_CypherMergeClause)
+				{
+					update_type = T_CypherCreateClause;
+				}
+				if (read)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("Cypher read clauses cannot follow update clauses")));
+				break;
+			case T_CypherDeleteClause:
+			case T_CypherSetClause:
+				if (read)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("Cypher read clauses cannot follow update clauses")));
+				break;
+			case T_CypherMergeClause:
+				if (update_type == T_Invalid ||
+					update_type == T_CypherCreateClause)
+				{
+					update_type = T_CypherMergeClause;
+				}
+				if (read)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("Cypher read clauses cannot follow update clauses")));
+				break;
+			case T_CypherLoadClause:
+				read = true;
+				break;
+			case T_CypherUnwindClause:
+				read = true;
+				break;
+			default:
+				elog(ERROR, "unrecognized Cypher clause type: %d", type);
+				break;
+		}
+
+		clause = (CypherClause *) clause->prev;
+	}
+
+	return transformStmt(pstate, stmt->last);
+}
+
+static Query *
+transformCypherClause(ParseState *pstate, CypherClause *clause)
+{
+	Query *qry;
+
+	switch (cypherClauseTag(clause))
+	{
+		case T_CypherProjection:
+			qry = transformCypherProjection(pstate, clause);
+			break;
+		case T_CypherMatchClause:
+			qry = transformCypherMatchClause(pstate, clause);
+			break;
+		case T_CypherCreateClause:
+			qry = transformCypherCreateClause(pstate, clause);
+			break;
+		case T_CypherDeleteClause:
+			qry = transformCypherDeleteClause(pstate, clause);
+			break;
+		case T_CypherSetClause:
+			qry = transformCypherSetClause(pstate, clause);
+			break;
+		case T_CypherMergeClause:
+			qry = transformCypherMergeClause(pstate, clause);
+			break;
+		case T_CypherLoadClause:
+			qry = transformCypherLoadClause(pstate, clause);
+			break;
+		case T_CypherUnwindClause:
+			qry = transformCypherUnwindClause(pstate, clause);
+			break;
+		default:
+			elog(ERROR, "unrecognized Cypher clause type: %d",
+				 cypherClauseTag(clause));
+	}
+
+	return qry;
+}

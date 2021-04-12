@@ -19,5 +19,7 @@
 extern AppendState *ExecInitAppend(Append *node, EState *estate, int eflags);
 extern void ExecEndAppend(AppendState *node);
 extern void ExecReScanAppend(AppendState *node);
+extern void ExecNextAppendContext(AppendState *node);
+extern void ExecPrevAppendContext(AppendState *node);
 
 #endif							/* NODEAPPEND_H */

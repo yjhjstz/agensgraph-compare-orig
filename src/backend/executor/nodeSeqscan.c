@@ -28,12 +28,28 @@
 #include "postgres.h"
 
 #include "access/relscan.h"
+#include "catalog/pg_operator.h"
 #include "executor/execdebug.h"
 #include "executor/nodeSeqscan.h"
+#include "optimizer/clauses.h"
+#include "utils/graph.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
+
+typedef struct SeqScanContext
+{
+	dlist_node	list;
+	Bitmapset  *chgParam;
+	HeapScanDesc scanDesc;
+} SeqScanContext;
 
 static void InitScanRelation(SeqScanState *node, EState *estate, int eflags);
 static TupleTableSlot *SeqNext(SeqScanState *node);
+
+static void initScanLabelSkipExpr(SeqScanState *node);
+static ExprState *getScanLabelSkipExpr(SeqScanState *node, Expr *opexpr);
+static bool isGraphidColumn(SeqScanState *node, Node *expr);
+static SeqScanContext *getCurrentContext(SeqScanState *node, bool create);
 
 /* ----------------------------------------------------------------
  *						Scan Support
@@ -127,6 +143,12 @@ ExecSeqScan(PlanState *pstate)
 {
 	SeqScanState *node = castNode(SeqScanState, pstate);
 
+	if (node->ss.ss_skipLabelScan)
+	{
+		node->ss.ss_skipLabelScan = false;
+		return NULL;
+	}
+
 	return ExecScan(&node->ss,
 					(ExecScanAccessMtd) SeqNext,
 					(ExecScanRecheckMtd) SeqRecheck);
@@ -155,6 +177,71 @@ InitScanRelation(SeqScanState *node, EState *estate, int eflags)
 
 	/* and report the scan tuple slot's rowtype */
 	ExecAssignScanType(&node->ss, RelationGetDescr(currentRelation));
+}
+
+static void
+initScanLabelSkipExpr(SeqScanState *node)
+{
+	List	   *qual = node->ss.ps.plan->qual;
+	ListCell   *la;
+
+	AssertArg(node->ss.ss_isLabel);
+
+	if (qual == NIL)
+		return;
+
+	/* qual was implicitly-ANDed, so; */
+	foreach(la, qual)
+	{
+		Expr	   *expr = lfirst(la);
+		ExprState  *xstate;
+
+		if (!is_opclause(expr))
+			continue;
+
+		if (((OpExpr *) expr)->opno != OID_GRAPHID_EQ_OP)
+			continue;
+
+		/* expr is of the form `graphid = graphid` */
+
+		xstate = getScanLabelSkipExpr(node, expr);
+		if (xstate == NULL)
+			continue;
+
+		node->ss.ss_labelSkipExpr = xstate;
+		break;
+	}
+}
+
+static ExprState *
+getScanLabelSkipExpr(SeqScanState *node, Expr *opexpr)
+{
+	Node	   *left = get_leftop(opexpr);
+	Node	   *right = get_rightop(opexpr);
+	Node	   *expr;
+
+	if (isGraphidColumn(node, left))
+		expr = right;
+	else if (isGraphidColumn(node, right))
+		expr = left;
+	else
+		return NULL;
+
+	/* Const or Param expected */
+	if (IsA(expr, Const) || IsA(expr, Param))
+		return ExecInitExpr((Expr *) expr, (PlanState *) node);
+
+	return NULL;
+}
+
+static bool
+isGraphidColumn(SeqScanState *node, Node *expr)
+{
+	Var *var = (Var *) expr;
+
+	return (IsA(expr, Var) &&
+			var->varno == ((SeqScan *) node->ss.ps.plan)->scanrelid &&
+			var->varattno == Anum_vertex_id);
 }
 
 
@@ -206,11 +293,18 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	 */
 	InitScanRelation(scanstate, estate, eflags);
 
+	InitScanLabelInfo((ScanState *) scanstate);
+	if (scanstate->ss.ss_isLabel)
+		initScanLabelSkipExpr(scanstate);
+
 	/*
 	 * Initialize result tuple type and projection info.
 	 */
 	ExecAssignResultTypeFromTL(&scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
+
+	dlist_init(&scanstate->ctxs_head);
+	scanstate->prev_ctx_node = &scanstate->ctxs_head.head;
 
 	return scanstate;
 }
@@ -244,9 +338,31 @@ ExecEndSeqScan(SeqScanState *node)
 	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
 
-	/*
-	 * close heap scan
-	 */
+	if (!dlist_is_empty(&node->ctxs_head))
+	{
+		dlist_node *ctx_node;
+		SeqScanContext *ctx;
+		dlist_mutable_iter iter;
+
+		/* scanDesc is the most recent value. Ignore the first context. */
+		ctx_node = dlist_pop_head_node(&node->ctxs_head);
+		ctx = dlist_container(SeqScanContext, list, ctx_node);
+		pfree(ctx);
+
+		dlist_foreach_modify(iter, &node->ctxs_head)
+		{
+			dlist_delete(iter.cur);
+
+			ctx = dlist_container(SeqScanContext, list, iter.cur);
+
+			if (ctx->scanDesc != NULL)
+				heap_endscan(ctx->scanDesc);
+
+			pfree(ctx);
+		}
+	}
+	node->prev_ctx_node = &node->ctxs_head.head;
+
 	if (scanDesc != NULL)
 		heap_endscan(scanDesc);
 
@@ -272,13 +388,139 @@ ExecReScanSeqScan(SeqScanState *node)
 {
 	HeapScanDesc scan;
 
+	/* determine whether we can skip this label scan or not */
+	if (node->ss.ss_isLabel && node->ss.ss_labelSkipExpr != NULL)
+	{
+		ExprContext *econtext = node->ss.ps.ps_ExprContext;
+		MemoryContext oldmctx;
+		bool		isnull;
+		Datum		graphid;
+
+		oldmctx = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+		graphid = ExecEvalExpr(node->ss.ss_labelSkipExpr, econtext, &isnull);
+		if (isnull)
+		{
+			node->ss.ss_skipLabelScan = true;
+		}
+		else
+		{
+			uint16 labid;
+
+			labid = DatumGetUInt16(DirectFunctionCall1(graphid_labid, graphid));
+			if (node->ss.ss_labid != labid)
+				node->ss.ss_skipLabelScan = true;
+		}
+
+		ResetExprContext(econtext);
+
+		MemoryContextSwitchTo(oldmctx);
+	}
+
 	scan = node->ss.ss_currentScanDesc;
 
-	if (scan != NULL)
+	if (scan != NULL && !node->ss.ss_skipLabelScan)
 		heap_rescan(scan,		/* scan desc */
 					NULL);		/* new scan keys */
 
 	ExecScanReScan((ScanState *) node);
+}
+
+void
+ExecNextSeqScanContext(SeqScanState *node)
+{
+	SeqScanContext *ctx;
+
+	/* store the current context */
+	ctx = getCurrentContext(node, true);
+	ctx->chgParam = node->ss.ps.chgParam;
+	ctx->scanDesc = node->ss.ss_currentScanDesc;
+
+	/* make the current context previous context */
+	node->prev_ctx_node = &ctx->list;
+
+	ctx = getCurrentContext(node, false);
+	if (ctx == NULL)
+	{
+		/* if there is no current context, initialize the current scan */
+		node->ss.ps.chgParam = NULL;
+		node->ss.ss_currentScanDesc = NULL;
+	}
+	else
+	{
+		/* if there is the current context already, use it */
+
+		Assert(ctx->chgParam == NULL);
+		node->ss.ps.chgParam = NULL;
+
+		/* ctx->scanDesc can be NULL if ss_skipLabelScan */
+		node->ss.ss_currentScanDesc = ctx->scanDesc;
+	}
+}
+
+void
+ExecPrevSeqScanContext(SeqScanState *node)
+{
+	SeqScanContext *ctx;
+	dlist_node *ctx_node;
+
+	/*
+	 * Store the current ss_currentScanDesc. It will be reused when the current
+	 * scan is re-scanned next time.
+	 */
+	ctx = getCurrentContext(node, true);
+
+	/* if chgParam is not NULL, free it now */
+	if (node->ss.ps.chgParam != NULL)
+	{
+		bms_free(node->ss.ps.chgParam);
+		node->ss.ps.chgParam = NULL;
+	}
+
+	ctx->chgParam = NULL;
+	ctx->scanDesc = node->ss.ss_currentScanDesc;
+
+	/* make the previous context current context */
+	ctx_node = node->prev_ctx_node;
+	Assert(ctx_node != &node->ctxs_head.head);
+
+	if (dlist_has_prev(&node->ctxs_head, ctx_node))
+		node->prev_ctx_node = dlist_prev_node(&node->ctxs_head, ctx_node);
+	else
+		node->prev_ctx_node = &node->ctxs_head.head;
+
+	/* restore */
+	ctx = dlist_container(SeqScanContext, list, ctx_node);
+	node->ss.ps.chgParam = ctx->chgParam;
+	node->ss.ss_currentScanDesc = ctx->scanDesc;
+}
+
+static SeqScanContext *
+getCurrentContext(SeqScanState *node, bool create)
+{
+	SeqScanContext *ctx;
+
+	if (dlist_has_next(&node->ctxs_head, node->prev_ctx_node))
+	{
+		dlist_node *ctx_node;
+
+		ctx_node = dlist_next_node(&node->ctxs_head, node->prev_ctx_node);
+		ctx = dlist_container(SeqScanContext, list, ctx_node);
+	}
+	else if (create)
+	{
+		ctx = palloc(sizeof(*ctx));
+		ctx->chgParam = NULL;
+		ctx->scanDesc = NULL;
+
+		dlist_push_tail(&node->ctxs_head, &ctx->list);
+	}
+	else
+	{
+		ctx = NULL;
+	}
+
+	return ctx;
 }
 
 /* ----------------------------------------------------------------

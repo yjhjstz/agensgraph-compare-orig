@@ -52,6 +52,7 @@
 #include "commands/comment.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/graphcmds.h"
 #include "commands/policy.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
@@ -456,6 +457,7 @@ static void ATExecGenericOptions(Relation rel, List *options);
 static void ATExecEnableRowSecurity(Relation rel);
 static void ATExecDisableRowSecurity(Relation rel);
 static void ATExecForceNoForceRowSecurity(Relation rel, bool force_rls);
+static void ATExecDisableIndex(Relation rel);
 
 static void copy_relation_data(SMgrRelation rel, SMgrRelation dst,
 				   ForkNumber forkNum, char relpersistence);
@@ -465,6 +467,7 @@ static void RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid,
 								Oid oldRelOid, void *arg);
 static void RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid,
 								 Oid oldrelid, void *arg);
+static bool isPropertyIndex(Oid indexoid);
 static bool is_partition_attr(Relation rel, AttrNumber attnum, bool *used_in_expr);
 static PartitionSpec *transformPartitionSpec(Relation rel, PartitionSpec *partspec, char *strategy);
 static void ComputePartitionAttrs(Relation rel, List *partParams, AttrNumber *partattrs,
@@ -990,6 +993,7 @@ RemoveRelations(DropStmt *drop)
 			break;
 
 		case OBJECT_INDEX:
+		case OBJECT_PROPERTY_INDEX:
 			relkind = RELKIND_INDEX;
 			break;
 
@@ -1054,6 +1058,17 @@ RemoveRelations(DropStmt *drop)
 			DropErrorMsgNonExistent(rel, relkind, drop->missing_ok);
 			continue;
 		}
+
+
+		if (drop->removeType == OBJECT_PROPERTY_INDEX &&
+			!isPropertyIndex(relOid))
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("\"%s\" is not property index", rel->relname)));
+		if (drop->removeType == OBJECT_INDEX && isPropertyIndex(relOid))
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("\"%s\" is property index", rel->relname)));
 
 		/* OK, we're ready to delete this one */
 		obj.classId = RelationRelationId;
@@ -1178,6 +1193,44 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 		if (OidIsValid(state->partParentOid))
 			LockRelationOid(state->partParentOid, AccessExclusiveLock);
 	}
+}
+
+static bool
+isPropertyIndex(Oid indexoid)
+{
+	Form_pg_index index;
+	HeapTuple	indexTuple;
+	bool		retval = true;
+	int			i;
+
+	/* Fetch pg_index tuple of source index. */
+	indexTuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
+	if (!HeapTupleIsValid(indexTuple))		/* should not happen */
+		elog(ERROR, "cache lookup failed for index %u", indexoid);
+	index = (Form_pg_index) GETSTRUCT(indexTuple);
+
+	/*
+	 * If this index is a table for graph label and is an expressional index,
+	 * decide this is property index.
+	 */
+	if (!OidIsValid(get_relid_laboid(index->indrelid)))
+	{
+		retval = false;
+	}
+	else
+	{
+		for (i = 0; i < index->indnatts; i++)
+		{
+			if (index->indkey.values[i] != 0)
+			{
+				retval = false;
+				break;
+			}
+		}
+	}
+
+	ReleaseSysCache(indexTuple);
+	return retval;
 }
 
 /*
@@ -1529,6 +1582,11 @@ truncate_check_rel(Relation rel)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot truncate temporary tables of other sessions")));
 
+	if (OidIsValid(get_relid_laboid(RelationGetRelid(rel))))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot truncate label in graph schema")));
+
 	/*
 	 * Also check for active uses of the relation in the current transaction,
 	 * including open scans and pending AFTER trigger events.
@@ -1629,6 +1687,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 	int			parentsWithOids = 0;
 	bool		have_bogus_defaults = false;
 	int			child_attno;
+	bool		isLabel = false;
 	static Node bogus_marker = {0}; /* marks conflicting defaults */
 	List	   *saved_schema = NIL;
 
@@ -1730,6 +1789,9 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 		TupleConstr *constr;
 		AttrNumber *newattno;
 		AttrNumber	parent_attno;
+
+		if (isLabel == false)
+			isLabel = RangeVarIsLabel(parent);
 
 		/*
 		 * A self-exclusive lock is needed here.  If two backends attempt to
@@ -1853,8 +1915,9 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				 * Yes, try to merge the two column definitions. They must
 				 * have the same type, typmod, and collation.
 				 */
-				ereport(NOTICE,
-						(errmsg("merging multiple inherited definitions of column \"%s\"",
+				if (!isLabel)
+					ereport(NOTICE,
+							(errmsg("merging multiple inherited definitions of column \"%s\"",
 								attributeName)));
 				def = (ColumnDef *) list_nth(inhSchema, exist_attno - 1);
 				typenameTypeIdAndMod(NULL, def->typeName, &defTypeId, &deftypmod);
@@ -2078,9 +2141,12 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				 * have the same type, typmod, and collation.
 				 */
 				if (exist_attno == schema_attno)
-					ereport(NOTICE,
-							(errmsg("merging column \"%s\" with inherited definition",
-									attributeName)));
+				{
+					if (!isLabel)
+						ereport(NOTICE,
+								(errmsg("merging column \"%s\" with inherited definition",
+										attributeName)));
+				}
 				else
 					ereport(NOTICE,
 							(errmsg("moving and merging column \"%s\" with inherited definition", attributeName),
@@ -3380,6 +3446,10 @@ AlterTableGetLockLevel(List *cmds)
 				cmd_lockmode = AccessExclusiveLock;
 				break;
 
+			case AT_DisableIndex:
+				cmd_lockmode = AccessShareLock;
+				break;
+
 			default:			/* oops */
 				elog(ERROR, "unrecognized alter table type: %d",
 					 (int) cmd->subtype);
@@ -3714,6 +3784,10 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 		case AT_DetachPartition:
 			ATSimplePermissions(rel, ATT_TABLE);
 			/* No command-specific prep needed */
+			pass = AT_PASS_MISC;
+			break;
+		case AT_DisableIndex:
+			ATSimplePermissions(rel, ATT_TABLE);
 			pass = AT_PASS_MISC;
 			break;
 		default:				/* oops */
@@ -4054,6 +4128,9 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			break;
 		case AT_DetachPartition:
 			ATExecDetachPartition(rel, ((PartitionCmd *) cmd->def)->name);
+			break;
+		case AT_DisableIndex:
+			ATExecDisableIndex(rel);
 			break;
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
@@ -9260,6 +9337,8 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 			case OCLASS_PUBLICATION_REL:
 			case OCLASS_SUBSCRIPTION:
 			case OCLASS_TRANSFORM:
+			case OCLASS_GRAPH:
+			case OCLASS_LABEL:
 
 				/*
 				 * We don't expect any of these sorts of objects to depend on
@@ -12325,6 +12404,12 @@ ATExecGenericOptions(Relation rel, List *options)
 	heap_freetuple(tuple);
 }
 
+static void
+ATExecDisableIndex(Relation rel)
+{
+	DisableIndexLabel(rel->rd_id);
+}
+
 /*
  * Preparation phase for SET LOGGED/UNLOGGED
  *
@@ -13636,9 +13721,17 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd)
 	partConstraint = list_concat(get_qual_from_partbound(attachrel, rel,
 														 cmd->bound),
 								 RelationGetPartitionQual(rel));
+
+	/*
+	 * Run the partition quals through const-simplification similar to check
+	 * constraints.  We skip canonicalize_qual, though, because partition
+	 * quals should be in canonical form already; also, since the qual is in
+	 * implicit-AND format, we'd have to explicitly convert it to explicit-AND
+	 * format and back again.
+	 */
 	partConstraint = (List *) eval_const_expressions(NULL,
 													 (Node *) partConstraint);
-	partConstraint = (List *) canonicalize_qual((Expr *) partConstraint);
+
 	partConstraint = list_make1(make_ands_explicit(partConstraint));
 
 	/*
@@ -13720,13 +13813,11 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd)
 			 * to detect valid matches without this.
 			 */
 			cexpr = eval_const_expressions(NULL, cexpr);
-			cexpr = (Node *) canonicalize_qual((Expr *) cexpr);
+			cexpr = (Node *) canonicalize_qual_ext((Expr *) cexpr, true);
 
 			existConstraint = list_concat(existConstraint,
 										  make_ands_implicit((Expr *) cexpr));
 		}
-
-		existConstraint = list_make1(make_ands_explicit(existConstraint));
 
 		/* And away we go ... */
 		if (predicate_implied_by(partConstraint, existConstraint, true))

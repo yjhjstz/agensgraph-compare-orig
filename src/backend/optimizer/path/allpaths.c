@@ -541,6 +541,9 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 	/* This should only be called for baserels and appendrel children. */
 	Assert(IS_SIMPLE_REL(rel));
 
+	if (root->hasVLEJoinRTE)
+		return;
+
 	/* Assorted checks based on rtekind. */
 	switch (rte->rtekind)
 	{
@@ -706,7 +709,8 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	create_index_paths(root, rel);
 
 	/* Consider TID scans */
-	create_tidscan_paths(root, rel);
+	if (!root->hasVLEJoinRTE)
+		create_tidscan_paths(root, rel);
 }
 
 /*
@@ -1858,7 +1862,7 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 * XXX Are there any cases where we want to make a policy decision not to
 	 * push down a pushable qual, because it'd result in a worse plan?
 	 */
-	if (rel->baserestrictinfo != NIL &&
+	if (rel->baserestrictinfo != NIL && !rte->isVLE &&
 		subquery_is_pushdown_safe(subquery, subquery, &safetyInfo))
 	{
 		/* OK to consider pushing down individual quals */
@@ -1892,7 +1896,8 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 * The upper query might not use all the subquery's output columns; if
 	 * not, we can simplify.
 	 */
-	remove_unused_subquery_outputs(subquery, rel);
+	if (!rte->isVLE)
+		remove_unused_subquery_outputs(subquery, rel);
 
 	/*
 	 * We can safely pass the outer tuple_fraction down to the subquery if the
@@ -2127,7 +2132,8 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	cteplan = (Plan *) list_nth(root->glob->subplans, plan_id - 1);
 
 	/* Mark rel with estimated output rows, width, etc */
-	set_cte_size_estimates(root, rel, cteplan->plan_rows);
+	set_cte_size_estimates(root, rel, cteplan->plan_rows,
+						   DEFAULT_RECURSIVEUNION_RTERM_ITER_CNT);
 
 	/*
 	 * We don't support pushing join clauses into the quals of a CTE scan, but
@@ -2206,7 +2212,7 @@ set_worktable_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		elog(ERROR, "could not find path for CTE \"%s\"", rte->ctename);
 
 	/* Mark rel with estimated output rows, width, etc */
-	set_cte_size_estimates(root, rel, ctepath->rows);
+	set_cte_size_estimates(root, rel, ctepath->rows, cteroot->max_hoop);
 
 	/*
 	 * We don't support pushing join clauses into the quals of a worktable
@@ -2979,6 +2985,16 @@ remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel)
 	 * time: all its output columns must be used in the distinctClause.
 	 */
 	if (subquery->distinctClause && !subquery->hasDistinctOn)
+		return;
+
+	/*
+	 * Do nothing if subquery is ModifyGraph. We need all the target
+	 * entries in it to get the result of subquery in it.
+	 */
+	if (subquery->commandType == CMD_GRAPHWRITE)
+		return;
+
+	if (subquery->shortestpathSource)
 		return;
 
 	/*

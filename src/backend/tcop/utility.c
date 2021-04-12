@@ -5,6 +5,7 @@
  *	  commands.  At one time acted as an interface between the Lisp and C
  *	  systems.
  *
+ * Portions Copyright (c) 2018, Bitnine Inc.
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -16,11 +17,13 @@
  */
 #include "postgres.h"
 
+#include "ag_const.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "catalog/ag_graph_fn.h"
 #include "catalog/catalog.h"
 #include "catalog/namespace.h"
 #include "catalog/toasting.h"
@@ -38,6 +41,7 @@
 #include "commands/event_trigger.h"
 #include "commands/explain.h"
 #include "commands/extension.h"
+#include "commands/graphcmds.h"
 #include "commands/matview.h"
 #include "commands/lockcmds.h"
 #include "commands/policy.h"
@@ -217,6 +221,12 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateSubscriptionStmt:
 		case T_AlterSubscriptionStmt:
 		case T_DropSubscriptionStmt:
+		case T_CreateGraphStmt:
+		case T_CreateLabelStmt:
+		case T_AlterLabelStmt:
+		case T_CreateConstraintStmt:
+		case T_DropConstraintStmt:
+		case T_CreatePropertyIndexStmt:
 			PreventCommandIfReadOnly(CreateCommandTag(parsetree));
 			PreventCommandIfParallelMode(CreateCommandTag(parsetree));
 			break;
@@ -806,6 +816,12 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 												"REINDEX DATABASE");
 						ReindexMultipleTables(stmt->name, stmt->kind, stmt->options);
 						break;
+					case REINDEX_OBJECT_VLABEL:
+						ReindexLabel(stmt->relation, stmt->options, OBJECT_VLABEL);
+						break;
+					case REINDEX_OBJECT_ELABEL:
+						ReindexLabel(stmt->relation, stmt->options, OBJECT_ELABEL);
+						break;
 					default:
 						elog(ERROR, "unrecognized object type: %d",
 							 (int) stmt->kind);
@@ -923,6 +939,13 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 				break;
 			}
 
+		case T_DisableIndexStmt:
+			{
+				DisableIndexStmt *stmt = (DisableIndexStmt *) parsetree;
+				DisableIndexCommand(stmt);
+				break;
+			}
+
 		default:
 			/* All other statement types have event trigger support */
 			ProcessUtilitySlow(pstate, pstmt, queryString,
@@ -1003,6 +1026,8 @@ ProcessUtilitySlow(ParseState *pstate,
 						{
 							Datum		toast_options;
 							static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
+
+							CheckInheritLabel((CreateStmt *) stmt);
 
 							/* Create the table itself */
 							address = DefineRelation((CreateStmt *) stmt,
@@ -1087,6 +1112,7 @@ ProcessUtilitySlow(ParseState *pstate,
 				}
 				break;
 
+			case T_AlterLabelStmt:
 			case T_AlterTableStmt:
 				{
 					AlterTableStmt *atstmt = (AlterTableStmt *) parsetree;
@@ -1094,6 +1120,14 @@ ProcessUtilitySlow(ParseState *pstate,
 					List	   *stmts;
 					ListCell   *l;
 					LOCKMODE	lockmode;
+
+					if (nodeTag(parsetree) == T_AlterLabelStmt)
+					{
+						atstmt = transformAlterLabelStmt(
+													(AlterLabelStmt *) atstmt);
+						if (atstmt == NULL)
+							break;
+					}
 
 					/*
 					 * Figure out lock mode, and acquire lock.  This also does
@@ -1643,6 +1677,102 @@ ProcessUtilitySlow(ParseState *pstate,
 				address = AlterCollation((AlterCollationStmt *) parsetree);
 				break;
 
+			case T_CreateGraphStmt:
+				CreateGraphCommand((CreateGraphStmt *) parsetree, queryString,
+									pstmt->stmt_location, pstmt->stmt_len);
+				commandCollected = true;
+				break;
+
+			case T_CreateLabelStmt:
+				CreateLabelCommand((CreateLabelStmt *) parsetree, queryString,
+								   pstmt->stmt_location, pstmt->stmt_len,
+								   params);
+				/* stashed internally */
+				commandCollected = true;
+				break;
+
+			case T_CreateConstraintStmt:
+				CreateConstraintCommand((CreateConstraintStmt *) parsetree,
+										queryString, pstmt->stmt_location,
+										pstmt->stmt_len, params);
+				commandCollected = true;
+				break;
+
+			case T_DropConstraintStmt:
+				DropConstraintCommand((DropConstraintStmt *) parsetree,
+									  queryString, pstmt->stmt_location,
+									  pstmt->stmt_len, params);
+				commandCollected = true;
+				break;
+
+			/* see above case T_IndexStmt */
+			case T_CreatePropertyIndexStmt:
+				{
+					CreatePropertyIndexStmt *stmt;
+					IndexStmt  *idxstmt;
+					Oid			relid;
+					LOCKMODE	lockmode;
+
+					stmt = (CreatePropertyIndexStmt *) parsetree;
+					if (stmt->concurrent)
+						PreventTransactionChain(isTopLevel,
+										"CREATE PROPERTY INDEX CONCURRENTLY");
+
+					/* Parser prevent to input graph name for label. */
+					Assert(stmt->relation->schemaname == NULL);
+					stmt->relation->schemaname = get_graph_path(true);
+
+					if (!RangeVarIsLabel(stmt->relation))
+					{
+						elog(ERROR, "label \"%s\" does not exist",
+							 stmt->relation->relname);
+					}
+
+					/*
+					 * Look up the relation OID just once, right here at the
+					 * beginning, so that we don't end up repeating the name
+					 * lookup later and latching onto a different relation
+					 * partway through.  To avoid lock upgrade hazards, it's
+					 * important that we take the strongest lock that will
+					 * eventually be needed here, so the lockmode calculation
+					 * needs to match what DefineIndex() does.
+					 */
+					lockmode = stmt->concurrent ? ShareUpdateExclusiveLock
+												: ShareLock;
+					relid =
+						RangeVarGetRelidExtended(stmt->relation, lockmode,
+												 false, false,
+												 RangeVarCallbackOwnsRelation,
+												 NULL);
+
+					/* Run parse analysis ... */
+					idxstmt = transformCreatePropertyIndexStmt(relid, stmt,
+															   queryString);
+
+					/* ... and do it */
+					EventTriggerAlterTableStart(parsetree);
+					address =
+						DefineIndex(relid,		/* OID of heap relation */
+									idxstmt,
+									InvalidOid, /* no predefined OID */
+									false,		/* is_alter_table */
+									true,		/* check_rights */
+									true,		/* check_not_in_use */
+									false,		/* skip_build */
+									false);		/* quiet */
+
+					/*
+					 * Add the CREATE INDEX node itself to stash right away;
+					 * if there were any commands stashed in the ALTER TABLE
+					 * code, we need them to appear after this one.
+					 */
+					EventTriggerCollectSimpleCommand(address, secondaryObject,
+													 parsetree);
+					commandCollected = true;
+					EventTriggerAlterTableEnd();
+				}
+				break;
+
 			default:
 				elog(ERROR, "unrecognized node type: %d",
 					 (int) nodeTag(parsetree));
@@ -1683,6 +1813,28 @@ ExecDropStmt(DropStmt *stmt, bool isTopLevel)
 {
 	switch (stmt->removeType)
 	{
+		case OBJECT_PROPERTY_INDEX:
+			{
+				char	   *graphname = get_graph_path(true);
+				ListCell   *lc;
+
+				Assert(stmt->concurrent == false);
+
+				/* set graph path */
+				foreach(lc, stmt->objects)
+				{
+					List	   *object = lfirst(lc);
+
+					if (list_length(object) == 1)
+						object = lcons(makeString(graphname), object);
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("improper property index name")));
+				}
+			}
+			/* fail through */
+
 		case OBJECT_INDEX:
 			if (stmt->concurrent)
 				PreventTransactionChain(isTopLevel,
@@ -1696,6 +1848,7 @@ ExecDropStmt(DropStmt *stmt, bool isTopLevel)
 		case OBJECT_FOREIGN_TABLE:
 			RemoveRelations(stmt);
 			break;
+
 		default:
 			RemoveObjects(stmt);
 			break;
@@ -1957,6 +2110,9 @@ AlterObjectTypeCommandTag(ObjectType objtype)
 		case OBJECT_POLICY:
 			tag = "ALTER POLICY";
 			break;
+		case OBJECT_PROPERTY_INDEX:
+			tag = "ALTER PROPERTY INDEX";
+			break;
 		case OBJECT_ROLE:
 			tag = "ALTER ROLE";
 			break;
@@ -2012,6 +2168,15 @@ AlterObjectTypeCommandTag(ObjectType objtype)
 		case OBJECT_STATISTIC_EXT:
 			tag = "ALTER STATISTICS";
 			break;
+		case OBJECT_GRAPH:
+			tag = "ALTER GRAPH";
+			break;
+		case OBJECT_VLABEL:
+			tag = "ALTER VLABEL";
+			break;
+		case OBJECT_ELABEL:
+			tag = "ALTER ELABEL";
+			break;
 		default:
 			tag = "???";
 			break;
@@ -2059,6 +2224,10 @@ CreateCommandTag(Node *parsetree)
 
 		case T_SelectStmt:
 			tag = "SELECT";
+			break;
+
+		case T_CypherStmt:
+			tag = "CYPHER";
 			break;
 
 			/* utility statements --- same whether raw or cooked */
@@ -2147,6 +2316,58 @@ CreateCommandTag(Node *parsetree)
 			tag = "CREATE TABLE";
 			break;
 
+		case T_CreateGraphStmt:
+			tag = "CREATE GRAPH";
+			break;
+
+		case T_CreateLabelStmt:
+			{
+				CreateLabelStmt *stmt = (CreateLabelStmt *) parsetree;
+
+				switch (stmt->labelKind)
+				{
+					case LABEL_VERTEX:
+						tag = "CREATE VLABEL";
+						break;
+					case LABEL_EDGE:
+						tag = "CREATE ELABEL";
+						break;
+					default:
+						tag = "???";
+						break;
+				}
+			}
+			break;
+
+		case T_CreateConstraintStmt:
+			tag = "CREATE CONSTRAINT";
+			break;
+
+		case T_DropConstraintStmt:
+			tag = "DROP CONSTRAINT";
+			break;
+
+		case T_AlterLabelStmt:
+			{
+				switch (((AlterLabelStmt*) parsetree)->relkind)
+				{
+					case OBJECT_VLABEL:
+						tag = "ALTER VLABEL";
+						break;
+					case OBJECT_ELABEL:
+						tag = "ALTER ELABEL";
+						break;
+					default:
+						tag = "???";
+						break;
+				}
+			}
+			break;
+
+		case T_CreatePropertyIndexStmt:
+			tag = "CREATE PROPERTY INDEX";
+			break;
+
 		case T_CreateTableSpaceStmt:
 			tag = "CREATE TABLESPACE";
 			break;
@@ -2224,6 +2445,9 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_INDEX:
 					tag = "DROP INDEX";
+					break;
+				case OBJECT_PROPERTY_INDEX:
+					tag = "DROP PROPERTY INDEX";
 					break;
 				case OBJECT_TYPE:
 					tag = "DROP TYPE";
@@ -2308,6 +2532,15 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_STATISTIC_EXT:
 					tag = "DROP STATISTICS";
+					break;
+				case OBJECT_GRAPH:
+					tag = "DROP GRAPH";
+					break;
+				case OBJECT_ELABEL:
+					tag = "DROP ELABEL";
+					break;
+				case OBJECT_VLABEL:
+					tag = "DROP VLABEL";
 					break;
 				default:
 					tag = "???";
@@ -2892,6 +3125,10 @@ GetCommandLogLevel(Node *parsetree)
 				lev = LOGSTMT_ALL;
 			break;
 
+		case T_CypherStmt:
+			lev = LOGSTMT_ALL;
+			break;
+
 			/* utility statements --- same whether raw or cooked */
 		case T_TransactionStmt:
 			lev = LOGSTMT_ALL;
@@ -2915,6 +3152,18 @@ GetCommandLogLevel(Node *parsetree)
 
 		case T_CreateStmt:
 		case T_CreateForeignTableStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateGraphStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateLabelStmt:
+		case T_AlterLabelStmt:
+		case T_CreateConstraintStmt:
+		case T_DropConstraintStmt:
+		case T_CreatePropertyIndexStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

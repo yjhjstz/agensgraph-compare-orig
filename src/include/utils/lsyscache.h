@@ -3,6 +3,7 @@
  * lsyscache.h
  *	  Convenience routines for common queries in the system catalog cache.
  *
+ * Portions Copyright (c) 2018, Bitnine Inc.
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -176,6 +177,17 @@ extern void free_attstatsslot(AttStatsSlot *sslot);
 extern char *get_namespace_name(Oid nspid);
 extern char *get_namespace_name_or_temp(Oid nspid);
 extern Oid	get_range_subtype(Oid rangeOid);
+
+extern char *get_graphid_graphname(Oid graphid);
+extern Oid	get_graphname_oid(const char *graphname);
+extern char *get_labid_labname(Oid graphid, uint16 labid);
+extern Oid	get_labid_relid(Oid graphid, uint16 labid);
+extern bool labid_exists(Oid graphid, uint16 labid);
+extern Oid	get_labname_laboid(const char *labname, Oid graphid);
+extern uint16 get_labname_labid(const char *labname, Oid graphid);
+extern Oid	get_laboid_relid(Oid laboid);
+extern Oid	get_relid_laboid(Oid relid);
+extern Oid	get_labid_typeoid(Oid graphid, uint16 labid);
 
 #define type_is_array(typid)  (get_element_type(typid) != InvalidOid)
 /* type_is_array_domain accepts both plain arrays and domains over arrays */

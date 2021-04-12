@@ -2201,13 +2201,13 @@ exec_stmt_fori(PLpgSQL_execstate *estate, PLpgSQL_stmt_fori *stmt)
 		 */
 		if (stmt->reverse)
 		{
-			if ((int32) (loop_value - step_value) > loop_value)
+			if (loop_value < (PG_INT32_MIN + step_value))
 				break;
 			loop_value -= step_value;
 		}
 		else
 		{
-			if ((int32) (loop_value + step_value) < loop_value)
+			if (loop_value > (PG_INT32_MAX - step_value))
 				break;
 			loop_value += step_value;
 		}
@@ -3732,6 +3732,10 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("cannot begin/end transactions in PL/pgSQL"),
 					 errhint("Use a BEGIN block with an EXCEPTION clause instead.")));
+		case SPI_ERROR_GRAPHWRITE:
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot modify graph in PL/pgSQL")));
 
 		default:
 			elog(ERROR, "SPI_execute_plan_with_paramlist failed executing query \"%s\": %s",

@@ -175,6 +175,8 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	else
 		rel = heap_openrv(stmt->relation, ShareRowExclusiveLock);
 
+	if (OidIsValid(get_relid_laboid(rel->rd_id)))
+		elog(ERROR, "cannot create trigger on graph label");
 	/*
 	 * Triggers must be on tables or views, and there are additional
 	 * relation-type-specific restrictions.
@@ -326,6 +328,9 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("INSTEAD OF triggers cannot have column lists")));
 	}
+
+	if (OidIsValid(get_relid_laboid(rel->rd_id)))
+		elog(ERROR, "cannot create trigger on graph label");
 
 	/*
 	 * We don't yet support naming ROW transition variables, but the parser
@@ -2815,7 +2820,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 			return NULL;		/* "do nothing" */
 		}
 	}
-	if (trigtuple != fdw_trigtuple)
+	if (trigtuple != fdw_trigtuple && trigtuple != newtuple)
 		heap_freetuple(trigtuple);
 
 	if (newtuple != slottuple)

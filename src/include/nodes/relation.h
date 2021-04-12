@@ -75,6 +75,8 @@ typedef enum UpperRelationKind
 	UPPERREL_WINDOW,			/* result of window functions, if any */
 	UPPERREL_DISTINCT,			/* result of "SELECT DISTINCT", if any */
 	UPPERREL_ORDERED,			/* result of ORDER BY, if any */
+	UPPERREL_SHORTESTPATH,		/* result of shortestpath */
+	UPPERREL_DIJKSTRA,			/* result of dijkstra */
 	UPPERREL_FINAL				/* result of any remaining top-level actions */
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
@@ -303,10 +305,12 @@ typedef struct PlannerInfo
 	bool		hasPseudoConstantQuals; /* true if any RestrictInfo has
 										 * pseudoconstant = true */
 	bool		hasRecursion;	/* true if planning a recursive WITH item */
+	bool		hasVLEJoinRTE;  /* has VLE join or a child node of VLE join */
 
 	/* These fields are used only when hasRecursion is true: */
 	int			wt_param_id;	/* PARAM_EXEC ID for the work table */
 	struct Path *non_recursive_path;	/* a path for non-recursive term */
+	int			max_hoop;		/* used to estimate worktable rows */
 
 	/* These fields are workspace for createplan.c */
 	Relids		curOuterRels;	/* outer rels above current node */
@@ -1303,6 +1307,9 @@ typedef struct JoinPath
 	 * joinrestrictinfo is needed in JoinPath, and can't be merged into the
 	 * parent RelOptInfo.
 	 */
+
+	int			minhops;
+	int			maxhops;
 } JoinPath;
 
 /*
@@ -1551,6 +1558,7 @@ typedef struct RecursiveUnionPath
 	List	   *distinctList;	/* SortGroupClauses identifying target cols */
 	int			wtParam;		/* ID of Param representing work table */
 	double		numGroups;		/* estimated number of groups in input */
+	int			maxDepth;		/* level of recursion */
 } RecursiveUnionPath;
 
 /*
@@ -1600,6 +1608,63 @@ typedef struct LimitPath
 	Node	   *limitCount;		/* COUNT parameter, or NULL if none */
 } LimitPath;
 
+/*
+ * EagerPath represents use of a Eager plan node.
+ */
+typedef struct EagerPath
+{
+	Path		path;
+	Path	   *subpath;
+	List	   *modifiedlist;
+} EagerPath;
+
+/*
+ * ModifyGraphPath
+ */
+typedef struct ModifyGraphPath
+{
+	Path		path;
+	GraphWriteOp operation;
+	bool		last;			/* is this for the last clause? */
+	List	   *targets;		/* relation Oid's of target labels */
+	Path	   *subpath;		/* Path producing source data */
+	uint32		nr_modify;		/* number of clauses that modifies graph
+								   before this */
+	bool		detach;			/* DETACH DELETE */
+	bool		eagerness;
+	List	   *pattern;		/* graph pattern (list of paths) for CREATE */
+	List	   *exprs;			/* expression list for DELETE */
+	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
+} ModifyGraphPath;
+
+typedef struct ShortestpathPath
+{
+	JoinPath	jpath;
+	Node	   *end_id_left;
+	Node	   *end_id_right;
+	Node	   *tableoid_left;
+	Node	   *tableoid_right;
+	Node	   *ctid_left;
+	Node	   *ctid_right;
+	Node	   *source;
+	Node	   *target;
+	long        minhops;
+	long        maxhops;
+	long        limit;
+} ShortestpathPath;
+
+typedef struct DijkstraPath
+{
+	Path 		path;
+	Path	   *subpath;
+	int	   		weight;
+	bool		weight_out;
+	Node	   *end_id;
+	Node	   *edge_id;
+	Node	   *source;
+	Node	   *target;
+	Node	   *limit;
+} DijkstraPath;
 
 /*
  * Restriction clause info.
@@ -1669,7 +1734,8 @@ typedef struct LimitPath
  * if we decide that it can be pushed down into the nullable side of the join.
  * In that case it acts as a plain filter qual for wherever it gets evaluated.
  * (In short, is_pushed_down is only false for non-degenerate outer join
- * conditions.  Possibly we should rename it to reflect that meaning?)
+ * conditions.  Possibly we should rename it to reflect that meaning?  But
+ * see also the comments for RINFO_IS_PUSHED_DOWN, below.)
  *
  * RestrictInfo nodes also contain an outerjoin_delayed flag, which is true
  * if the clause's applicability must be delayed due to any outer joins
@@ -1810,6 +1876,20 @@ typedef struct RestrictInfo
 } RestrictInfo;
 
 /*
+ * This macro embodies the correct way to test whether a RestrictInfo is
+ * "pushed down" to a given outer join, that is, should be treated as a filter
+ * clause rather than a join clause at that outer join.  This is certainly so
+ * if is_pushed_down is true; but examining that is not sufficient anymore,
+ * because outer-join clauses will get pushed down to lower outer joins when
+ * we generate a path for the lower outer join that is parameterized by the
+ * LHS of the upper one.  We can detect such a clause by noting that its
+ * required_relids exceed the scope of the join.
+ */
+#define RINFO_IS_PUSHED_DOWN(rinfo, joinrelids) \
+	((rinfo)->is_pushed_down || \
+	 !bms_is_subset((rinfo)->required_relids, joinrelids))
+
+/*
  * Since mergejoinscansel() is a relatively expensive function, and would
  * otherwise be invoked many times while planning a large join tree,
  * we go out of our way to cache its results.  Each mergejoinable
@@ -1926,6 +2006,9 @@ typedef struct SpecialJoinInfo
 	bool		semi_can_hash;	/* true if semi_operators are all hash */
 	List	   *semi_operators; /* OIDs of equality join operators */
 	List	   *semi_rhs_exprs; /* righthand-side expressions of these ops */
+	/* Fields for JOIN_VLE */
+	int			min_hops;
+	int			max_hops;
 } SpecialJoinInfo;
 
 /*

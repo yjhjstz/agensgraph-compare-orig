@@ -69,6 +69,7 @@ typedef enum NodeTag
 	T_CustomScan,
 	T_Join,
 	T_NestLoop,
+	T_NestLoopVLE,
 	T_MergeJoin,
 	T_HashJoin,
 	T_Material,
@@ -83,6 +84,11 @@ typedef enum NodeTag
 	T_SetOp,
 	T_LockRows,
 	T_Limit,
+	T_Eager,
+	T_ModifyGraph,
+	T_Shortestpath,
+	T_Hash2Side,
+	T_Dijkstra,
 	/* these aren't subclasses of Plan: */
 	T_NestLoopParam,
 	T_PlanRowMark,
@@ -121,11 +127,13 @@ typedef enum NodeTag
 	T_CustomScanState,
 	T_JoinState,
 	T_NestLoopState,
+	T_NestLoopVLEState,
 	T_MergeJoinState,
 	T_HashJoinState,
 	T_MaterialState,
 	T_SortState,
 	T_GroupState,
+	T_EagerState,
 	T_AggState,
 	T_WindowAggState,
 	T_UniqueState,
@@ -135,6 +143,10 @@ typedef enum NodeTag
 	T_SetOpState,
 	T_LockRowsState,
 	T_LimitState,
+	T_ModifyGraphState,
+	T_ShortestpathState,
+	T_Hash2SideState,
+	T_DijkstraState,
 
 	/*
 	 * TAGS FOR PRIMITIVE NODES (primnodes.h)
@@ -191,6 +203,13 @@ typedef enum NodeTag
 	T_FromExpr,
 	T_OnConflictExpr,
 	T_IntoClause,
+	T_CypherTypeCast,
+	T_CypherMapExpr,
+	T_CypherListExpr,
+	T_CypherListCompExpr,
+	T_CypherListCompVar,
+	T_CypherAccessExpr,
+	T_CypherIndices,
 
 	/*
 	 * TAGS FOR EXPRESSION STATE NODES (execnodes.h)
@@ -251,6 +270,10 @@ typedef enum NodeTag
 	T_LockRowsPath,
 	T_ModifyTablePath,
 	T_LimitPath,
+	T_EagerPath,
+	T_ModifyGraphPath,
+	T_ShortestpathPath,
+	T_DijkstraPath,
 	/* these aren't subclasses of Path: */
 	T_EquivalenceClass,
 	T_EquivalenceMember,
@@ -413,6 +436,14 @@ typedef enum NodeTag
 	T_DropSubscriptionStmt,
 	T_CreateStatsStmt,
 	T_AlterCollationStmt,
+	T_CreateGraphStmt,
+	T_CreateLabelStmt,
+	T_AlterLabelStmt,
+	T_CreateConstraintStmt,
+	T_DropConstraintStmt,
+	T_CreatePropertyIndexStmt,
+	T_DisableIndexStmt,
+	T_CypherStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)
@@ -468,6 +499,23 @@ typedef enum NodeTag
 	T_PartitionBoundSpec,
 	T_PartitionRangeDatum,
 	T_PartitionCmd,
+	T_CypherListComp,
+	T_CypherGenericExpr,
+	T_CypherSubPattern,
+	T_CypherClause,
+	T_CypherMatchClause,
+	T_CypherProjection,
+	T_CypherCreateClause,
+	T_CypherDeleteClause,
+	T_CypherSetClause,
+	T_CypherMergeClause,
+	T_CypherLoadClause,
+	T_CypherUnwindClause,
+	T_CypherPath,
+	T_CypherNode,
+	T_CypherRel,
+	T_CypherName,
+	T_CypherSetProp,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)
@@ -497,7 +545,16 @@ typedef enum NodeTag
 	T_FdwRoutine,				/* in foreign/fdwapi.h */
 	T_IndexAmRoutine,			/* in access/amapi.h */
 	T_TsmRoutine,				/* in access/tsmapi.h */
-	T_ForeignKeyCacheInfo		/* in utils/rel.h */
+	T_ForeignKeyCacheInfo,		/* in utils/rel.h */
+
+	/*
+	 * TAGS FOR GRAPH NODES (graphnodes.h)
+	 */
+	T_GraphPath,
+	T_GraphVertex,
+	T_GraphEdge,
+	T_GraphSetProp,
+	T_GraphDelElem
 } NodeTag;
 
 /*
@@ -653,6 +710,7 @@ typedef enum CmdType
 	CMD_UPDATE,					/* update stmt */
 	CMD_INSERT,					/* insert stmt */
 	CMD_DELETE,
+	CMD_GRAPHWRITE,				/* graph write query */
 	CMD_UTILITY,				/* cmds like create, destroy, copy, vacuum,
 								 * etc. */
 	CMD_NOTHING					/* dummy command for instead nothing rules
@@ -698,7 +756,14 @@ typedef enum JoinType
 	 * by the executor (nor, indeed, by most of the planner).
 	 */
 	JOIN_UNIQUE_OUTER,			/* LHS path must be made unique */
-	JOIN_UNIQUE_INNER			/* RHS path must be made unique */
+	JOIN_UNIQUE_INNER,			/* RHS path must be made unique */
+
+	/* This is similar to JOIN_LEFT but only for Cypher MERGE clause. */
+	JOIN_CYPHER_MERGE,
+	JOIN_VLE,
+
+	/* For Cypher DELETE */
+	JOIN_CYPHER_DELETE,
 
 	/*
 	 * We might need additional join types someday.
@@ -724,7 +789,15 @@ typedef enum JoinType
 	  ((1 << JOIN_LEFT) | \
 	   (1 << JOIN_FULL) | \
 	   (1 << JOIN_RIGHT) | \
+	   (1 << JOIN_CYPHER_MERGE) | \
+	   (1 << JOIN_CYPHER_DELETE) | \
 	   (1 << JOIN_ANTI))) != 0)
+
+#define IS_GRAPH_JOIN(jointype) \
+	(((1 << (jointype)) & \
+	  ((1 << JOIN_CYPHER_MERGE) | \
+	   (1 << JOIN_VLE) | \
+	   (1 << JOIN_CYPHER_DELETE))) != 0)
 
 /*
  * AggStrategy -
@@ -802,5 +875,20 @@ typedef enum OnConflictAction
 	ONCONFLICT_NOTHING,			/* ON CONFLICT ... DO NOTHING */
 	ONCONFLICT_UPDATE			/* ON CONFLICT ... DO UPDATE */
 } OnConflictAction;
+
+
+/*
+ * GraphWriteOp - enums for type of operation when CMD_GRAPHWRITE
+ *
+ * This is needed in both parsenodes.h and plannodes.h.
+ */
+typedef enum GraphWriteOp
+{
+	GWROP_NONE = 0,
+	GWROP_CREATE,
+	GWROP_DELETE,
+	GWROP_SET,
+	GWROP_MERGE
+} GraphWriteOp;
 
 #endif							/* NODES_H */

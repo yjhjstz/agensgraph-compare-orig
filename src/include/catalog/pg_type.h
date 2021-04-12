@@ -663,6 +663,29 @@ DATA(insert OID = 3926 ( int8range		PGNSP PGUID  -1 f r R f t \054 0 0 3927 rang
 DESCR("range of bigints");
 DATA(insert OID = 3927 ( _int8range		PGNSP PGUID  -1 f b A f t \054 0 3926 0 array_in array_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
 
+/* types for graphs */
+DATA(insert OID = 7001 ( _graphid	PGNSP PGUID -1 f b A f t \054 0 7002 0 array_in array_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define GRAPHIDARRAYOID	7001
+DATA(insert OID = 7002 ( graphid	PGNSP PGUID 8 FLOAT8PASSBYVAL b U f t \054 0 0 7001 graphid_in graphid_out graphid_recv graphid_send - - - d p f 0 -1 0 0 _null_ _null_ _null_ ));
+DESCR("unique ID of vertex/edge");
+#define GRAPHIDOID		7002
+DATA(insert OID = 7011 ( _vertex	PGNSP PGUID -1 f b A f t \054 0 7012 0 array_in _vertex_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define VERTEXARRAYOID	7011
+DATA(insert OID = 7012 ( vertex		PGNSP PGUID -1 f c C f t \054 7010 0 7011 record_in vertex_out record_recv record_send - - - d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define VERTEXOID		7012
+DATA(insert OID = 7021 ( _edge		PGNSP PGUID -1 f b A f t \054 0 7022 0 array_in _edge_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define EDGEARRAYOID	7021
+DATA(insert OID = 7022 ( edge		PGNSP PGUID -1 f c C f t \054 7020 0 7021 record_in edge_out record_recv record_send - - - d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define EDGEOID			7022
+DATA(insert OID = 7031 ( _graphpath	PGNSP PGUID -1 f b A f t \054 0 7032 0 array_in array_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define GRAPHPATHARRAYOID	7031
+DATA(insert OID = 7032 ( graphpath	PGNSP PGUID -1 f c C f t \054 7030 0 7031 record_in graphpath_out record_recv record_send - - - d x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define GRAPHPATHOID	7032
+DATA(insert OID = 7061 ( _rowid		PGNSP PGUID -1 f b A f t \054 0 7062 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define ROWIDARRAYOID 7061
+DATA(insert OID = 7062 ( rowid		PGNSP PGUID 10 f b U f t \054 0 0 7061 rowid_in rowid_out - - - - - s p f 0 -1 0 0 _null_ _null_ _null_ ));
+#define ROWIDOID 7062
+
 /*
  * pseudo-types
  *

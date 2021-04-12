@@ -18,10 +18,14 @@
 #include "storage/lock.h"
 
 extern List *find_inheritance_children(Oid parentrelId, LOCKMODE lockmode);
+extern List *find_inheritance_children_class(Oid classId, Oid parentrelId,
+											 LOCKMODE lockmode);
 extern List *find_all_inheritors(Oid parentrelId, LOCKMODE lockmode,
 					List **parents);
 extern bool has_subclass(Oid relationId);
 extern bool has_superclass(Oid relationId);
 extern bool typeInheritsFrom(Oid subclassTypeId, Oid superclassTypeId);
+
+extern List *find_all_ancestors(Oid childrelId, LOCKMODE lockmode);
 
 #endif							/* PG_INHERITS_FN_H */

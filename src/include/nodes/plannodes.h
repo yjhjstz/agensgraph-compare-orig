@@ -96,6 +96,8 @@ typedef struct PlannedStmt
 	/* statement location in source string (copied from Query) */
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
+
+	bool		hasGraphwriteClause; /* has modify graph type? */
 } PlannedStmt;
 
 /* macro for fetching the Plan associated with a SubPlan node */
@@ -287,6 +289,7 @@ typedef struct RecursiveUnion
 	AttrNumber *dupColIdx;		/* their indexes in the target list */
 	Oid		   *dupOperators;	/* equality operators to compare with */
 	long		numGroups;		/* estimated number of groups in input */
+	int			maxDepth;		/* level of recursion */
 } RecursiveUnion;
 
 /* ----------------
@@ -538,6 +541,7 @@ typedef struct CteScan
 	Scan		scan;
 	int			ctePlanId;		/* ID of init SubPlan for CTE */
 	int			cteParam;		/* ID of Param representing CTE output */
+	bool		cteStop;
 } CteScan;
 
 /* ----------------
@@ -693,6 +697,13 @@ typedef struct NestLoopParam
 	Var		   *paramval;		/* outer-relation Var to assign to Param */
 } NestLoopParam;
 
+typedef struct NestLoopVLE
+{
+	NestLoop	nl;
+	int			minHops;
+	int			maxHops;
+} NestLoopVLE;
+
 /* ----------------
  *		merge join node
  *
@@ -748,6 +759,7 @@ typedef struct Sort
 	Oid		   *collations;		/* OIDs of collations */
 	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
 } Sort;
+
 
 /* ---------------
  *	 group node -
@@ -1036,5 +1048,68 @@ typedef struct PlanInvalItem
 	int			cacheId;		/* a syscache ID, see utils/syscache.h */
 	uint32		hashValue;		/* hash value of object's cache lookup key */
 } PlanInvalItem;
+
+
+/*
+ * Graph nodes
+ */
+
+typedef struct ModifyGraph
+{
+	Plan		plan;
+	GraphWriteOp operation;
+	bool		last;			/* is this for the last clause? */
+	List	   *targets;		/* relation OID's of target labels */
+	Plan	   *subplan;		/* plan producing source data */
+	uint32		nr_modify;		/* number of clauses that modifies graph
+								   before this */
+	bool		detach;			/* DETACH DELETE */
+	bool		eagerness;		/* need eager mode? */
+	List	   *pattern;		/* graph pattern (list of paths) for CREATE */
+	List	   *exprs;			/* expression list for DELETE */
+	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
+	int			ert_base_index;	/* base index into the es_range_table */
+	int			ert_rtes_added;	/* number of RTEs added to es_range_table */
+} ModifyGraph;
+
+typedef struct Shortestpath
+{
+	Join		join;
+	List	   *hashclauses;
+	AttrNumber  end_id_left;
+	AttrNumber  end_id_right;
+	AttrNumber  tableoid_left;
+	AttrNumber  tableoid_right;
+	AttrNumber  ctid_left;
+	AttrNumber  ctid_right;
+	Node	   *source;
+	Node	   *target;
+	long        minhops;
+	long        maxhops;
+	long        limit;
+} Shortestpath;
+
+typedef struct Hash2Side
+{
+	Plan		plan;
+	Oid			skewTable;		/* outer join key's table OID, or InvalidOid */
+	AttrNumber	skewColumn;		/* outer join key's column #, or zero */
+	bool		skewInherit;	/* is outer join rel an inheritance tree? */
+	Oid			skewColType;	/* datatype of the outer key column */
+	int32		skewColTypmod;	/* typmod of the outer key column */
+	/* all other info is in the parent HashJoin node */
+} Hash2Side;
+
+typedef struct Dijkstra
+{
+	Plan		plan;
+	AttrNumber  weight;
+	bool		weight_out;
+	AttrNumber  end_id;
+	AttrNumber  edge_id;
+	Node	   *source;
+	Node	   *target;
+	Node	   *limit;
+} Dijkstra;
 
 #endif							/* PLANNODES_H */

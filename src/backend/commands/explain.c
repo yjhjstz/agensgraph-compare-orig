@@ -102,6 +102,7 @@ static void show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 				 List *ancestors, ExplainState *es);
 static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
+static void show_hash2side_info(Hash2SideState *hashstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 					ExplainState *es);
 static void show_instrumentation_count(const char *qlabel, int which,
@@ -919,6 +920,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			pname = sname = "BitmapOr";
 			break;
 		case T_NestLoop:
+		case T_NestLoopVLE:
 			pname = sname = "Nested Loop";
 			break;
 		case T_MergeJoin:
@@ -1095,6 +1097,48 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Hash:
 			pname = sname = "Hash";
 			break;
+		case T_ModifyGraph:
+			sname = "ModifyGraph";
+			switch (((ModifyGraph *) plan)->operation)
+			{
+				case GWROP_CREATE:
+					pname = "Graph Create";
+					operation = "Create";
+					break;
+				case GWROP_DELETE:
+					pname = "Graph Delete";
+					operation = "Delete";
+					break;
+				case GWROP_SET:
+					pname = "Graph Set";
+					operation = "Set";
+					break;
+				case GWROP_MERGE:
+					pname = "Graph Merge";
+					operation = "Merge";
+					break;
+				default:
+					pname = "Graph ???";
+					operation = "???";
+					break;
+			}
+			break;
+		case T_Shortestpath:
+			if (((Shortestpath *) plan)->limit == LONG_MAX)
+			{
+				pname = sname = "All Shortestpaths";
+			}
+			else
+			{
+				pname = sname = "Shortestpath";
+			}
+			break;
+		case T_Hash2Side:
+			pname = sname = "Hash2Side";
+			break;
+		case T_Dijkstra:
+			pname = sname = "Dijkstra";
+			break;
 		default:
 			pname = sname = "???";
 			break;
@@ -1195,7 +1239,27 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_ModifyTable:
 			ExplainModifyTarget((ModifyTable *) plan, es);
 			break;
+		case T_ModifyGraph:
+			{
+				ModifyGraph *modifygraph = (ModifyGraph *) plan;
+
+				if (modifygraph->eagerness == true)
+					appendStringInfoString(es->str, " eager");
+			}
+			break;
+		case T_Shortestpath:
+			{
+				Shortestpath *shortestpath = (Shortestpath *) plan;
+
+				appendStringInfo(es->str, " VLE [%ld..", shortestpath->minhops);
+				if (shortestpath->maxhops != LONG_MAX)
+					appendStringInfo(es->str, "%ld]", shortestpath->maxhops);
+				else
+					appendStringInfo(es->str, "]");
+			}
+			break;
 		case T_NestLoop:
+		case T_NestLoopVLE:
 		case T_MergeJoin:
 		case T_HashJoin:
 			{
@@ -1221,6 +1285,15 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					case JOIN_ANTI:
 						jointype = "Anti";
 						break;
+					case JOIN_CYPHER_MERGE:
+						jointype = "CypherMerge";
+						break;
+					case JOIN_CYPHER_DELETE:
+						jointype = "CypherDelete";
+						break;
+					case JOIN_VLE:
+						jointype = "VLE";
+						break;
 					default:
 						jointype = "???";
 						break;
@@ -1231,10 +1304,25 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					 * For historical reasons, the join type is interpolated
 					 * into the node type name...
 					 */
-					if (((Join *) plan)->jointype != JOIN_INNER)
+					if (((Join *) plan)->jointype == JOIN_VLE)
+					{
+						NestLoopVLE *nlvPlan = (NestLoopVLE *) plan;
+
+						appendStringInfo(es->str, " %s [%d..",
+										 jointype, nlvPlan->minHops);
+						if (nlvPlan->maxHops != -1)
+							appendStringInfo(es->str, "%d]", nlvPlan->maxHops);
+						else
+							appendStringInfo(es->str, "]");
+					}
+					else if (((Join *) plan)->jointype != JOIN_INNER)
+					{
 						appendStringInfo(es->str, " %s Join", jointype);
+					}
 					else if (!IsA(plan, NestLoop))
+					{
 						appendStringInfoString(es->str, " Join");
+					}
 				}
 				else
 					ExplainPropertyText("Join Type", jointype, es);
@@ -1562,6 +1650,17 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 2,
 										   planstate, es);
 			break;
+		case T_NestLoopVLE:
+			show_upper_qual(((NestLoopVLE *) plan)->nl.join.joinqual,
+							"Join Filter", planstate, ancestors, es);
+			if (((NestLoopVLE *) plan)->nl.join.joinqual)
+				show_instrumentation_count("Rows Removed by Join Filter", 1,
+										   planstate, es);
+			show_upper_qual(plan->qual, "Filter", planstate, ancestors, es);
+			if (plan->qual)
+				show_instrumentation_count("Rows Removed by Filter", 2,
+										   planstate, es);
+			break;
 		case T_MergeJoin:
 			show_upper_qual(((MergeJoin *) plan)->mergeclauses,
 							"Merge Cond", planstate, ancestors, es);
@@ -1581,6 +1680,19 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_upper_qual(((HashJoin *) plan)->join.joinqual,
 							"Join Filter", planstate, ancestors, es);
 			if (((HashJoin *) plan)->join.joinqual)
+				show_instrumentation_count("Rows Removed by Join Filter", 1,
+										   planstate, es);
+			show_upper_qual(plan->qual, "Filter", planstate, ancestors, es);
+			if (plan->qual)
+				show_instrumentation_count("Rows Removed by Filter", 2,
+										   planstate, es);
+			break;
+		case T_Shortestpath:
+			show_upper_qual(((Shortestpath *) plan)->hashclauses,
+							"Hash Cond", planstate, ancestors, es);
+			show_upper_qual(((Shortestpath *) plan)->join.joinqual,
+							"Join Filter", planstate, ancestors, es);
+			if (((Shortestpath *) plan)->join.joinqual)
 				show_instrumentation_count("Rows Removed by Join Filter", 1,
 										   planstate, es);
 			show_upper_qual(plan->qual, "Filter", planstate, ancestors, es);
@@ -1624,6 +1736,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_Hash:
 			show_hash_info(castNode(HashState, planstate), es);
+			break;
+		case T_Hash2Side:
+			show_hash2side_info((Hash2SideState *) planstate, es);
 			break;
 		default:
 			break;
@@ -1712,6 +1827,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		IsA(plan, SubqueryScan) ||
 		(IsA(planstate, CustomScanState) &&
 		 ((CustomScanState *) planstate)->custom_ps != NIL) ||
+		IsA(plan, ModifyGraph) ||
 		planstate->subPlan;
 	if (haschildren)
 	{
@@ -1769,6 +1885,10 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_CustomScan:
 			ExplainCustomChildren((CustomScanState *) planstate,
 								  ancestors, es);
+			break;
+		case T_ModifyGraph:
+			ExplainNode(((ModifyGraphState *) planstate)->subplan, ancestors,
+						"Subquery", NULL, es);
 			break;
 		default:
 			break;
@@ -2325,6 +2445,54 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 {
 	HashJoinTable hashtable;
 
+	hashtable = hashstate->hashtable;
+
+	if (hashtable)
+	{
+		long		spacePeakKb = (hashtable->spacePeak + 1023) / 1024;
+
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+		{
+			ExplainPropertyLong("Hash Buckets", hashtable->nbuckets, es);
+			ExplainPropertyLong("Original Hash Buckets",
+								hashtable->nbuckets_original, es);
+			ExplainPropertyLong("Hash Batches", hashtable->nbatch, es);
+			ExplainPropertyLong("Original Hash Batches",
+								hashtable->nbatch_original, es);
+			ExplainPropertyLong("Peak Memory Usage", spacePeakKb, es);
+		}
+		else if (hashtable->nbatch_original != hashtable->nbatch ||
+				 hashtable->nbuckets_original != hashtable->nbuckets)
+		{
+			appendStringInfoSpaces(es->str, es->indent * 2);
+			appendStringInfo(es->str,
+							 "Buckets: %d (originally %d)  Batches: %d (originally %d)  Memory Usage: %ldkB\n",
+							 hashtable->nbuckets,
+							 hashtable->nbuckets_original,
+							 hashtable->nbatch,
+							 hashtable->nbatch_original,
+							 spacePeakKb);
+		}
+		else
+		{
+			appendStringInfoSpaces(es->str, es->indent * 2);
+			appendStringInfo(es->str,
+							 "Buckets: %d  Batches: %d  Memory Usage: %ldkB\n",
+							 hashtable->nbuckets, hashtable->nbatch,
+							 spacePeakKb);
+		}
+	}
+}
+
+/*
+ * Show information on hash buckets/batches.
+ */
+static void
+show_hash2side_info(Hash2SideState *hashstate, ExplainState *es)
+{
+	HashJoinTable hashtable;
+
+	Assert(IsA(hashstate, Hash2SideState));
 	hashtable = hashstate->hashtable;
 
 	if (hashtable)

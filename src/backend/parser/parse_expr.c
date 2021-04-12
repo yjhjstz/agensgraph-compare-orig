@@ -26,6 +26,7 @@
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
+#include "parser/parse_cypher_expr.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
@@ -33,6 +34,8 @@
 #include "parser/parse_target.h"
 #include "parser/parse_type.h"
 #include "parser/parse_agg.h"
+#include "parser/parser.h"
+#include "parser/scansup.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
@@ -369,6 +372,12 @@ transformExprRecurse(ParseState *pstate, Node *expr)
 				break;
 			}
 
+		case T_CypherGenericExpr:
+			result = transformCypherExpr(pstate,
+										 ((CypherGenericExpr *) expr)->expr,
+										 pstate->p_expr_kind);
+			break;
+
 		default:
 			/* should not reach here */
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
@@ -603,8 +612,33 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 										   &levels_up);
 				if (rte == NULL)
 				{
-					crerr = CRERR_NO_RTE;
-					break;
+					char *_relname;
+
+					if (!case_sensitive_ident)
+					{
+						crerr = CRERR_NO_RTE;
+						break;
+					}
+
+					/*
+					 * FIXME: Try to find hard-coded magic variables using
+					 *        downcased identifier. This is buggy and ugly but
+					 *        results minimum code changes.
+					 */
+
+					_relname = downcase_identifier(relname, strlen(relname),
+												   false, false);
+					if (strcmp(_relname, "excluded") == 0 ||
+						strcmp(_relname, "new") == 0 ||
+						strcmp(_relname, "old") == 0)
+						rte = refnameRangeTblEntry(pstate, nspname, _relname,
+												   cref->location,
+												   &levels_up);
+					if (rte == NULL)
+					{
+						crerr = CRERR_NO_RTE;
+						break;
+					}
 				}
 
 				/* Whole-row reference? */

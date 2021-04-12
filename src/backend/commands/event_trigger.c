@@ -3,6 +3,7 @@
  * event_trigger.c
  *	  PostgreSQL EVENT TRIGGER support code.
  *
+ * Portions Copyright (c) 2018, Bitnine Inc.
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -95,10 +96,12 @@ static event_trigger_support_data event_trigger_support[] = {
 	{"DATABASE", false},
 	{"DOMAIN", true},
 	{"EXTENSION", true},
+	{"ELABEL", true},
 	{"EVENT TRIGGER", false},
 	{"FOREIGN DATA WRAPPER", true},
 	{"FOREIGN TABLE", true},
 	{"FUNCTION", true},
+	{"GRAPH", true},
 	{"INDEX", true},
 	{"LANGUAGE", true},
 	{"MATERIALIZED VIEW", true},
@@ -106,6 +109,7 @@ static event_trigger_support_data event_trigger_support[] = {
 	{"OPERATOR CLASS", true},
 	{"OPERATOR FAMILY", true},
 	{"POLICY", true},
+	{"PROPERTY INDEX", true},
 	{"PUBLICATION", true},
 	{"ROLE", false},
 	{"RULE", true},
@@ -125,6 +129,7 @@ static event_trigger_support_data event_trigger_support[] = {
 	{"TYPE", true},
 	{"USER MAPPING", true},
 	{"VIEW", true},
+	{"VLABEL", true},
 	{NULL, false}
 };
 
@@ -350,7 +355,9 @@ static event_trigger_command_tag_check_result
 check_table_rewrite_ddl_tag(const char *tag)
 {
 	if (pg_strcasecmp(tag, "ALTER TABLE") == 0 ||
-		pg_strcasecmp(tag, "ALTER TYPE") == 0)
+		pg_strcasecmp(tag, "ALTER TYPE") == 0 ||
+		pg_strcasecmp(tag, "ALTER VLABEL") == 0 ||
+		pg_strcasecmp(tag, "ALTER ELABEL") == 0)
 		return EVENT_TRIGGER_COMMAND_TAG_OK;
 
 	return EVENT_TRIGGER_COMMAND_TAG_NOT_SUPPORTED;
@@ -834,6 +841,19 @@ EventTriggerDDLCommandEnd(Node *parsetree)
 	if (!IsUnderPostmaster)
 		return;
 
+	/*
+	 * Also do nothing if our state isn't set up, which it won't be if there
+	 * weren't any relevant event triggers at the start of the current DDL
+	 * command.  This test might therefore seem optional, but it's important
+	 * because EventTriggerCommonSetup might find triggers that didn't exist
+	 * at the time the command started.  Although this function itself
+	 * wouldn't crash, the event trigger functions would presumably call
+	 * pg_event_trigger_ddl_commands which would fail.  Better to do nothing
+	 * until the next command.
+	 */
+	if (!currentEventTriggerState)
+		return;
+
 	runlist = EventTriggerCommonSetup(parsetree,
 									  EVT_DDLCommandEnd, "ddl_command_end",
 									  &trigdata);
@@ -885,9 +905,10 @@ EventTriggerSQLDrop(Node *parsetree)
 									  &trigdata);
 
 	/*
-	 * Nothing to do if run list is empty.  Note this shouldn't happen,
+	 * Nothing to do if run list is empty.  Note this typically can't happen,
 	 * because if there are no sql_drop events, then objects-to-drop wouldn't
 	 * have been collected in the first place and we would have quit above.
+	 * But it could occur if event triggers were dropped partway through.
 	 */
 	if (runlist == NIL)
 		return;
@@ -934,8 +955,6 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	List	   *runlist;
 	EventTriggerData trigdata;
 
-	elog(DEBUG1, "EventTriggerTableRewrite(%u)", tableOid);
-
 	/*
 	 * Event Triggers are completely disabled in standalone mode.  There are
 	 * (at least) two reasons for this:
@@ -953,6 +972,16 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	 * scenarios depend on code that's otherwise untested isn't appetizing.)
 	 */
 	if (!IsUnderPostmaster)
+		return;
+
+	/*
+	 * Also do nothing if our state isn't set up, which it won't be if there
+	 * weren't any relevant event triggers at the start of the current DDL
+	 * command.  This test might therefore seem optional, but it's
+	 * *necessary*, because EventTriggerCommonSetup might find triggers that
+	 * didn't exist at the time the command started.
+	 */
+	if (!currentEventTriggerState)
 		return;
 
 	runlist = EventTriggerCommonSetup(parsetree,
@@ -1077,6 +1106,13 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_EVENT_TRIGGER:
 			/* no support for event triggers on event triggers */
 			return false;
+		case OBJECT_PROPERTY_INDEX:
+		case OBJECT_VLABEL:
+		case OBJECT_GRAPH:
+		case OBJECT_ELABEL:
+			/* no support for event trigger on graph object */
+			return false;
+
 		case OBJECT_ACCESS_METHOD:
 		case OBJECT_AGGREGATE:
 		case OBJECT_AMOP:
@@ -1183,6 +1219,8 @@ EventTriggerSupportsObjectClass(ObjectClass objclass)
 		case OCLASS_PUBLICATION_REL:
 		case OCLASS_SUBSCRIPTION:
 		case OCLASS_TRANSFORM:
+		case OCLASS_GRAPH:
+		case OCLASS_LABEL:
 			return true;
 
 			/*

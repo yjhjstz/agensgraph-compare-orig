@@ -130,7 +130,8 @@ static PathClauseUsage *classify_index_clause_usage(Path *path,
 static Relids get_bitmap_tree_required_outer(Path *bitmapqual);
 static void find_indexpath_quals(Path *bitmapqual, List **quals, List **preds);
 static int	find_list_position(Node *node, List **nodelist);
-static bool check_index_only(RelOptInfo *rel, IndexOptInfo *index);
+static bool check_index_only(RelOptInfo *rel, IndexOptInfo *index,
+							 List *index_clauses, List *clause_columns);
 static double get_loop_count(PlannerInfo *root, Index cur_relid, Relids outer_relids);
 static double adjust_rowcount_for_semijoins(PlannerInfo *root,
 							  Index cur_relid,
@@ -306,6 +307,9 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 										&eclauseset,
 										&bitjoinpaths);
 	}
+
+	if (root->hasVLEJoinRTE)
+		return;
 
 	/*
 	 * Generate BitmapOrPaths for any suitable OR-clauses present in the
@@ -1024,7 +1028,8 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * index data retrieval anyway.
 	 */
 	index_only_scan = (scantype != ST_BITMAPSCAN &&
-					   check_index_only(rel, index));
+					   check_index_only(rel, index,
+										index_clauses, clause_columns));
 
 	/*
 	 * 4. Generate an indexscan path if there are relevant restriction clauses
@@ -1855,17 +1860,18 @@ find_list_position(Node *node, List **nodelist)
 	return i;
 }
 
-
 /*
  * check_index_only
  *		Determine whether an index-only scan is possible for this index.
  */
 static bool
-check_index_only(RelOptInfo *rel, IndexOptInfo *index)
+check_index_only(RelOptInfo *rel, IndexOptInfo *index, List *index_clauses,
+				 List *clause_columns)
 {
 	bool		result;
 	Bitmapset  *attrs_used = NULL;
 	Bitmapset  *index_canreturn_attrs = NULL;
+	Bitmapset  *index_cannotreturn_attrs = NULL;
 	ListCell   *lc;
 	int			i;
 
@@ -1899,13 +1905,37 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 	foreach(lc, index->indrestrictinfo)
 	{
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		bool		indexpr;
+		ListCell   *le;
+		ListCell   *lc;
+
+		/*
+		 * Allow index-only scan for index expressions only if there is no use
+		 * of columns which are not index column in both rel->reltarget->exprs
+		 * and index->indrestrictinfo.
+		 */
+		indexpr = false;
+		forboth(le, index_clauses, lc, clause_columns)
+		{
+			if (lfirst(le) == rinfo && index->indexkeys[lfirst_int(lc)] == 0)
+			{
+				indexpr = true;
+				break;
+			}
+		}
+		if (indexpr)
+			continue;
 
 		pull_varattnos((Node *) rinfo->clause, rel->relid, &attrs_used);
 	}
 
 	/*
 	 * Construct a bitmapset of columns that the index can return back in an
-	 * index-only scan.
+	 * index-only scan.  If there are multiple index columns containing the
+	 * same attribute, all of them must be capable of returning the value,
+	 * since we might recheck operators on any of them.  (Potentially we could
+	 * be smarter about that, but it's such a weird situation that it doesn't
+	 * seem worth spending a lot of sweat on.)
 	 */
 	for (i = 0; i < index->ncolumns; i++)
 	{
@@ -1922,13 +1952,21 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 			index_canreturn_attrs =
 				bms_add_member(index_canreturn_attrs,
 							   attno - FirstLowInvalidHeapAttributeNumber);
+		else
+			index_cannotreturn_attrs =
+				bms_add_member(index_cannotreturn_attrs,
+							   attno - FirstLowInvalidHeapAttributeNumber);
 	}
+
+	index_canreturn_attrs = bms_del_members(index_canreturn_attrs,
+											index_cannotreturn_attrs);
 
 	/* Do we have all the necessary attributes? */
 	result = bms_is_subset(attrs_used, index_canreturn_attrs);
 
 	bms_free(attrs_used);
 	bms_free(index_canreturn_attrs);
+	bms_free(index_cannotreturn_attrs);
 
 	return result;
 }

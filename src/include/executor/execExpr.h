@@ -15,9 +15,11 @@
 #define EXEC_EXPR_H
 
 #include "nodes/execnodes.h"
+#include "utils/jsonb.h"
 
 /* forward reference to avoid circularity */
 struct ArrayRefState;
+struct CypherAccessPathElem;
 
 /* Bits in ExprState->flags (see also execnodes.h for public flag bits): */
 /* expression's interpreter has been initialized */
@@ -211,6 +213,17 @@ typedef enum ExprEvalOp
 	EEOP_WINDOW_FUNC,
 	EEOP_SUBPLAN,
 	EEOP_ALTERNATIVE_SUBPLAN,
+
+	EEOP_CYPHERTYPECAST,
+	EEOP_CYPHERMAPEXPR,
+	EEOP_CYPHERLISTEXPR,
+	EEOP_CYPHERLISTCOMP_BEGIN,
+	EEOP_CYPHERLISTCOMP_ELEM,
+	EEOP_CYPHERLISTCOMP_END,
+	EEOP_CYPHERLISTCOMP_ITER_INIT,
+	EEOP_CYPHERLISTCOMP_ITER_NEXT,
+	EEOP_CYPHERLISTCOMP_VAR,
+	EEOP_CYPHERACCESSEXPR,
 
 	/* non-existent operation, used e.g. to check array lengths */
 	EEOP_LAST
@@ -560,6 +573,54 @@ typedef struct ExprEvalStep
 			/* out-of-line state, created by nodeSubplan.c */
 			AlternativeSubPlanState *asstate;
 		}			alternative_subplan;
+
+		struct
+		{
+			FunctionCallInfo fcinfo_data_in;
+		}			cyphertypecast;
+
+		struct
+		{
+			char	  **key_cstrings;
+			Datum	   *val_values;
+			bool	   *val_nulls;
+			int			npairs;
+		}			cyphermapexpr;
+
+		struct
+		{
+			Datum	   *elemvalues;
+			bool	   *elemnulls;
+			int			nelems;
+		}			cypherlistexpr;
+
+		struct
+		{
+			Datum	   *elemvalue;
+			bool	   *elemnull;
+			JsonbParseState **liststate;
+		}			cypherlistcomp;
+
+		struct
+		{
+			Datum	   *listvalue;
+			bool	   *listnull;
+			JsonbIterator **listiter;
+		}			cypherlistcomp_iter;
+
+		struct
+		{
+			Datum	   *elemvalue;
+			bool	   *elemnull;
+		}			cypherlistcomp_var;
+
+		struct
+		{
+			Datum	   *argvalue;
+			bool	   *argnull;
+			struct CypherAccessPathElem *path;
+			int			pathlen;
+		}			cypheraccessexpr;
 	}			d;
 } ExprEvalStep;
 
@@ -598,6 +659,28 @@ typedef struct ArrayRefState
 	Datum		prevvalue;
 	bool		prevnull;
 } ArrayRefState;
+
+typedef struct CypherIndexResult
+{
+	Oid			type;
+	Datum		value;
+	bool		isnull;
+} CypherIndexResult;
+
+#define MarkCypherIndexResultInvalid(cidxres) \
+	do { \
+		(cidxres)->type = InvalidOid; \
+	} while (0)
+
+#define IsCypherIndexResultValid(cidxres) \
+	((cidxres)->type != InvalidOid)
+
+typedef struct CypherAccessPathElem
+{
+	bool		is_slice;
+	CypherIndexResult lidx;
+	CypherIndexResult uidx;
+} CypherAccessPathElem;
 
 
 extern void ExecReadyInterpretedExpr(ExprState *state);
@@ -647,5 +730,9 @@ extern void ExecEvalAlternativeSubPlan(ExprState *state, ExprEvalStep *op,
 						   ExprContext *econtext);
 extern void ExecEvalWholeRowVar(ExprState *state, ExprEvalStep *op,
 					ExprContext *econtext);
+extern void ExecEvalCypherTypeCast(ExprState *state, ExprEvalStep *op);
+extern void ExecEvalCypherMapExpr(ExprState *state, ExprEvalStep *op);
+extern void ExecEvalCypherListExpr(ExprState *state, ExprEvalStep *op);
+extern void ExecEvalCypherAccessExpr(ExprState *state, ExprEvalStep *op);
 
 #endif							/* EXEC_EXPR_H */

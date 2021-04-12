@@ -71,8 +71,8 @@ while (<$parser_fh>)
 	next if ($_ eq '');
 
 	# Make sure any braces are split
-	s/{/ { /g;
-	s/}/ } /g;
+	s/('\{'|\{)/ $1 /g;
+	s/('\}'|\})/ $1 /g;
 
 	# Any comments are split
 	s|\/\*| /* |g;

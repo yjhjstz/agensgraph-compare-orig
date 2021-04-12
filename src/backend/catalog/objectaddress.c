@@ -17,6 +17,9 @@
 
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "catalog/ag_graph.h"
+#include "catalog/ag_graph_fn.h"
+#include "catalog/ag_label.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
@@ -490,6 +493,30 @@ static const ObjectPropertyType ObjectProperty[] =
 		InvalidAttrNumber,		/* no ACL (same as relation) */
 		ACL_KIND_STATISTICS,
 		true
+	},
+	{
+		GraphRelationId,
+		GraphOidIndexId,
+		GRAPHOID,
+		GRAPHNAME,
+		Anum_ag_graph_graphname,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		ACL_KIND_GRAPH,
+		true,
+	},
+	{
+		LabelRelationId,
+		LabelOidIndexId,
+		LABELOID,
+		LABELNAMEGRAPH,
+		Anum_ag_label_labname,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		ACL_KIND_LABEL,
+		true,
 	}
 };
 
@@ -712,6 +739,20 @@ static const struct object_type_map
 	/* OBJECT_STATISTIC_EXT */
 	{
 		"statistics object", OBJECT_STATISTIC_EXT
+	},
+	/* OCLASS_GRAPH */
+	{
+		"graph", OBJECT_GRAPH
+	},
+	/* OCLASS_LABEL */
+	{
+		"elabel", OBJECT_ELABEL
+	},
+	{
+		"vlabel", OBJECT_VLABEL
+	},
+	{
+		"property index", OBJECT_PROPERTY_INDEX
 	}
 };
 
@@ -749,6 +790,10 @@ static ObjectAddress get_object_address_publication_rel(List *object,
 								   bool missing_ok);
 static ObjectAddress get_object_address_defacl(List *object,
 						  bool missing_ok);
+static ObjectAddress get_object_address_graph(Value *object, bool missing_ok);
+static ObjectAddress get_object_address_label(List *object, Relation *relp,
+											  LOCKMODE lockmode,
+											  bool missing_ok);
 static const ObjectPropertyType *get_object_property_data(Oid class_id);
 
 static void getRelationDescription(StringInfo buffer, Oid relid);
@@ -759,6 +804,9 @@ static void getProcedureTypeDescription(StringInfo buffer, Oid procid);
 static void getConstraintTypeDescription(StringInfo buffer, Oid constroid);
 static void getOpFamilyIdentity(StringInfo buffer, Oid opfid, List **object);
 static void getRelationIdentity(StringInfo buffer, Oid relid, List **object);
+static void getLabelDescription(StringInfo buffer, Oid laboid);
+static void getLabelTypeDescription(StringInfo buffer, Oid laboid);
+static void getLabelIdentity(StringInfo buffer, Oid laboid, List **object);
 
 /*
  * Translate an object name and arguments (as passed by the parser) to an
@@ -816,6 +864,7 @@ get_object_address(ObjectType objtype, Node *object,
 		switch (objtype)
 		{
 			case OBJECT_INDEX:
+			case OBJECT_PROPERTY_INDEX:
 			case OBJECT_SEQUENCE:
 			case OBJECT_TABLE:
 			case OBJECT_VIEW:
@@ -995,6 +1044,15 @@ get_object_address(ObjectType objtype, Node *object,
 				address.objectId = get_statistics_object_oid(castNode(List, object),
 															 missing_ok);
 				address.objectSubId = 0;
+				break;
+			case OBJECT_GRAPH:
+				address = get_object_address_graph((Value *) object, missing_ok);
+				break;
+			case OBJECT_ELABEL:
+			case OBJECT_VLABEL:
+				address = get_object_address_label(castNode(List, object),
+												   &relation, lockmode,
+												   missing_ok);
 				break;
 			default:
 				elog(ERROR, "unrecognized objtype: %d", (int) objtype);
@@ -1216,6 +1274,7 @@ get_relation_by_qualified_name(ObjectType objtype, List *object,
 	switch (objtype)
 	{
 		case OBJECT_INDEX:
+		case OBJECT_PROPERTY_INDEX:
 			if (relation->rd_rel->relkind != RELKIND_INDEX)
 				ereport(ERROR,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -1912,6 +1971,82 @@ not_found:
 }
 
 /*
+ * Find the ObjectAddress for a graph object
+ */
+static ObjectAddress
+get_object_address_graph(Value *object, bool missing_ok)
+{
+	ObjectAddress address;
+	char *graphname;
+
+	graphname = strVal(object);
+
+	address.classId = GraphRelationId;
+	address.objectId = get_graphname_oid(graphname);
+	address.objectSubId = 0;
+
+	if (!OidIsValid(address.objectId) && !missing_ok)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("graph \"%s\" does not exist", graphname)));
+
+	return address;
+}
+
+/*
+ * Find the ObjectAddress for a graph label
+ */
+static ObjectAddress
+get_object_address_label(List *object, Relation *relp,
+						 LOCKMODE lockmode, bool missing_ok)
+{
+	ObjectAddress address;
+	Oid			graphid;
+	char	   *graphname;
+	char	   *labname;
+	List	   *tabnamelist;
+
+	switch (list_length(object))
+	{
+		case 1:
+			graphname = get_graph_path(false);
+			labname = strVal(linitial(object));
+			break;
+		case 2:
+			graphname = strVal(linitial(object));
+			labname = strVal(lsecond(object));
+			break;
+		default:
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("improper qualified name (too many dotted names): %s",
+							NameListToString(object))));
+	}
+
+	graphid = get_graphname_oid(graphname);
+	if (!OidIsValid(graphid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("graph \"%s\" does not exist", graphname)));
+
+	address.classId = LabelRelationId;
+	address.objectId = get_labname_laboid(labname, graphid);
+	address.objectSubId = 0;
+
+	if (!OidIsValid(address.objectId) && !missing_ok)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("graph label \"%s\" does not exist", labname)));
+
+	/* Hold the same level of lock on the table and get Relation. */
+	tabnamelist = list_make2(makeString(graphname), makeString(labname));
+	(void) get_relation_by_qualified_name(OBJECT_TABLE, tabnamelist,
+										  relp, lockmode, missing_ok);
+
+	return address;
+}
+
+/*
  * Convert an array of TEXT into a List of string Values, as emitted by the
  * parser, which is what get_object_address uses as input.
  */
@@ -2125,6 +2260,9 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		case OBJECT_TABCONSTRAINT:
 		case OBJECT_OPCLASS:
 		case OBJECT_OPFAMILY:
+		case OBJECT_VLABEL:
+		case OBJECT_ELABEL:
+		case OBJECT_PROPERTY_INDEX:
 			objnode = (Node *) name;
 			break;
 		case OBJECT_ACCESS_METHOD:
@@ -2139,6 +2277,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		case OBJECT_SCHEMA:
 		case OBJECT_SUBSCRIPTION:
 		case OBJECT_TABLESPACE:
+		case OBJECT_GRAPH:
 			if (list_length(name) != 1)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -2225,6 +2364,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 	switch (objtype)
 	{
 		case OBJECT_INDEX:
+		case OBJECT_PROPERTY_INDEX:
 		case OBJECT_SEQUENCE:
 		case OBJECT_TABLE:
 		case OBJECT_VIEW:
@@ -2404,6 +2544,17 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_STATISTIC_EXT:
 			if (!pg_statistics_object_ownercheck(address.objectId, roleid))
 				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);
+			break;
+		case OBJECT_GRAPH:
+			if (!ag_graph_ownercheck(address.objectId, roleid))
+				aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_GRAPH,
+							   strVal((Value *) object));
+			break;
+		case OBJECT_VLABEL:
+		case OBJECT_ELABEL:
+			if (!ag_label_ownercheck(address.objectId, roleid))
+				aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_LABEL,
+							   NameListToString(castNode(List, object)));
 			break;
 		default:
 			elog(ERROR, "unrecognized object type: %d",
@@ -3419,6 +3570,15 @@ getObjectDescription(const ObjectAddress *object)
 				break;
 			}
 
+		case OCLASS_GRAPH:
+			appendStringInfo(&buffer, _("graph %s"),
+							 get_graphid_graphname(object->objectId));
+			break;
+
+		case OCLASS_LABEL:
+			getLabelDescription(&buffer, object->objectId);
+			break;
+
 			/*
 			 * There's intentionally no default: case here; we want the
 			 * compiler to warn if a new OCLASS hasn't been handled above.
@@ -3917,6 +4077,14 @@ getObjectTypeDescription(const ObjectAddress *object)
 
 		case OCLASS_TRANSFORM:
 			appendStringInfoString(&buffer, "transform");
+			break;
+
+		case OCLASS_GRAPH:
+			appendStringInfoString(&buffer, "graph");
+			break;
+
+		case OCLASS_LABEL:
+			getLabelTypeDescription(&buffer, object->objectId);
 			break;
 
 			/*
@@ -4970,6 +5138,24 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 			break;
 
+		case OCLASS_GRAPH:
+			{
+				char	   *graphname;
+
+				graphname = get_graphid_graphname(object->objectId);
+				if (graphname == NULL)
+					elog(ERROR, "cache lookup failed for graph %u",
+						 object->objectId);
+				appendStringInfoString(&buffer, quote_identifier(graphname));
+				if (objname != NULL)
+					*objname = list_make1(graphname);
+			}
+			break;
+
+		case OCLASS_LABEL:
+			getLabelIdentity(&buffer, object->objectId, objname);
+			break;
+
 			/*
 			 * There's intentionally no default: case here; we want the
 			 * compiler to warn if a new OCLASS hasn't been handled above.
@@ -5083,4 +5269,76 @@ strlist_to_textarray(List *list)
 	MemoryContextDelete(memcxt);
 
 	return arr;
+}
+
+static void
+getLabelDescription(StringInfo buffer, Oid laboid)
+{
+	HeapTuple   tuple;
+	Form_ag_label labtup;
+
+	tuple = SearchSysCache1(LABELOID, ObjectIdGetDatum(laboid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for label (OID=%u)", laboid);
+
+	labtup = (Form_ag_label) GETSTRUCT(tuple);
+
+	if (labtup->labkind == LABEL_KIND_VERTEX)
+		appendStringInfo(buffer, "vlabel %s", NameStr(labtup->labname));
+	else if (labtup->labkind == LABEL_KIND_EDGE)
+		appendStringInfo(buffer, "elabel %s", NameStr(labtup->labname));
+	else
+		elog(ERROR, "invalid label (OID=%u)", laboid);
+
+	ReleaseSysCache(tuple);
+}
+
+/*
+ * subroutine for getObjectTypeDescription: describe a graph label
+ */
+static void
+getLabelTypeDescription(StringInfo buffer, Oid laboid)
+{
+	HeapTuple   tuple;
+	Form_ag_label labtup;
+
+	tuple = SearchSysCache1(LABELOID, ObjectIdGetDatum(laboid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for label (OID=%u)", laboid);
+
+	labtup = (Form_ag_label) GETSTRUCT(tuple);
+
+	if (labtup->labkind == LABEL_KIND_VERTEX)
+		appendStringInfo(buffer, "vlabel");
+	else if (labtup->labkind == LABEL_KIND_EDGE)
+		appendStringInfo(buffer, "elabel");
+	else
+		elog(ERROR, "invalid label (OID=%u)", laboid);
+
+	ReleaseSysCache(tuple);
+}
+
+static void
+getLabelIdentity(StringInfo buffer, Oid laboid, List **object)
+{
+	HeapTuple   tuple;
+	Form_ag_label labtup;
+	char	   *graphname;
+	char	   *labname;
+
+	tuple = SearchSysCache1(LABELOID, ObjectIdGetDatum(laboid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for label (OID=%u)", laboid);
+
+	labtup = (Form_ag_label) GETSTRUCT(tuple);
+
+	graphname = get_graphid_graphname(labtup->graphid);
+	labname = NameStr(labtup->labname);
+
+	appendStringInfoString(buffer,
+						   quote_qualified_identifier(graphname, labname));
+	if (object != NULL)
+		*object = list_make2(graphname, pstrdup(labname));
+
+	ReleaseSysCache(tuple);
 }

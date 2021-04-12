@@ -17,6 +17,8 @@
 #include "parser/parse_node.h"
 
 extern void transformFromClause(ParseState *pstate, List *frmList);
+extern RangeTblEntry *transformCTEReference(ParseState *pstate, RangeVar *r,
+					CommonTableExpr *cte, Index levelsup);
 extern int setTargetTable(ParseState *pstate, RangeVar *relation,
 			   bool inh, bool alsoSource, AclMode requiredPerms);
 extern bool interpretOidsOption(List *defList, bool allowOids);
@@ -50,5 +52,8 @@ extern List *addTargetToSortList(ParseState *pstate, TargetEntry *tle,
 					List *sortlist, List *targetlist, SortBy *sortby);
 extern Index assignSortGroupRef(TargetEntry *tle, List *tlist);
 extern bool targetIsInSortList(TargetEntry *tle, Oid sortop, List *sortList);
+
+extern List *generateGroupClause(ParseState *pstate, List **targetlist,
+								 List *sortClause);
 
 #endif							/* PARSE_CLAUSE_H */

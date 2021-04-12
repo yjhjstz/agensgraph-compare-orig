@@ -1854,4 +1854,81 @@ DESCR("delete array element");
 DATA(insert OID = 3287 (  "#-"	   PGNSP PGUID b f f 3802 1009 3802 0 0 jsonb_delete_path - - ));
 DESCR("delete path");
 
+/* graphid operators */
+DATA(insert OID = 7087 (  "="	   PGNSP PGUID b t t 7002 7002 16 7087 7088 graphid_eq eqsel eqjoinsel ));
+DESCR("equal");
+#define OID_GRAPHID_EQ_OP 7087
+DATA(insert OID = 7088 (  "<>"	   PGNSP PGUID b f f 7002 7002 16 7088 7087 graphid_ne neqsel neqjoinsel ));
+DESCR("not equal");
+DATA(insert OID = 7089 (  "<"	   PGNSP PGUID b f f 7002 7002 16 7090 7092 graphid_lt scalarltsel scalarltjoinsel ));
+DESCR("less than");
+DATA(insert OID = 7090 (  ">"	   PGNSP PGUID b f f 7002 7002 16 7089 7091 graphid_gt scalargtsel scalargtjoinsel ));
+DESCR("greater than");
+DATA(insert OID = 7091 (  "<="	   PGNSP PGUID b f f 7002 7002 16 7092 7090 graphid_le scalarltsel scalarltjoinsel ));
+DESCR("less than or equal");
+DATA(insert OID = 7092 (  ">="	   PGNSP PGUID b f f 7002 7002 16 7091 7089 graphid_ge scalargtsel scalargtjoinsel ));
+DESCR("greater than or equal");
+/* vertex operators */
+DATA(insert OID = 7136 (  "="	   PGNSP PGUID b t t 7012 7012 16 7136 7137 vertex_eq eqsel eqjoinsel ));
+DESCR("equal");
+#define OID_VERTEX_EQ_OP 7136
+DATA(insert OID = 7137 (  "<>"	   PGNSP PGUID b f f 7012 7012 16 7137 7136 vertex_ne neqsel neqjoinsel ));
+DESCR("not equal");
+#define OID_VERTEX_NE_OP 7137
+DATA(insert OID = 7138 (  "<"	   PGNSP PGUID b f f 7012 7012 16 7139 7141 vertex_lt scalarltsel scalarltjoinsel ));
+DESCR("less than");
+#define OID_VERTEX_LT_OP 7138
+DATA(insert OID = 7139 (  ">"	   PGNSP PGUID b f f 7012 7012 16 7138 7140 vertex_gt scalargtsel scalargtjoinsel ));
+DESCR("greater than");
+#define OID_VERTEX_GT_OP 7139
+DATA(insert OID = 7140 (  "<="	   PGNSP PGUID b f f 7012 7012 16 7141 7139 vertex_le scalarltsel scalarltjoinsel ));
+DESCR("less than or equal");
+#define OID_VERTEX_LE_OP 7140
+DATA(insert OID = 7141 (  ">="	   PGNSP PGUID b f f 7012 7012 16 7140 7138 vertex_ge scalargtsel scalargtjoinsel ));
+DESCR("greater than or equal");
+#define OID_VERTEX_GE_OP 7141
+/* edge operators */
+DATA(insert OID = 7148 (  "="	   PGNSP PGUID b t t 7022 7022 16 7148 7149 edge_eq eqsel eqjoinsel ));
+DESCR("equal");
+DATA(insert OID = 7149 (  "<>"	   PGNSP PGUID b f f 7022 7022 16 7149 7148 edge_ne neqsel neqjoinsel ));
+DESCR("not equal");
+DATA(insert OID = 7150 (  "<"	   PGNSP PGUID b f f 7022 7022 16 7151 7153 edge_lt scalarltsel scalarltjoinsel ));
+DESCR("less than");
+DATA(insert OID = 7151 (  ">"	   PGNSP PGUID b f f 7022 7022 16 7150 7152 edge_gt scalargtsel scalargtjoinsel ));
+DESCR("greater than");
+DATA(insert OID = 7152 (  "<="	   PGNSP PGUID b f f 7022 7022 16 7153 7151 edge_le scalarltsel scalarltjoinsel ));
+DESCR("less than or equal");
+DATA(insert OID = 7153 (  ">="	   PGNSP PGUID b f f 7022 7022 16 7152 7150 edge_ge scalargtsel scalargtjoinsel ));
+DESCR("greater than or equal");
+/* rowid operators */
+DATA(insert OID = 7161 (  "="	   PGNSP PGUID b t f 7062 7062 16 7161 7162 rowid_eq eqsel eqjoinsel ));
+DESCR("equal");
+DATA(insert OID = 7162 (  "<>"	   PGNSP PGUID b f f 7062 7062 16 7162 7161 rowid_ne neqsel neqjoinsel ));
+DESCR("not equal");
+DATA(insert OID = 7163 (  "<"	   PGNSP PGUID b f f 7062 7062 16 7164 7166 rowid_lt scalarltsel scalarltjoinsel ));
+DESCR("less than");
+DATA(insert OID = 7164 (  ">"	   PGNSP PGUID b f f 7062 7062 16 7163 7165 rowid_gt scalargtsel scalargtjoinsel ));
+DESCR("greater than");
+DATA(insert OID = 7165 (  "<="	   PGNSP PGUID b f f 7062 7062 16 7166 7164 rowid_le scalarltsel scalarltjoinsel ));
+DESCR("less than or equal");
+DATA(insert OID = 7166 (  ">="	   PGNSP PGUID b f f 7062 7062 16 7165 7163 rowid_ge scalargtsel scalargtjoinsel ));
+DESCR("greater than or equal");
+/* Cypher expressions - operators for jsonb */
+DATA(insert OID = 7176 (  "`+`"	   PGNSP PGUID b f f 3802 3802 3802 7176 0 jsonb_add - - ));
+DESCR("add");
+DATA(insert OID = 7178 (  "`-`"	   PGNSP PGUID b f f 3802 3802 3802 0 0 jsonb_sub - - ));
+DESCR("subtract");
+DATA(insert OID = 7180 (  "`*`"	   PGNSP PGUID b f f 3802 3802 3802 7180 0 jsonb_mul - - ));
+DESCR("multiply");
+DATA(insert OID = 7182 (  "`/`"	   PGNSP PGUID b f f 3802 3802 3802 0 0 jsonb_div - - ));
+DESCR("divide");
+DATA(insert OID = 7184 (  "`%`"	   PGNSP PGUID b f f 3802 3802 3802 0 0 jsonb_mod - - ));
+DESCR("modulus");
+DATA(insert OID = 7186 (  "`^`"	   PGNSP PGUID b f f 3802 3802 3802 0 0 jsonb_pow - - ));
+DESCR("exponentiation");
+DATA(insert OID = 7188 (  "`+`"	   PGNSP PGUID l f f 0 3802 3802 0 0 jsonb_uplus - - ));
+DESCR("unary plus");
+DATA(insert OID = 7190 (  "`-`"	   PGNSP PGUID l f f 0 3802 3802 0 0 jsonb_uminus - - ));
+DESCR("negate");
+
 #endif							/* PG_OPERATOR_H */

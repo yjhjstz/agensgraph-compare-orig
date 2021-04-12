@@ -97,6 +97,8 @@ static List *generate_append_tlist(List *colTypes, List *colCollations,
 					  List *input_tlists,
 					  List *refnames_tlist);
 static List *generate_setop_grouplist(SetOperationStmt *op, List *targetlist);
+static List *generate_setop_grouplist_for_shortestpath(SetOperationStmt *op,
+													   List *targetlist);
 static void expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte,
 						 Index rti);
 static void make_inh_translation_list(Relation oldrelation,
@@ -459,6 +461,8 @@ generate_recursion_path(SetOperationStmt *setOp, PlannerInfo *root,
 								   NULL);
 	/* The right path will want to look at the left one ... */
 	root->non_recursive_path = lpath;
+	if (setOp->maxDepth > 0)
+		root->max_hoop = setOp->maxDepth - 1;
 	rpath = recurse_set_operations(setOp->rarg, root,
 								   setOp->colTypes, setOp->colCollations,
 								   false, -1,
@@ -466,6 +470,7 @@ generate_recursion_path(SetOperationStmt *setOp, PlannerInfo *root,
 								   &rpath_tlist,
 								   NULL);
 	root->non_recursive_path = NULL;
+	root->max_hoop = DEFAULT_RECURSIVEUNION_RTERM_ITER_CNT;
 
 	/*
 	 * Generate tlist for RecursiveUnion path node --- same as in Append cases
@@ -487,7 +492,10 @@ generate_recursion_path(SetOperationStmt *setOp, PlannerInfo *root,
 	else
 	{
 		/* Identify the grouping semantics */
-		groupList = generate_setop_grouplist(setOp, tlist);
+		if (setOp->shortestpath && !setOp->all)
+			groupList = generate_setop_grouplist_for_shortestpath(setOp, tlist);
+		else
+			groupList = generate_setop_grouplist(setOp, tlist);
 
 		/* We only support hashing here */
 		if (!grouping_is_hashable(groupList))
@@ -513,7 +521,8 @@ generate_recursion_path(SetOperationStmt *setOp, PlannerInfo *root,
 											   create_pathtarget(root, tlist),
 											   groupList,
 											   root->wt_param_id,
-											   dNumGroups);
+											   dNumGroups,
+											   setOp->maxDepth);
 
 	return path;
 }
@@ -1310,6 +1319,47 @@ generate_setop_grouplist(SetOperationStmt *op, List *targetlist)
 		sgc->tleSortGroupRef = tle->ressortgroupref;
 	}
 	Assert(lg == NULL);
+	return grouplist;
+}
+
+static List *
+generate_setop_grouplist_for_shortestpath(SetOperationStmt *op,
+										  List *targetlist)
+{
+	List	   *grouplist = NIL;
+	ListCell   *lg;
+	ListCell   *lt;
+
+	lg = list_head(op->groupClauses);
+	foreach(lt, targetlist)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lt);
+		SortGroupClause *sgc;
+
+		if (tle->resjunk)
+		{
+			/* resjunk columns should not have sortgrouprefs */
+			Assert(tle->ressortgroupref == 0);
+			continue;			/* ignore resjunk columns */
+		}
+
+		if (strcmp(tle->resname, "vid") == 0)
+		{
+			/* non-resjunk columns should have sortgroupref = resno */
+			Assert(tle->ressortgroupref == tle->resno);
+
+			/* non-resjunk columns should have grouping clauses */
+			Assert(lg != NULL);
+			sgc = (SortGroupClause *) lfirst(lg);
+			Assert(sgc->tleSortGroupRef == 0);
+
+			sgc->tleSortGroupRef = tle->ressortgroupref;
+			grouplist = list_make1(sgc);
+			break;
+		}
+		lg = lnext(lg);
+	}
+	Assert(list_length(grouplist) == 1);
 	return grouplist;
 }
 

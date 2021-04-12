@@ -45,6 +45,7 @@ typedef struct PostponedQual
 } PostponedQual;
 
 
+static void add_extra_vars_to_targetlist(PlannerInfo *root, Node *node);
 static void extract_lateral_references(PlannerInfo *root, RelOptInfo *brel,
 						   Index rtindex);
 static List *deconstruct_recurse(PlannerInfo *root, Node *jtnode,
@@ -165,17 +166,37 @@ build_base_rel_tlists(PlannerInfo *root, List *final_tlist)
 	 * that HAVING can contain Aggrefs but not WindowFuncs.
 	 */
 	if (root->parse->havingQual)
-	{
-		List	   *having_vars = pull_var_clause(root->parse->havingQual,
-												  PVC_RECURSE_AGGREGATES |
-												  PVC_INCLUDE_PLACEHOLDERS);
+		add_extra_vars_to_targetlist(root, root->parse->havingQual);
 
-		if (having_vars != NIL)
-		{
-			add_vars_to_targetlist(root, having_vars,
-								   bms_make_singleton(0), true);
-			list_free(having_vars);
-		}
+	if (root->parse->dijkstraEndId)
+		add_extra_vars_to_targetlist(root, root->parse->dijkstraEndId);
+	if (root->parse->dijkstraEdgeId)
+		add_extra_vars_to_targetlist(root, root->parse->dijkstraEdgeId);
+
+	if (root->parse->shortestpathEndIdLeft)
+		add_extra_vars_to_targetlist(root, root->parse->shortestpathEndIdLeft);
+	if (root->parse->shortestpathEndIdRight)
+		add_extra_vars_to_targetlist(root, root->parse->shortestpathEndIdRight);
+	if (root->parse->shortestpathTableOidLeft)
+		add_extra_vars_to_targetlist(root, root->parse->shortestpathTableOidLeft);
+	if (root->parse->shortestpathTableOidRight)
+		add_extra_vars_to_targetlist(root, root->parse->shortestpathTableOidRight);
+	if (root->parse->shortestpathCtidLeft)
+		add_extra_vars_to_targetlist(root, root->parse->shortestpathCtidLeft);
+	if (root->parse->shortestpathCtidRight)
+		add_extra_vars_to_targetlist(root, root->parse->shortestpathCtidRight);
+}
+
+static void
+add_extra_vars_to_targetlist(PlannerInfo *root, Node *node)
+{
+	List *vars = pull_var_clause(node,
+								 PVC_RECURSE_AGGREGATES |
+								 PVC_INCLUDE_PLACEHOLDERS);
+	if (vars != NIL)
+	{
+		add_vars_to_targetlist(root, vars, bms_make_singleton(0), true);
+		list_free(vars);
 	}
 }
 
@@ -875,6 +896,7 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode, bool below_outer_join,
 		switch (j->jointype)
 		{
 			case JOIN_INNER:
+			case JOIN_VLE:
 				leftjoinlist = deconstruct_recurse(root, j->larg,
 												   below_outer_join,
 												   &leftids, &left_inners,
@@ -892,6 +914,8 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode, bool below_outer_join,
 				break;
 			case JOIN_LEFT:
 			case JOIN_ANTI:
+			case JOIN_CYPHER_MERGE:
+			case JOIN_CYPHER_DELETE:
 				leftjoinlist = deconstruct_recurse(root, j->larg,
 												   below_outer_join,
 												   &leftids, &left_inners,
@@ -998,10 +1022,20 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode, bool below_outer_join,
 										j->jointype,
 										my_quals);
 			if (j->jointype == JOIN_SEMI)
+			{
 				ojscope = NULL;
+			}
+			else if (j->jointype == JOIN_VLE)
+			{
+				ojscope = NULL;
+				sjinfo->min_hops = j->minHops;
+				sjinfo->max_hops = j->maxHops;
+			}
 			else
+			{
 				ojscope = bms_union(sjinfo->min_lefthand,
 									sjinfo->min_righthand);
+			}
 		}
 		else
 		{
@@ -1210,7 +1244,7 @@ make_outerjoininfo(PlannerInfo *root,
 	compute_semijoin_info(sjinfo, clause);
 
 	/* If it's a full join, no need to be very smart */
-	if (jointype == JOIN_FULL)
+	if (jointype == JOIN_FULL || jointype == JOIN_VLE)
 	{
 		sjinfo->min_lefthand = bms_copy(left_rels);
 		sjinfo->min_righthand = bms_copy(right_rels);
@@ -1754,6 +1788,11 @@ distribute_qual_to_rels(PlannerInfo *root, Node *clause,
 	 * attach quals to the lowest level where they can be evaluated.  But
 	 * if we were ever to re-introduce a mechanism for delaying evaluation
 	 * of "expensive" quals, this area would need work.
+	 *
+	 * Note: generally, use of is_pushed_down has to go through the macro
+	 * RINFO_IS_PUSHED_DOWN, because that flag alone is not always sufficient
+	 * to tell whether a clause must be treated as pushed-down in context.
+	 * This seems like another reason why it should perhaps be rethought.
 	 *----------
 	 */
 	if (is_deduced)

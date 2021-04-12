@@ -16,13 +16,13 @@ OBJS = catalog.o dependency.o heap.o index.o indexing.o namespace.o aclchk.o \
        pg_depend.o pg_enum.o pg_inherits.o pg_largeobject.o pg_namespace.o \
        pg_operator.o pg_proc.o pg_publication.o pg_range.o \
 	   pg_db_role_setting.o pg_shdepend.o pg_subscription.o pg_type.o \
-	   storage.o toasting.o
+	   storage.o toasting.o ag_graph.o ag_label.o
 
 BKIFILES = postgres.bki postgres.description postgres.shdescription
 
 include $(top_srcdir)/src/backend/common.mk
 
-all: $(BKIFILES) schemapg.h
+all: $(BKIFILES) schemapg.h postgres.description postgres.shdescription
 
 # Note: there are some undocumented dependencies on the ordering in which
 # the catalog header files are assembled into postgres.bki.  In particular,
@@ -46,7 +46,7 @@ POSTGRES_BKI_SRCS = $(addprefix $(top_srcdir)/src/include/catalog/,\
 	pg_collation.h pg_partitioned_table.h pg_range.h pg_transform.h \
 	pg_sequence.h pg_publication.h pg_publication_rel.h pg_subscription.h \
 	pg_subscription_rel.h toasting.h indexing.h \
-	toasting.h indexing.h \
+	toasting.h indexing.h ag_graph.h ag_label.h ag_graphmeta.h \
     )
 
 # location of Catalog.pm

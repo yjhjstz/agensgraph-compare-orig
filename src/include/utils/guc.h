@@ -348,6 +348,7 @@ extern void EmitWarningsOnPlaceholders(const char *className);
 extern const char *GetConfigOption(const char *name, bool missing_ok,
 				bool restrict_superuser);
 extern const char *GetConfigOptionResetString(const char *name);
+extern int	GetConfigOptionFlags(const char *name, bool missing_ok);
 extern void ProcessConfigFile(GucContext context);
 extern void InitializeGUCOptions(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
@@ -432,5 +433,8 @@ extern void assign_search_path(const char *newval, void *extra);
 /* in access/transam/xlog.c */
 extern bool check_wal_buffers(int *newval, void **extra, GucSource source);
 extern void assign_xlog_sync_method(int new_sync_method, void *extra);
+
+/* in catalog/ag_graph.c */
+extern bool check_graph_path(char **newval, void **extra, GucSource source);
 
 #endif							/* GUC_H */

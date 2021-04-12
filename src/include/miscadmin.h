@@ -242,6 +242,7 @@ extern PGDLLIMPORT bool allowSystemTableMods;
 extern PGDLLIMPORT int work_mem;
 extern PGDLLIMPORT int maintenance_work_mem;
 extern PGDLLIMPORT int replacement_sort_tuples;
+extern PGDLLIMPORT int eager_mem;
 
 extern int	VacuumCostPageHit;
 extern int	VacuumCostPageMiss;

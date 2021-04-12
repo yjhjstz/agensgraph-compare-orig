@@ -18,6 +18,7 @@
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"
 #include "storage/proc.h"
+#include "utils/graph.h"
 #include "utils/hsearch.h"
 #include "utils/relcache.h"
 
@@ -133,8 +134,6 @@ typedef enum PgStat_Single_Reset_Type
  * Structures kept in backend local memory while accumulating counts
  * ------------------------------------------------------------
  */
-
-
 /* ----------
  * PgStat_TableStatus			Per-table status within a backend
  *
@@ -643,7 +642,6 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter autovac_analyze_count;
 } PgStat_StatTabEntry;
 
-
 /* ----------
  * PgStat_StatFuncEntry			The collector's data per function
  * ----------
@@ -1112,6 +1110,7 @@ extern PGDLLIMPORT int pgstat_track_activity_query_size;
 extern char *pgstat_stat_directory;
 extern char *pgstat_stat_tmpname;
 extern char *pgstat_stat_filename;
+extern bool auto_gather_graphmeta;
 
 /*
  * BgWriter statistics counters are updated directly by bgwriter and bufmgr
@@ -1301,6 +1300,8 @@ extern void pgstat_end_function_usage(PgStat_FunctionCallUsage *fcu,
 
 extern void AtEOXact_PgStat(bool isCommit);
 extern void AtEOSubXact_PgStat(bool isCommit, int nestDepth);
+extern void AtEOXact_AgStat(bool isCommit);
+extern void AtEOSubXact_AgStat(bool isCommit, int nestDepth);
 
 extern void AtPrepare_PgStat(void);
 extern void PostPrepare_PgStat(void);
@@ -1326,5 +1327,12 @@ extern PgStat_StatFuncEntry *pgstat_fetch_stat_funcentry(Oid funcid);
 extern int	pgstat_fetch_stat_numbackends(void);
 extern PgStat_ArchiverStats *pgstat_fetch_stat_archiver(void);
 extern PgStat_GlobalStats *pgstat_fetch_global(void);
+
+/* Functions to set up ag_graphmeta for metric */
+extern void agstat_count_edge_create(Graphid edge, Graphid start, Graphid end);
+extern void agstat_count_edge_delete(Graphid edge, Graphid start, Graphid end);
+extern void agstat_drop_vlabel(const char *vlab);
+extern void agstat_drop_elabel(const char *elab);
+extern void agstat_drop_graph(const char *graph);
 
 #endif							/* PGSTAT_H */

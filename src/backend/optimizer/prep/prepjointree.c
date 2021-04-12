@@ -27,6 +27,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
+#include "optimizer/cost.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/prep.h"
 #include "optimizer/subselect.h"
@@ -286,6 +287,10 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 														 &j->larg,
 														 leftrelids,
 														 NULL, NULL);
+				break;
+			case JOIN_CYPHER_MERGE:
+			case JOIN_CYPHER_DELETE:
+				/* do nothing */
 				break;
 			default:
 				elog(ERROR, "unrecognized join type: %d",
@@ -690,6 +695,7 @@ pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
 		 * unless is_safe_append_member says so.
 		 */
 		if (rte->rtekind == RTE_SUBQUERY &&
+			!rte->isVLE &&
 			is_simple_subquery(rte->subquery, rte,
 							   lowest_outer_join, deletion_ok) &&
 			(containing_appendrel == NULL ||
@@ -785,7 +791,6 @@ pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
 		switch (j->jointype)
 		{
 			case JOIN_INNER:
-
 				/*
 				 * INNER JOIN can allow deletion of either child node, but not
 				 * both.  So right child gets permission to delete only if
@@ -805,6 +810,7 @@ pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
 			case JOIN_LEFT:
 			case JOIN_SEMI:
 			case JOIN_ANTI:
+			case JOIN_CYPHER_MERGE:
 				j->larg = pull_up_subqueries_recurse(root, j->larg,
 													 j,
 													 lowest_nulling_outer_join,
@@ -839,6 +845,9 @@ pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
 													 lowest_nulling_outer_join,
 													 NULL,
 													 false);
+				break;
+			case JOIN_VLE:
+			case JOIN_CYPHER_DELETE:
 				break;
 			default:
 				elog(ERROR, "unrecognized join type: %d",
@@ -918,6 +927,7 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	subroot->hasRecursion = false;
 	subroot->wt_param_id = -1;
 	subroot->non_recursive_path = NULL;
+	subroot->max_hoop = DEFAULT_RECURSIVEUNION_RTERM_ITER_CNT;
 
 	/* No CTEs to worry about */
 	Assert(subquery->cteList == NIL);
@@ -1089,6 +1099,32 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 							 lowest_nulling_outer_join);
 	Assert(parse->setOperations == NULL);
 	parse->havingQual = pullup_replace_vars(parse->havingQual, &rvcontext);
+
+	if (parse->shortestpathSource)
+	{
+		parse->dijkstraEndId = pullup_replace_vars(parse->dijkstraEndId,
+												   &rvcontext);
+		parse->dijkstraEdgeId = pullup_replace_vars(parse->dijkstraEdgeId,
+													&rvcontext);
+		parse->dijkstraLimit = pullup_replace_vars(parse->dijkstraLimit,
+												   &rvcontext);
+		parse->shortestpathEndIdLeft = pullup_replace_vars(parse->shortestpathEndIdLeft,
+														   &rvcontext);
+		parse->shortestpathEndIdRight = pullup_replace_vars(parse->shortestpathEndIdRight,
+															&rvcontext);
+		parse->shortestpathTableOidLeft = pullup_replace_vars(parse->shortestpathTableOidLeft,
+															  &rvcontext);
+		parse->shortestpathTableOidRight = pullup_replace_vars(parse->shortestpathTableOidRight,
+															   &rvcontext);
+		parse->shortestpathCtidLeft = pullup_replace_vars(parse->shortestpathCtidLeft,
+														  &rvcontext);
+		parse->shortestpathCtidRight = pullup_replace_vars(parse->shortestpathCtidRight,
+														   &rvcontext);
+		parse->shortestpathSource = pullup_replace_vars(parse->shortestpathSource,
+														&rvcontext);
+		parse->shortestpathTarget = pullup_replace_vars(parse->shortestpathTarget,
+														&rvcontext);
+	}
 
 	/*
 	 * Replace references in the translated_vars lists of appendrels. When
@@ -1444,8 +1480,12 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 	 * Let's just make sure it's a valid subselect ...
 	 */
 	if (!IsA(subquery, Query) ||
-		subquery->commandType != CMD_SELECT)
+		(subquery->commandType != CMD_SELECT &&
+		 subquery->commandType != CMD_GRAPHWRITE))
 		elog(ERROR, "subquery is bogus");
+
+	if (subquery->commandType == CMD_GRAPHWRITE)
+		return false;
 
 	/*
 	 * Can't currently pull up a query with setops (unless it's simple UNION
@@ -1476,7 +1516,8 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 		subquery->limitOffset ||
 		subquery->limitCount ||
 		subquery->hasForUpdate ||
-		subquery->cteList)
+		subquery->cteList ||
+		subquery->shortestpathSource)
 		return false;
 
 	/*
@@ -1778,7 +1819,8 @@ is_simple_union_all(Query *subquery)
 
 	/* Let's just make sure it's a valid subselect ... */
 	if (!IsA(subquery, Query) ||
-		subquery->commandType != CMD_SELECT)
+		(subquery->commandType != CMD_SELECT &&
+		 subquery->commandType != CMD_GRAPHWRITE))
 		elog(ERROR, "subquery is bogus");
 
 	/* Is it a set-operation query at all? */
@@ -2664,6 +2706,10 @@ reduce_outer_joins_pass2(Node *jtnode,
 				 * so there's no way that upper quals could refer to their
 				 * righthand sides, and no point in checking.
 				 */
+				break;
+			case JOIN_CYPHER_MERGE:
+			case JOIN_CYPHER_DELETE:
+				/* do nothing */
 				break;
 			default:
 				elog(ERROR, "unrecognized join type: %d",

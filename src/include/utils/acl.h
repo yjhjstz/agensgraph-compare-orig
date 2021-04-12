@@ -210,6 +210,8 @@ typedef enum AclObjectKind
 	ACL_KIND_EXTENSION,			/* pg_extension */
 	ACL_KIND_PUBLICATION,		/* pg_publication */
 	ACL_KIND_SUBSCRIPTION,		/* pg_subscription */
+	ACL_KIND_GRAPH,				/* ag_graph */
+	ACL_KIND_LABEL,				/* ag_label */
 	MAX_ACL_KIND				/* MUST BE LAST */
 } AclObjectKind;
 
@@ -338,5 +340,7 @@ extern bool pg_subscription_ownercheck(Oid sub_oid, Oid roleid);
 extern bool pg_statistics_object_ownercheck(Oid stat_oid, Oid roleid);
 extern bool has_createrole_privilege(Oid roleid);
 extern bool has_bypassrls_privilege(Oid roleid);
+extern bool ag_graph_ownercheck(Oid graphid, Oid roleid);
+extern bool ag_label_ownercheck(Oid laboid, Oid roleid);
 
 #endif							/* ACL_H */

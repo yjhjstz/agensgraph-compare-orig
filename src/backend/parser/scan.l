@@ -60,6 +60,7 @@ fprintf_to_ereport(const char *fmt, const char *msg)
 int			backslash_quote = BACKSLASH_QUOTE_SAFE_ENCODING;
 bool		escape_string_warning = true;
 bool		standard_conforming_strings = true;
+bool		case_sensitive_ident = false;
 
 /*
  * Set the type of YYSTYPE.
@@ -340,6 +341,8 @@ less_equals		"<="
 greater_equals	">="
 less_greater	"<>"
 not_equals		"!="
+add_equals		"+="
+equals_tilde	"=~"
 
 /*
  * "self" is the set of chars that should be returned as single-character
@@ -365,6 +368,8 @@ operator		{op_chars}+
  * backup when the {real} rule fails to match completely.
  */
 
+hex				0[xX][0-9A-Fa-f]+
+hexfail			0[xX]
 integer			{digit}+
 decimal			(({digit}*\.{digit}+)|({digit}+\.{digit}*))
 decimalfail		{digit}+\.\.
@@ -799,7 +804,16 @@ other			.
 					/* throw back all but the initial u/U */
 					yyless(1);
 					/* and treat it as {identifier} */
-					ident = downcase_truncate_identifier(yytext, yyleng, true);
+					if (case_sensitive_ident)
+					{
+						ident = pstrdup(yytext);
+						truncate_identifier(ident, yyleng, true);
+					}
+					else
+					{
+						ident = downcase_truncate_identifier(yytext, yyleng,
+															 true);
+					}
 					yylval->str = ident;
 					return IDENT;
 				}
@@ -844,6 +858,16 @@ other			.
 					/* We accept both "<>" and "!=" as meaning NOT_EQUALS */
 					SET_YYLLOC();
 					return NOT_EQUALS;
+				}
+
+{add_equals}	{
+					SET_YYLLOC();
+					return ADD_EQUALS;
+				}
+
+{equals_tilde}	{
+					SET_YYLLOC();
+					return EQUALS_TILDE;
 				}
 
 {self}			{
@@ -933,6 +957,15 @@ other			.
 					return PARAM;
 				}
 
+{hex}			{
+					SET_YYLLOC();
+					return process_integer_literal(yytext, yylval);
+				}
+{hexfail}		{
+					yyless(yyleng - 1);
+					SET_YYLLOC();
+					return process_integer_literal(yytext, yylval);
+				}
 {integer}		{
 					SET_YYLLOC();
 					return process_integer_literal(yytext, yylval);
@@ -986,7 +1019,11 @@ other			.
 												yyextra->num_keywords);
 					if (keyword != NULL)
 					{
-						yylval->keyword = keyword->name;
+						if (case_sensitive_ident)
+							yylval->keyword = pstrdup(yytext);
+						else
+							yylval->keyword = keyword->name;
+
 						return keyword->value;
 					}
 
@@ -994,7 +1031,16 @@ other			.
 					 * No.  Convert the identifier to lower case, and truncate
 					 * if necessary.
 					 */
-					ident = downcase_truncate_identifier(yytext, yyleng, true);
+					if (case_sensitive_ident)
+					{
+						ident = pstrdup(yytext);
+						truncate_identifier(ident, yyleng, true);
+					}
+					else
+					{
+						ident = downcase_truncate_identifier(yytext, yyleng,
+															 true);
+					}
 					yylval->str = ident;
 					return IDENT;
 				}
@@ -1210,7 +1256,7 @@ process_integer_literal(const char *token, YYSTYPE *lval)
 	char	   *endptr;
 
 	errno = 0;
-	val = strtol(token, &endptr, 10);
+	val = strtol(token, &endptr, 0);
 	if (*endptr != '\0' || errno == ERANGE
 #ifdef HAVE_LONG_INT_64
 	/* if long > 32 bits, check for overflow of int4 */

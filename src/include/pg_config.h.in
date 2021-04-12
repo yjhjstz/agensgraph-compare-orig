@@ -759,6 +759,15 @@
 /* A string containing the version number, platform, and C compiler */
 #undef PG_VERSION_STR
 
+/* AgensGraph version as a string */
+#undef AG_VERSION
+
+/* AgensGraph compatible version as a string */
+#undef AG_COMP_VERSION
+
+/* AgensGraph Git revision as a string */
+#undef AG_GIT_REVISION
+
 /* Define to 1 to allow profiling output to be saved separately for each
    process. */
 #undef PROFILE_PID_DIR
@@ -846,16 +855,19 @@
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
 
+/* Define to 1 if pg_statsinfo is available. */
+#undef USE_PG_STATSINFO
+
 /* Use replacement snprintf() functions. */
 #undef USE_REPL_SNPRINTF
 
-/* Define to 1 to use Intel SSE 4.2 CRC instructions with a runtime check. */
+/* Define to 1 to use software CRC-32C implementation (slicing-by-8). */
 #undef USE_SLICING_BY_8_CRC32C
 
 /* Define to 1 use Intel SSE 4.2 CRC instructions. */
 #undef USE_SSE42_CRC32C
 
-/* Define to 1 to use Intel SSSE 4.2 CRC instructions with a runtime check. */
+/* Define to 1 to use Intel SSE 4.2 CRC instructions with a runtime check. */
 #undef USE_SSE42_CRC32C_WITH_RUNTIME_CHECK
 
 /* Define to build with systemd support. (--with-systemd) */

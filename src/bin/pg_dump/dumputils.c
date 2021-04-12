@@ -846,3 +846,83 @@ buildACLQueries(PQExpBuffer acl_subquery, PQExpBuffer racl_subquery,
 		printfPQExpBuffer(init_racl_subquery, "NULL");
 	}
 }
+
+/*
+ * Detect whether the given GUC variable is of GUC_LIST_QUOTE type.
+ *
+ * It'd be better if we could inquire this directly from the backend; but even
+ * if there were a function for that, it could only tell us about variables
+ * currently known to guc.c, so that it'd be unsafe for extensions to declare
+ * GUC_LIST_QUOTE variables anyway.  Lacking a solution for that, it doesn't
+ * seem worth the work to do more than have this list, which must be kept in
+ * sync with the variables actually marked GUC_LIST_QUOTE in guc.c.
+ */
+bool
+variable_is_guc_list_quote(const char *name)
+{
+	if (pg_strcasecmp(name, "temp_tablespaces") == 0 ||
+		pg_strcasecmp(name, "session_preload_libraries") == 0 ||
+		pg_strcasecmp(name, "shared_preload_libraries") == 0 ||
+		pg_strcasecmp(name, "local_preload_libraries") == 0 ||
+		pg_strcasecmp(name, "search_path") == 0)
+		return true;
+	else
+		return false;
+}
+
+/*
+ * Checks the passed configuration option, to determine if it is the graph_path
+ * configuration option. format: graph_path=path, possibly string quoted.
+ */
+bool
+isGraphPathConfig(const char *config)
+{
+	char *pos;
+	char *mine;
+	bool isGraphPath;
+
+	mine = pg_strdup(config);
+	pos = strchr(mine, '=');
+	if (pos == NULL)
+	{
+		free(mine);
+		return false;
+	}
+
+	if (*mine == '"' || *mine == '\'')
+		mine++;
+
+	*pos = 0;
+	isGraphPath = strcmp(mine, "graph_path") == 0;
+	free(mine);
+	return isGraphPath;
+}
+
+/*
+ * Extracts the value of a configuration options
+ * Format: config_value=config_value, possibly string quoted
+ */
+char *
+extractConfigValue(const char *config)
+{
+	char *pos;
+	char *mine;
+	char *return_value;
+
+	mine = pg_strdup(config);
+	pos = strchr(mine, '=');
+	if (pos == NULL)
+	{
+		free(mine);
+		return NULL;
+	}
+
+	if (pos[strlen(pos) - 1] == '"' || pos[strlen(pos) - 1] == '\'')
+		pos[strlen(pos) - 1] = '\0';
+
+	*pos = 0;
+	return_value = pg_strdup(pos + 1);
+	free(mine);
+
+	return return_value;
+}

@@ -20,6 +20,7 @@
 #include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "catalog/ag_graph_fn.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
@@ -31,6 +32,7 @@
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
+#include "commands/graphcmds.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
 #include "mb/pg_wchar.h"
@@ -840,14 +842,25 @@ DefineIndex(Oid relationId,
 	 * doing CREATE INDEX CONCURRENTLY, which would see our snapshot as one
 	 * they must wait for.  But first, save the snapshot's xmin to use as
 	 * limitXmin for GetCurrentVirtualXIDs().
-	 *
-	 * Our catalog snapshot could have the same effect, so drop that one too.
 	 */
 	limitXmin = snapshot->xmin;
 
 	PopActiveSnapshot();
 	UnregisterSnapshot(snapshot);
-	InvalidateCatalogSnapshot();
+
+	/*
+	 * The snapshot subsystem could still contain registered snapshots that
+	 * are holding back our process's advertised xmin; in particular, if
+	 * default_transaction_isolation = serializable, there is a transaction
+	 * snapshot that is still active.  The CatalogSnapshot is likewise a
+	 * hazard.  To ensure no deadlocks, we must commit and start yet another
+	 * transaction, and do our wait before any snapshot has been taken in it.
+	 */
+	CommitTransactionCommand();
+	StartTransactionCommand();
+
+	/* We should now definitely not be advertising any xmin. */
+	Assert(MyPgXact->xmin == InvalidTransactionId);
 
 	/*
 	 * The index is now valid in the sense that it contains all currently
@@ -1480,7 +1493,8 @@ GetDefaultOpClass(Oid type_id, Oid am_id)
 /*
  *	makeObjectName()
  *
- *	Create a name for an implicitly created index, sequence, constraint, etc.
+ *	Create a name for an implicitly created index, sequence, constraint,
+ *	extended statistics, etc.
  *
  *	The parameters are typically: the original table name, the original field
  *	name, and a "type" string (such as "seq" or "pkey").    The field name
@@ -1656,6 +1670,8 @@ ChooseIndexName(const char *tabname, Oid namespaceId,
  *
  * We know that less than NAMEDATALEN characters will actually be used,
  * so we can truncate the result once we've generated that many.
+ *
+ * XXX See also ChooseExtendedStatisticNameAddition.
  */
 static char *
 ChooseIndexNameAddition(List *colnames)
@@ -1859,6 +1875,33 @@ ReindexTable(RangeVar *relation, int options)
 		ereport(NOTICE,
 				(errmsg("table \"%s\" has no indexes",
 						relation->relname)));
+
+	return heapOid;
+}
+
+/*
+ * ReindexLabel
+ *		Recreate all indexes of the given label (and its toast table, if any)
+ */
+Oid
+ReindexLabel(RangeVar *relation, int options, ObjectType type)
+{
+	Oid heapOid;
+
+	relation->schemaname = get_graph_path(true);
+
+	/* the lock level used here should match that of reindex_relation() */
+	heapOid = RangeVarGetRelidExtended(relation, ShareLock, false, false,
+									   RangeVarCallbackOwnsTable, NULL);
+
+	CheckLabelType(type, get_relid_laboid(heapOid), "REINDEX");
+
+	if (!reindex_relation(heapOid,
+						  (REINDEX_REL_PROCESS_TOAST |
+						   REINDEX_REL_CHECK_CONSTRAINTS),
+						  options))
+		ereport(NOTICE,
+				(errmsg("label \"%s\" has no index", relation->relname)));
 
 	return heapOid;
 }

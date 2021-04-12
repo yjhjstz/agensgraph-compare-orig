@@ -19,6 +19,7 @@ sub _new
 		options                    => $options,
 		numver                     => '',
 		strver                     => '',
+		revision                   => '',
 		VisualStudioVersion        => undef,
 		MinimumVisualStudioVersion => undef,
 		vcver                      => undef,
@@ -138,6 +139,12 @@ sub GenerateFiles
 	confess "Unable to parse configure.in for all variables!"
 	  if ($self->{strver} eq '' || $self->{numver} eq '');
 
+	chomp(my $rev = `git rev-parse HEAD`);
+	if ($? == 0)
+	{
+		$self->{revision} = $rev;
+	}
+
 	if (IsNewer("src/include/pg_config_os.h", "src/include/port/win32.h"))
 	{
 		print "Copying pg_config_os.h...\n";
@@ -158,6 +165,10 @@ sub GenerateFiles
 			s{PG_VERSION "[^"]+"}{PG_VERSION "$self->{strver}$extraver"};
 			s{PG_VERSION_NUM \d+}{PG_VERSION_NUM $self->{numver}};
 s{PG_VERSION_STR "[^"]+"}{PG_VERSION_STR "PostgreSQL $self->{strver}$extraver, compiled by Visual C++ build " CppAsString2(_MSC_VER) ", $bits-bit"};
+			if ($self->{revision} ne '')
+			{
+				s{AG_GIT_REVISION "[^"]+"}{AG_GIT_REVISION "$self->{revision}"};
+			}
 			print $o $_;
 		}
 		print $o "#define PG_MAJORVERSION \"$self->{majorver}\"\n";
@@ -407,6 +418,14 @@ s{PG_VERSION_STR "[^"]+"}{PG_VERSION_STR "PostgreSQL $self->{strver}$extraver, c
 		chdir('../../..');
 	}
 
+	if (IsNewer('src/bin/agens/sql_help.h', 'src/bin/agens/create_help.pl'))
+	{
+		print "Generating sql_help.h...\n";
+		chdir('src/bin/agens');
+		system("perl create_help.pl ../../../doc/src/sgml/ref sql_help");
+		chdir('../../..');
+	}
+
 	if (IsNewer(
 			'src/interfaces/ecpg/preproc/preproc.y',
 			'src/backend/parser/gram.y'))
@@ -426,10 +445,11 @@ s{PG_VERSION_STR "[^"]+"}{PG_VERSION_STR "PostgreSQL $self->{strver}$extraver, c
 		  || confess "Could not open ecpg_config.h";
 		print $o <<EOF;
 #if (_MSC_VER > 1200)
+#define HAVE_LONG_LONG_INT 1
 #define HAVE_LONG_LONG_INT_64 1
+#endif
 #define ENABLE_THREAD_SAFETY 1
 EOF
-		print $o "#endif\n";
 		close($o);
 	}
 
