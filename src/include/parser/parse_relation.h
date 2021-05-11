@@ -4,7 +4,7 @@
  *	  prototypes for parse_relation.c.
  *
  *
- * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/parser/parse_relation.h
@@ -117,8 +117,5 @@ extern Name attnumAttName(Relation rd, int attid);
 extern Oid	attnumTypeId(Relation rd, int attid);
 extern Oid	attnumCollationId(Relation rd, int attid);
 extern bool isQueryUsingTempRelation(Query *query);
-
-extern void check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
-								 int location);
 
 #endif   /* PARSE_RELATION_H */

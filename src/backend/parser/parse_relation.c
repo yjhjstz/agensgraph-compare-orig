@@ -3,7 +3,7 @@
  * parse_relation.c
  *	  parser support routines dealing with relations
  *
- * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,6 +39,8 @@ static RangeTblEntry *scanNameSpaceForRefname(ParseState *pstate,
 						const char *refname, int location);
 static RangeTblEntry *scanNameSpaceForRelid(ParseState *pstate, Oid relid,
 					  int location);
+static void check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
+					 int location);
 static void markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 					 int rtindex, AttrNumber col);
 static void expandRelation(Oid relid, Alias *eref,
@@ -407,7 +409,7 @@ checkNameSpaceConflicts(ParseState *pstate, List *namespace1,
  *
  * Convenience subroutine to avoid multiple copies of a rather ugly ereport.
  */
-void
+static void
 check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
 					 int location)
 {
@@ -3081,8 +3083,8 @@ errorMissingColumn(ParseState *pstate,
 				 errmsg("column %s.%s does not exist", relname, colname) :
 				 errmsg("column \"%s\" does not exist", colname),
 				 state->rfirst ? closestfirst ?
-		  errhint("Perhaps you meant to reference the column \"%s.%s\".",
-				  state->rfirst->eref->aliasname, closestfirst) :
+			  errhint("Perhaps you meant to reference the column \"%s.%s\".",
+					  state->rfirst->eref->aliasname, closestfirst) :
 				 errhint("There is a column named \"%s\" in table \"%s\", but it cannot be referenced from this part of the query.",
 						 colname, state->rfirst->eref->aliasname) : 0,
 				 parser_errposition(pstate, location)));
