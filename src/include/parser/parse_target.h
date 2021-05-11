@@ -43,4 +43,6 @@ extern TupleDesc expandRecordVariable(ParseState *pstate, Var *var,
 extern char *FigureColname(Node *node);
 extern char *FigureIndexColname(Node *node);
 
+extern void markRTEs(ParseState *pstate, List *oidlist);
+
 #endif							/* PARSE_TARGET_H */

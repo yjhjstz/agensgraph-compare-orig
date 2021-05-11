@@ -13,6 +13,7 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include "postgres_ext.h"
 
 #include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
@@ -338,6 +339,25 @@ markTargetListOrigins(ParseState *pstate, List *targetlist)
 
 		markTargetListOrigin(pstate, tle, (Var *) tle->expr, 0);
 	}
+}
+
+void
+markRTEs(ParseState *pstate, List *oidlist)
+{
+	ListCell   *l;
+	Oid id = InvalidOid;
+	RangeTblEntry *rte;
+	foreach(l, oidlist) {
+		id = lfirst_oid(l);
+		Relation rel = RelationIdGetRelation(id);
+		rte = addRangeTableEntryForRelation(pstate,
+										rel,
+										NULL,
+										false,
+										false);
+	}
+	return;
+	
 }
 
 /*
