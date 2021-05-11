@@ -1842,3 +1842,12 @@ ALTER TABLE test_add_column
 	ADD COLUMN c4 integer;
 \d test_add_column
 DROP TABLE test_add_column;
+
+--
+-- ALTER TABLE restriction with graph objects
+--
+
+CREATE GRAPH g;
+CREATE VLABEL v;
+ALTER TABLE g.v ADD COLUMN tmp int;
+DROP GRAPH g CASCADE;

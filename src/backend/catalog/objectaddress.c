@@ -3322,43 +3322,43 @@ getObjectDescription(const ObjectAddress *object)
 				break;
 			}
 		case OCLASS_GRAPH:
-		{
-			HeapTuple	tuple;
-			Form_ag_graph graphtup;
+			{
+				HeapTuple	tuple;
+				Form_ag_graph graphtup;
 
-			tuple = SearchSysCache1(GRAPHOID,
-			                        ObjectIdGetDatum(object->objectId));
-			if (!HeapTupleIsValid(tuple))
-				elog(ERROR, "cache lookup failed for graph %u",
-				     object->objectId);
+				tuple = SearchSysCache1(GRAPHOID,
+			                            ObjectIdGetDatum(object->objectId));
+				if (!HeapTupleIsValid(tuple))
+					elog(ERROR, "cache lookup failed for graph %u",
+					     object->objectId);
 
-			graphtup = (Form_ag_graph) GETSTRUCT(tuple);
+				graphtup = (Form_ag_graph) GETSTRUCT(tuple);
 
-			appendStringInfo(&buffer, _("graph %s"),
-			                 NameStr(graphtup->graphname));
+				appendStringInfo(&buffer, _("graph %s"),
+				                 NameStr(graphtup->graphname));
 
-			ReleaseSysCache(tuple);
-			break;
-		}
+				ReleaseSysCache(tuple);
+				break;
+			}
 		case OCLASS_LABEL:
-		{
-			HeapTuple	tuple;
-			Form_ag_label labtup;
+			{
+				HeapTuple	tuple;
+				Form_ag_label labtup;
 
-			tuple = SearchSysCache1(LABELOID,
-			                        ObjectIdGetDatum(object->objectId));
-			if (!HeapTupleIsValid(tuple))
-				elog(ERROR, "cache lookup failed for label %u",
-				     object->objectId);
+				tuple = SearchSysCache1(LABELOID,
+				                        ObjectIdGetDatum(object->objectId));
+				if (!HeapTupleIsValid(tuple))
+					elog(ERROR, "cache lookup failed for label %u",
+					     object->objectId);
 
-			labtup = (Form_ag_label) GETSTRUCT(tuple);
+				labtup = (Form_ag_label) GETSTRUCT(tuple);
 
-			appendStringInfo(&buffer, _("label %s"),
-			                 NameStr(labtup->labname));
+				appendStringInfo(&buffer, _("label %s"),
+				                 NameStr(labtup->labname));
 
-			ReleaseSysCache(tuple);
-			break;
-		}
+				ReleaseSysCache(tuple);
+				break;
+			}
 
 		default:
 			appendStringInfo(&buffer, "unrecognized object %u %u %d",

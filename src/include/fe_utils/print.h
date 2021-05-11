@@ -179,11 +179,6 @@ extern const printTextFormat pg_asciiformat;
 extern const printTextFormat pg_asciiformat_old;
 extern printTextFormat pg_utf8format;	/* ideally would be const, but... */
 
-
-extern void disable_sigpipe_trap(void);
-extern void restore_sigpipe_trap(void);
-extern void set_sigpipe_trap_state(bool ignore);
-
 extern void disable_sigpipe_trap(void);
 extern void restore_sigpipe_trap(void);
 extern void set_sigpipe_trap_state(bool ignore);

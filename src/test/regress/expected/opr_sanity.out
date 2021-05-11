@@ -437,9 +437,13 @@ SELECT p1.oid, p1.proname
 FROM pg_proc as p1 LEFT JOIN pg_description as d
      ON p1.tableoid = d.classoid and p1.oid = d.objoid and d.objsubid = 0
 WHERE d.classoid IS NULL AND p1.oid <= 9999;
- oid | proname 
------+---------
-(0 rows)
+ oid  |   proname    
+------+--------------
+ 7000 | graphid
+ 7007 | graphid_oid
+ 7008 | graphid_lid
+ 7097 | graphid_hash
+(4 rows)
 
 -- List of built-in leakproof functions
 --
@@ -1756,11 +1760,16 @@ ORDER BY 1, 2, 3;
         783 |           48 | <@
         783 |           68 | <@
        2742 |            1 | &&
+       2742 |            1 | <
        2742 |            1 | @@
+       2742 |            2 | <=
        2742 |            2 | @>
        2742 |            2 | @@@
        2742 |            3 | <@
+       2742 |            3 | =
        2742 |            4 | =
+       2742 |            4 | >=
+       2742 |            5 | >
        2742 |            7 | @>
        2742 |            9 | ?
        2742 |           10 | ?|
@@ -1819,7 +1828,7 @@ ORDER BY 1, 2, 3;
        4000 |           15 | >
        4000 |           16 | @>
        4000 |           18 | =
-(112 rows)
+(117 rows)
 
 -- Check that all opclass search operators have selectivity estimators.
 -- This is not absolutely required, but it seems a reasonable thing
