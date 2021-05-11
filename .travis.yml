@@ -1,2 +1,15 @@
 language: c
-script: ./configure --prefix=`pwd` && make world && make install-world && bin/initdb -D `pwd`/data && PGPORT=54333 bin/pg_ctl start -D `pwd`/data && PGPORT=54333 make installcheck
+dist: trusty
+sudo: required
+env:
+  - AGDATA=`pwd`/data PGPORT=61958
+
+before_script:
+  - ./configure --prefix="$(pwd)"
+  - make install > /dev/null
+  - export PATH="$(pwd)"/bin:$PATH
+
+script: make check -C src/bin LC_ALL="C"
+
+after_failure:
+  - cat src/test/regress/regression.diffs
