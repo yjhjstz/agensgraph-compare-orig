@@ -798,9 +798,6 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node, shm_toc *toc)
 								 piscan);
 	node->ioss_ScanDesc->xs_want_itup = true;
 
-	dlist_init(&indexstate->vle_ctxs);
-	indexstate->cur_ctx = NULL;
-
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
