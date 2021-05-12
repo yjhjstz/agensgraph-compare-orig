@@ -499,8 +499,8 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 	bool		isOnConflictUpdate;
 	AclMode		targetPerms;
 
-	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
-		elog(ERROR, "DML query to graph objects is not allowed");
+	// if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+	// 	elog(ERROR, "DML query to graph objects is not allowed");
 
 	/* There can't be any outer WITH to worry about */
 	Assert(pstate->p_ctenamespace == NIL);

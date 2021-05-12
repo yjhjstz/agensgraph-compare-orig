@@ -735,6 +735,8 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 	return qry;
 }
 
+
+
 Query *
 transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 {
@@ -790,13 +792,11 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 
 	qry->rtable = pstate->p_rtable;
 	// age
-	qry->resultRelation = list_length(pstate->p_rtable);
+	qry->resultRelation = 1; //list_length(pstate->p_rtable); person & knows
 
 	qry->jointree = makeFromExpr(pstate->p_joinlist, pstate->p_resolved_qual);
 
 	qry->hasSubLinks = pstate->p_hasSubLinks;
-
-
 
 	pstate->p_hasGraphwriteClause = true;
 	qry->hasGraphwriteClause = pstate->p_hasGraphwriteClause;
