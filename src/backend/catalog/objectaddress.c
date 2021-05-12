@@ -2027,7 +2027,7 @@ get_object_address_label(List *object, Relation *relp,
 	if (!OidIsValid(graphid))
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("graph123dd \"%s\" does not exist", graphname)));
+				 errmsg("graph \"%s\" does not exist", graphname)));
 
 	address.classId = LabelRelationId;
 	address.objectId = get_labname_laboid(labname, graphid);

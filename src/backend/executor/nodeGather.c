@@ -178,7 +178,6 @@ ExecGather(PlanState *pstate)
 										  fslot->tts_tupleDescriptor);
 				/* Make a working array showing the active readers */
 				node->nreaders = pcxt->nworkers_launched;
-				node->nextreader = 0;
 				node->reader = (TupleQueueReader **)
 					palloc(node->nreaders * sizeof(TupleQueueReader *));
 				memcpy(node->reader, node->pei->reader,

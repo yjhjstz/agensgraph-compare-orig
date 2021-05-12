@@ -2412,7 +2412,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_XBLOCKS
 		},
 		&WalWriterFlushAfter,
-		(1024*1024) / XLOG_BLCKSZ, 0, INT_MAX,
+		(1024 * 1024) / XLOG_BLCKSZ, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -2782,7 +2782,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_parallel_workers_per_gather,
-		0, 0, MAX_PARALLEL_WORKER_LIMIT,
+		2, 0, MAX_PARALLEL_WORKER_LIMIT,
 		NULL, NULL, NULL
 	},
 

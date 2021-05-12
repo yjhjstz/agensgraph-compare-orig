@@ -227,10 +227,6 @@ typedef struct ExprContext
 	Datum		domainValue_datum;
 	bool		domainValue_isNull;
 
-	/* Value to substitute for CypherListCompVar nodes in expression */
-	Datum		clcValue_datum;
-	bool		clcValue_isNull;
-
 	/* Link to containing EState (NULL if a standalone ExprContext) */
 	struct EState *ecxt_estate;
 
@@ -530,7 +526,6 @@ typedef struct EState
 	struct dsa_area *es_query_dsa;
 
 	bool		es_use_parallel_mode; /* can we use parallel workers? */
-	bool		es_forceReScan;
 } EState;
 
 

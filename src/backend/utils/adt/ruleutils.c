@@ -8924,10 +8924,10 @@ get_rule_expr(Node *node, deparse_context *context,
 
 						if (cind->is_slice)
 						{
-							get_rule_expr(cind->lidx, context, false);
+							get_rule_expr((Node *) cind->lidx, context, false);
 							appendBinaryStringInfo(buf, "..", 2);
 						}
-						get_pathelem_expr(cind->uidx, context, false);
+						get_pathelem_expr((Node *) cind->uidx, context, false);
 
 						appendStringInfoChar(buf, ']');
 					}

@@ -113,7 +113,7 @@ int			effective_cache_size = DEFAULT_EFFECTIVE_CACHE_SIZE;
 
 Cost		disable_cost = 1.0e10;
 
-int			max_parallel_workers_per_gather = 0;
+int			max_parallel_workers_per_gather = 2;
 
 bool		enable_seqscan = true;
 bool		enable_indexscan = true;
@@ -2346,9 +2346,9 @@ final_cost_nestloop(PlannerInfo *root, NestPath *path,
 	else if (path->jointype == JOIN_VLE)
 	{
 		SpecialJoinInfo *sjinfo = extra->sjinfo;
-		int base = (sjinfo->min_hops > 0) ? 1 : 0;
-		int max_hops = (sjinfo->max_hops == -1) ? 10 : sjinfo->max_hops;
-		int inner_loop_cnt = max_hops - base;
+		int			base = (sjinfo->min_hops > 0) ? 1 : 0;
+		int			max_hops = (sjinfo->max_hops == -1) ? 10 : sjinfo->max_hops;
+		int			inner_loop_cnt = max_hops - base;
 
 		ntuples = outer_path_rows +
 				  outer_path_rows * inner_path_rows * inner_loop_cnt;
