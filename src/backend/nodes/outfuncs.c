@@ -282,6 +282,7 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_NODE_FIELD(utilityStmt);
 	WRITE_LOCATION_FIELD(stmt_location);
 	WRITE_LOCATION_FIELD(stmt_len);
+
 	WRITE_BOOL_FIELD(nVlePaths);
 }
 
@@ -2259,17 +2260,6 @@ _outLimitPath(StringInfo str, const LimitPath *node)
 }
 
 static void
-_outGatherMergePath(StringInfo str, const GatherMergePath *node)
-{
-	WRITE_NODE_TYPE("GATHERMERGEPATH");
-
-	_outPathInfo(str, (const Path *) node);
-
-	WRITE_NODE_FIELD(subpath);
-	WRITE_INT_FIELD(num_workers);
-}
-
-static void
 _outDijkstraPath(StringInfo str, const DijkstraPath *node)
 {
 	WRITE_NODE_TYPE("DIJKSTRA");
@@ -2284,6 +2274,17 @@ _outDijkstraPath(StringInfo str, const DijkstraPath *node)
 	WRITE_NODE_FIELD(source);
 	WRITE_NODE_FIELD(target);
 	WRITE_NODE_FIELD(limit);
+}
+
+static void
+_outGatherMergePath(StringInfo str, const GatherMergePath *node)
+{
+	WRITE_NODE_TYPE("GATHERMERGEPATH");
+
+	_outPathInfo(str, (const Path *) node);
+
+	WRITE_NODE_FIELD(subpath);
+	WRITE_INT_FIELD(num_workers);
 }
 
 static void
@@ -3085,6 +3086,11 @@ _outQuery(StringInfo str, const Query *node)
 	/* withCheckOptions intentionally omitted, see comment in parsenodes.h */
 	WRITE_LOCATION_FIELD(stmt_location);
 	WRITE_LOCATION_FIELD(stmt_len);
+
+	/*
+	 * AgensGraph
+	 */
+	
 	WRITE_INT_FIELD(dijkstraWeight);
 	WRITE_BOOL_FIELD(dijkstraWeightOut);
 	WRITE_NODE_FIELD(dijkstraEndId);
@@ -4013,7 +4019,6 @@ _outGraphVertex(StringInfo str, const GraphVertex *node)
 	WRITE_BOOL_FIELD(create);
 	WRITE_OID_FIELD(relid);
 	WRITE_NODE_FIELD(expr);
-	WRITE_NODE_FIELD(qual);
 }
 
 static void
@@ -4025,7 +4030,6 @@ _outGraphEdge(StringInfo str, const GraphEdge *node)
 	WRITE_INT_FIELD(resno);
 	WRITE_OID_FIELD(relid);
 	WRITE_NODE_FIELD(expr);
-	WRITE_NODE_FIELD(qual);
 }
 
 static void

@@ -935,12 +935,6 @@ advance_transition_function(AggState *aggstate,
 				MemoryContextGetParent(DatumGetEOHP(newVal)->eoh_context) == CurrentMemoryContext)
 				 /* do nothing */ ;
 			else
-				if (DatumIsReadWriteExpandedObject(newVal,
-											   false,
-											   pertrans->transtypeLen) &&
-				MemoryContextGetParent(DatumGetEOHP(newVal)->eoh_context) == CurrentMemoryContext)
-				 /* do nothing */ ;
-			else
 				newVal = datumCopy(newVal,
 								   pertrans->transtypeByVal,
 								   pertrans->transtypeLen);
@@ -1294,12 +1288,6 @@ advance_combine_function(AggState *aggstate,
 				MemoryContextGetParent(DatumGetEOHP(newVal)->eoh_context) == CurrentMemoryContext)
 				 /* do nothing */ ;
 			else
-				if (DatumIsReadWriteExpandedObject(newVal,
-											   false,
-											   pertrans->transtypeLen) &&
-				MemoryContextGetParent(DatumGetEOHP(newVal)->eoh_context) == CurrentMemoryContext)
-				 /* do nothing */ ;
-			else
 				newVal = datumCopy(newVal,
 								   pertrans->transtypeByVal,
 								   pertrans->transtypeLen);
@@ -1580,7 +1568,7 @@ finalize_aggregate(AggState *aggstate,
 
 		/* Fill in the transition state value */
 		fcinfo.arg[0] = MakeExpandedObjectReadOnly(pergroupstate->transValue,
-											 pergroupstate->transValueIsNull,
+												   pergroupstate->transValueIsNull,
 												   pertrans->transtypeLen);
 		fcinfo.argnull[0] = pergroupstate->transValueIsNull;
 		anynull |= pergroupstate->transValueIsNull;
@@ -1660,8 +1648,8 @@ finalize_partialaggregate(AggState *aggstate,
 			FunctionCallInfo fcinfo = &pertrans->serialfn_fcinfo;
 
 			fcinfo->arg[0] = MakeExpandedObjectReadOnly(pergroupstate->transValue,
-											 pergroupstate->transValueIsNull,
-													 pertrans->transtypeLen);
+														pergroupstate->transValueIsNull,
+														pertrans->transtypeLen);
 			fcinfo->argnull[0] = pergroupstate->transValueIsNull;
 
 			*resultVal = FunctionCallInvoke(fcinfo);
@@ -1766,10 +1754,6 @@ finalize_aggregates(AggState *aggstate,
 	int			aggno;
 	int			transno;
 
-	/*
-	 * If there were any DISTINCT and/or ORDER BY aggregates, sort their
-	 * inputs and run the transition functions.
-	 */
 	/*
 	 * If there were any DISTINCT and/or ORDER BY aggregates, sort their
 	 * inputs and run the transition functions.

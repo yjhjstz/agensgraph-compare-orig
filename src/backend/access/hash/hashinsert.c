@@ -41,7 +41,6 @@ _hash_doinsert(Relation rel, IndexTuple itup, Relation heapRel)
 	HashMetaPage metap;
 	HashMetaPage usedmetap = NULL;
 	Page		metapage;
-	Page		metapage;
 	Page		page;
 	HashPageOpaque pageopaque;
 	Size		itemsz;

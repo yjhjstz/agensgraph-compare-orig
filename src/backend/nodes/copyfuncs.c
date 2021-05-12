@@ -5051,7 +5051,6 @@ _copyGraphVertex(const GraphVertex *from)
 	COPY_SCALAR_FIELD(create);
 	COPY_SCALAR_FIELD(relid);
 	COPY_NODE_FIELD(expr);
-	COPY_NODE_FIELD(qual);
 
 	return newnode;
 }
@@ -5065,7 +5064,6 @@ _copyGraphEdge(const GraphEdge *from)
 	COPY_SCALAR_FIELD(resno);
 	COPY_SCALAR_FIELD(relid);
 	COPY_NODE_FIELD(expr);
-	COPY_NODE_FIELD(qual);
 
 	return newnode;
 }

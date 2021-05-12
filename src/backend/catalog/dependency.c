@@ -1286,11 +1286,6 @@ doDeletion(const ObjectAddress *object, int flags)
 		case OCLASS_SUBSCRIPTION:
 			elog(ERROR, "global objects cannot be deleted by doDeletion");
 			break;
-
-			/*
-			 * There's intentionally no default: case here; we want the
-			 * compiler to warn if a new OCLASS hasn't been handled above.
-			 */
 		case OCLASS_GRAPH:
 			RemoveGraphById(object->objectId);
 			break;
@@ -1298,10 +1293,11 @@ doDeletion(const ObjectAddress *object, int flags)
 		case OCLASS_LABEL:
 			label_drop_with_catalog(object->objectId);
 			break;
-
-		default:
-			elog(ERROR, "unrecognized object class: %u",
-				 object->classId);
+			
+			/*
+			 * There's intentionally no default: case here; we want the
+			 * compiler to warn if a new OCLASS hasn't been handled above.
+			 */
 	}
 }
 

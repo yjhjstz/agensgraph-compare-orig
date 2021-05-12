@@ -8203,9 +8203,6 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 			case 0:
 				values[2] = NULL;
 				break;
-			case 0:
-				values[2] = NULL;
-				break;
 			default:
 				elog(ERROR, "unrecognized GUC units value: %d",
 					 conf->flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME));

@@ -12147,9 +12147,6 @@ dumpAccessMethod(Archive *fout, AccessMethodInfo *aminfo)
 		binary_upgrade_extension_member(q, &aminfo->dobj,
 										"ACCESS METHOD", qamname, NULL);
 
-	if (dopt->binary_upgrade)
-		binary_upgrade_extension_member(q, &aminfo->dobj, labelq->data);
-
 	if (aminfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
 		ArchiveEntry(fout, aminfo->dobj.catId, aminfo->dobj.dumpId,
 					 aminfo->dobj.name,

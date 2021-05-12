@@ -97,6 +97,9 @@ typedef struct ExprState
 
 	Datum	   *innermost_domainval;
 	bool	   *innermost_domainnull;
+
+	Datum	   *innermost_cypherlistcomp_iterval;
+	bool	   *innermost_cypherlistcomp_iternull;
 } ExprState;
 
 
@@ -835,61 +838,6 @@ typedef struct DomainConstraintState
 	Expr	   *check_expr;		/* for CHECK, a boolean expression */
 	ExprState  *check_exprstate;	/* check_expr's eval state, or NULL */
 } DomainConstraintState;
-
-typedef struct EdgeRefPropState
-{
-	ExprState 	xprstate;
-	ExprState  *arg;
-	Relation   *edgerefrels;
-	Snapshot    snapshot;
-} EdgeRefPropState;
-
-typedef struct EdgeRefRowState
-{
-	ExprState 	xprstate;
-	ExprState  *arg;
-	Datum		val;
-	Relation   *edgerefrels;
-	Snapshot    snapshot;
-} EdgeRefRowState;
-
-typedef struct EdgeRefRowsState
-{
-	ExprState 	xprstate;
-	ExprState  *arg;
-	EdgeRefRowState *rowstate;
-	FmgrInfo    aa_flinfo;
-	FunctionCallInfoData aa_fcinfo;
-	FuncExpr	aa_fn_expr;
-	ArrayMetaState iter_meta;
-} EdgeRefRowsState;
-
-typedef struct CypherMapExprState
-{
-	ExprState	xprstate;
-	List	   *keyvals;		/* key, value, key, value, ... (ExprState's) */
-} CypherMapExprState;
-
-typedef struct CypherListExprState
-{
-	ExprState	xprstate;
-	List	   *elems;
-} CypherListExprState;
-
-typedef struct CypherListCompExprState
-{
-	ExprState	xprstate;
-	ExprState  *list;
-	ExprState  *cond;
-	ExprState  *elem;
-} CypherListCompExprState;
-
-typedef struct CypherAccessExprState
-{
-	ExprState	xprstate;
-	ExprState  *arg;
-	List	   *path;
-} CypherAccessExprState;
 
 /* ----------------------------------------------------------------
  *				 Executor State Trees

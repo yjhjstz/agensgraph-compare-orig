@@ -1078,8 +1078,6 @@ preprocess_graph_pattern(PlannerInfo *root, List *pattern)
 
 			gvertex->expr = preprocess_expression(root, gvertex->expr,
 												  EXPRKIND_TARGET);
-			gvertex->qual = preprocess_expression(root, gvertex->qual,
-												  EXPRKIND_QUAL);
 		}
 		else
 		{
@@ -1089,8 +1087,6 @@ preprocess_graph_pattern(PlannerInfo *root, List *pattern)
 
 			gedge->expr = preprocess_expression(root, gedge->expr,
 												EXPRKIND_TARGET);
-			gedge->qual = preprocess_expression(root, gedge->qual,
-												EXPRKIND_QUAL);
 		}
 	}
 }
@@ -2072,36 +2068,6 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 											parse->dijkstraSource,
 											parse->dijkstraTarget,
 											parse->dijkstraLimit);
-	}
-
-	/*
-	 * If there are set-returning functions in the tlist, scale up the output
-	 * rowcounts of all surviving Paths to account for that.  Note that if any
-	 * SRFs appear in sorting or grouping columns, we'll have underestimated
-	 * the numbers of rows passing through earlier steps; but that's such a
-	 * weird usage that it doesn't seem worth greatly complicating matters to
-	 * account for it.
-	 */
-	tlist_rows = tlist_returns_set_rows(tlist);
-	if (tlist_rows > 1)
-	{
-		foreach(lc, current_rel->pathlist)
-		{
-			Path	   *path = (Path *) lfirst(lc);
-
-			/*
-			 * We assume that execution costs of the tlist as such were
-			 * already accounted for.  However, it still seems appropriate to
-			 * charge something more for the executor's general costs of
-			 * processing the added tuples.  The cost is probably less than
-			 * cpu_tuple_cost, though, so we arbitrarily use half of that.
-			 */
-			path->total_cost += path->rows * (tlist_rows - 1) *
-				cpu_tuple_cost / 2;
-
-			path->rows *= tlist_rows;
-		}
-		/* No need to run set_cheapest; we're keeping all paths anyway. */
 	}
 
 	/*

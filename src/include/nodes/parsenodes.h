@@ -179,7 +179,6 @@ typedef struct Query
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
 
-	/* AgensGraph */
 	int			dijkstraWeight;
 	bool		dijkstraWeightOut;
 	Node	   *dijkstraEndId;
@@ -3475,7 +3474,7 @@ typedef struct CreateGraphStmt
 {
 	NodeTag		type;
 	char	   *graphname;		/* the name of the graph to create */
-	Node	   *authrole;		/* the owner of the created graph */
+	RoleSpec   *authrole;		/* the owner of the created graph */
 	bool		if_not_exists;	/* just do nothing if graph already exists? */
 } CreateGraphStmt;
 

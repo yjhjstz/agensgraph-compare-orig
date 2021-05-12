@@ -19,7 +19,6 @@
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
-#include "catalog/pg_class.h"
 #include "catalog/pg_proc.h"
 #include "commands/defrem.h"
 #include "commands/graphcmds.h"
@@ -465,11 +464,11 @@ does_not_exist_skipping(ObjectType objtype, Node *object)
 			break;
 		case OBJECT_VLABEL:
 			msg = gettext_noop("vlabel \"%s\" does not exist, skipping");
-			name = strVal((Value *) object);
+			name = NameListToString(castNode(List, object));
 			break;
 		case OBJECT_ELABEL:
 			msg = gettext_noop("elabel \"%s\" does not exist, skipping");
-			name = strVal((Value *) object);
+			name = NameListToString(castNode(List, object));
 			break;
 		default:
 			elog(ERROR, "unrecognized object type: %d", (int) objtype);

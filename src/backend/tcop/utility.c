@@ -1676,12 +1676,14 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_CreateGraphStmt:
-				CreateGraphCommand((CreateGraphStmt *) parsetree, queryString);
+				CreateGraphCommand((CreateGraphStmt *) parsetree, queryString,
+									pstmt->stmt_location, pstmt->stmt_len);
 				commandCollected = true;
 				break;
 
 			case T_CreateLabelStmt:
 				CreateLabelCommand((CreateLabelStmt *) parsetree, queryString,
+								   pstmt->stmt_location, pstmt->stmt_len,
 								   params);
 				/* stashed internally */
 				commandCollected = true;
@@ -1689,13 +1691,15 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_CreateConstraintStmt:
 				CreateConstraintCommand((CreateConstraintStmt *) parsetree,
-										queryString, params);
+										queryString, pstmt->stmt_location,
+										pstmt->stmt_len, params);
 				commandCollected = true;
 				break;
 
 			case T_DropConstraintStmt:
 				DropConstraintCommand((DropConstraintStmt *) parsetree,
-									  queryString, params);
+									  queryString, pstmt->stmt_location,
+									  pstmt->stmt_len, params);
 				commandCollected = true;
 				break;
 
@@ -1751,6 +1755,7 @@ ProcessUtilitySlow(ParseState *pstate,
 									InvalidOid, /* no predefined OID */
 									false,		/* is_alter_table */
 									true,		/* check_rights */
+									true,		/* check_not_in_use */
 									false,		/* skip_build */
 									false);		/* quiet */
 

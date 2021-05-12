@@ -651,6 +651,8 @@ AlterObjectNamespace_oid(Oid classId, Oid objid, Oid nspOid,
 		case OCLASS_PUBLICATION_REL:
 		case OCLASS_SUBSCRIPTION:
 		case OCLASS_TRANSFORM:
+		case OCLASS_GRAPH:
+		case OCLASS_LABEL:
 			/* ignore object types that don't have schema-qualified names */
 			break;
 
@@ -829,7 +831,17 @@ ExecAlterOwnerStmt(AlterOwnerStmt *stmt)
 			return AlterDatabaseOwner(strVal((Value *) stmt->object), newowner);
 
 		case OBJECT_SCHEMA:
-			return AlterSchemaOwner(strVal((Value *) stmt->object), newowner);
+			{
+				char *name = strVal((Value *) stmt->object);
+
+				if (OidIsValid(get_graphname_oid(name)))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_SCHEMA_NAME),
+							 errmsg("cannot alter schema \"%s\"", name),
+							 errhint("Use ALTER GRAPH instead")));
+
+				return AlterSchemaOwner(name, newowner);
+			}
 
 		case OBJECT_TYPE:
 		case OBJECT_DOMAIN:		/* same as TYPE */
@@ -903,7 +915,7 @@ ExecAlterOwnerStmt(AlterOwnerStmt *stmt)
 
 		case OBJECT_GRAPH:
 			{
-				char *name = strVal(linitial(stmt->object));
+				char *name = strVal((Value *) stmt->object);
 
 				if (!OidIsValid(get_graphname_oid(name)))
 					ereport(ERROR,

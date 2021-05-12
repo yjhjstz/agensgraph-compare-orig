@@ -9337,6 +9337,8 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 			case OCLASS_PUBLICATION_REL:
 			case OCLASS_SUBSCRIPTION:
 			case OCLASS_TRANSFORM:
+			case OCLASS_GRAPH:
+			case OCLASS_LABEL:
 
 				/*
 				 * We don't expect any of these sorts of objects to depend on
@@ -12387,12 +12389,6 @@ ATExecGenericOptions(Relation rel, List *options)
 							  repl_val, repl_null, repl_repl);
 
 	CatalogTupleUpdate(ftrel, &tuple->t_self, tuple);
-
-	/*
-	 * Invalidate relcache so that all sessions will refresh any cached plans
-	 * that might depend on the old options.
-	 */
-	CacheInvalidateRelcache(rel);
 
 	/*
 	 * Invalidate relcache so that all sessions will refresh any cached plans

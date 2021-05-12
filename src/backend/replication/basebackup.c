@@ -60,8 +60,6 @@ static int64 _tarWriteHeader(const char *filename, const char *linktarget,
 				struct stat *statbuf, bool sizeonly);
 static int64 _tarWriteDir(const char *pathbuf, int basepathlen, struct stat *statbuf,
 			 bool sizeonly);
-static int64 _tarWriteDir(const char *pathbuf, int basepathlen, struct stat * statbuf,
-			 bool sizeonly);
 static void send_int8_string(StringInfoData *buf, int64 intval);
 static void SendBackupHeader(List *tablespaces);
 static void base_backup_cleanup(int code, Datum arg);
@@ -1329,30 +1327,6 @@ _tarWriteDir(const char *pathbuf, int basepathlen, struct stat *statbuf,
 		statbuf->st_mode = S_IFDIR | S_IRWXU;
 
 	return _tarWriteHeader(pathbuf + basepathlen + 1, NULL, statbuf, sizeonly);
-}
-
-/*
- * Write tar header for a directory.  If the entry in statbuf is a link then
- * write it as a directory anyway.
- */
-static int64
-_tarWriteDir(const char *pathbuf, int basepathlen, struct stat * statbuf,
-			 bool sizeonly)
-{
-	if (sizeonly)
-		/* Directory headers are always 512 bytes */
-		return 512;
-
-	/* If symlink, write it as a directory anyway */
-#ifndef WIN32
-	if (S_ISLNK(statbuf->st_mode))
-#else
-	if (pgwin32_is_junction(pathbuf))
-#endif
-		statbuf->st_mode = S_IFDIR | S_IRWXU;
-
-	_tarWriteHeader(pathbuf + basepathlen + 1, NULL, statbuf);
-	return 512;
 }
 
 /*

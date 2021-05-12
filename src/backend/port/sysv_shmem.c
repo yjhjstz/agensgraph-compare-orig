@@ -68,33 +68,6 @@
 #endif
 
 
-/*
- * As of PostgreSQL 9.3, we normally allocate only a very small amount of
- * System V shared memory, and only for the purposes of providing an
- * interlock to protect the data directory.  The real shared memory block
- * is allocated using mmap().  This works around the problem that many
- * systems have very low limits on the amount of System V shared memory
- * that can be allocated.  Even a limit of a few megabytes will be enough
- * to run many copies of PostgreSQL without needing to adjust system settings.
- *
- * We assume that no one will attempt to run PostgreSQL 9.3 or later on
- * systems that are ancient enough that anonymous shared memory is not
- * supported, such as pre-2.4 versions of Linux.  If that turns out to be
- * false, we might need to add compile and/or run-time tests here and do this
- * only if the running kernel supports it.
- *
- * However, we must always disable this logic in the EXEC_BACKEND case, and
- * fall back to the old method of allocating the entire segment using System V
- * shared memory, because there's no way to attach an anonymous mmap'd segment
- * to a process after exec().  Since EXEC_BACKEND is intended only for
- * developer use, this shouldn't be a big problem.  Because of this, we do
- * not worry about supporting anonymous shmem in the EXEC_BACKEND cases below.
- */
-#ifndef EXEC_BACKEND
-#define USE_ANONYMOUS_SHMEM
-#endif
-
-
 typedef key_t IpcMemoryKey;		/* shared memory key passed to shmget(2) */
 typedef int IpcMemoryId;		/* shared memory ID returned by shmget(2) */
 

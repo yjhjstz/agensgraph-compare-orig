@@ -1026,6 +1026,8 @@ _enableTriggersIfNecessary(ArchiveHandle *AH, TocEntry *te)
 	/*
 	 * Enable them.
 	 */
+	_selectOutputSchema(AH, te->namespace, te->section);
+
 	ahprintf(AH, "ALTER TABLE %s ENABLE TRIGGER ALL;\n\n",
 			 fmtQualifiedId(PQserverVersion(AH->connection),
 							te->namespace,

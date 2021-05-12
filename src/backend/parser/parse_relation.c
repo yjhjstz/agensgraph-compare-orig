@@ -52,7 +52,6 @@ static void expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 				int rtindex, int sublevels_up,
 				int location, bool include_dropped,
 				List **colnames, List **colvars);
-static int32 *getValuesTypmods(RangeTblEntry *rte);
 static int	specialAttNum(const char *attname);
 static bool isQueryUsingTempRelation_walker(Node *node, void *context);
 
@@ -2475,7 +2474,8 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 											  sublevels_up);
 							varnode->location = location;
 
-						*colvars = lappend(*colvars, varnode);}
+							*colvars = lappend(*colvars, varnode);
+						}
 						else if (include_dropped)
 						{
 							/*
@@ -2599,74 +2599,6 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 			*colvars = lappend(*colvars, varnode);
 		}
 	}
-}
-
-/*
- * getValuesTypmods -- expandRTE subroutine
- *
- * Identify per-column typmods for the given VALUES RTE.  Returns a
- * palloc'd array.
- */
-static int32 *
-getValuesTypmods(RangeTblEntry *rte)
-{
-	int32	   *coltypmods;
-	List	   *firstrow;
-	int			ncolumns,
-				nvalid,
-				i;
-	ListCell   *lc;
-
-	Assert(rte->values_lists != NIL);
-	firstrow = (List *) linitial(rte->values_lists);
-	ncolumns = list_length(firstrow);
-	coltypmods = (int32 *) palloc(ncolumns * sizeof(int32));
-	nvalid = 0;
-
-	/* Collect the typmods from the first VALUES row */
-	i = 0;
-	foreach(lc, firstrow)
-	{
-		Node	   *col = (Node *) lfirst(lc);
-
-		coltypmods[i] = exprTypmod(col);
-		if (coltypmods[i] >= 0)
-			nvalid++;
-		i++;
-	}
-
-	/*
-	 * Scan remaining rows; as soon as we have a non-matching typmod for a
-	 * column, reset that typmod to -1.  We can bail out early if all typmods
-	 * become -1.
-	 */
-	if (nvalid > 0)
-	{
-		for_each_cell(lc, lnext(list_head(rte->values_lists)))
-		{
-			List	   *thisrow = (List *) lfirst(lc);
-			ListCell   *lc2;
-
-			Assert(list_length(thisrow) == ncolumns);
-			i = 0;
-			foreach(lc2, thisrow)
-			{
-				Node	   *col = (Node *) lfirst(lc2);
-
-				if (coltypmods[i] >= 0 && coltypmods[i] != exprTypmod(col))
-				{
-					coltypmods[i] = -1;
-					nvalid--;
-				}
-				i++;
-			}
-
-			if (nvalid <= 0)
-				break;
-		}
-	}
-
-	return coltypmods;
 }
 
 /*

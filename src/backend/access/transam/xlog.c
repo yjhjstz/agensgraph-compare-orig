@@ -10817,8 +10817,8 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 			durable_unlink(BACKUP_LABEL_FILE, ERROR);
 
 			/*
-			 * Remove tablespace_map file if present, it is created only if 
-			 * thereare tablespaces.
+			 * Remove tablespace_map file if present, it is created only if
+			 * there are tablespaces.
 			 */
 			durable_unlink(TABLESPACE_MAP, DEBUG1);
 		}
@@ -10853,8 +10853,6 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 		XLogCtl->Insert.nonExclusiveBackups == 0)
 	{
 		XLogCtl->Insert.forcePageWrites = false;
-		}
-		PG_END_ENSURE_ERROR_CLEANUP(pg_stop_backup_callback, (Datum) BoolGetDatum(exclusive));
 	}
 
 	/*

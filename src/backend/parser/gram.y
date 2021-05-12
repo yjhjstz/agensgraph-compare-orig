@@ -998,6 +998,7 @@ stmt :
 			| DoStmt
 			| DropAssertStmt
 			| DropCastStmt
+			| DropConstraintStmt
 			| DropOpClassStmt
 			| DropOpFamilyStmt
 			| DropOwnedStmt
@@ -4313,7 +4314,7 @@ DropPLangStmt:
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_LANGUAGE;
-					n->objects = list_make1(makeString($4));
+					n->objects = list_make1(makeString(preserve_downcasing_ident($4)));
 					n->behavior = $5;
 					n->missing_ok = false;
 					n->concurrent = false;
@@ -4323,7 +4324,7 @@ DropPLangStmt:
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_LANGUAGE;
-					n->objects = list_make1(makeString($6));
+					n->objects = list_make1(makeString(preserve_downcasing_ident($6)));
 					n->behavior = $7;
 					n->missing_ok = true;
 					n->concurrent = false;
@@ -4541,7 +4542,7 @@ AlterExtensionContentsStmt:
 					n->extname = $3;
 					n->action = $4;
 					n->objtype = OBJECT_LANGUAGE;
-					n->object = (Node *) makeString($7);
+					n->object = (Node *) makeString(preserve_downcasing_ident($7));
 					$$ = (Node *)n;
 				}
 			| ALTER EXTENSION name add_drop OPERATOR operator_with_argtypes
@@ -6274,7 +6275,6 @@ drop_type_any_name:
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
-			| GRAPH									{ $$ = OBJECT_GRAPH; }
 			| ELABEL								{ $$ = OBJECT_ELABEL; }
 			| VLABEL								{ $$ = OBJECT_VLABEL; }
 			| PROPERTY INDEX						{ $$ = OBJECT_PROPERTY_INDEX; }
@@ -6289,6 +6289,7 @@ drop_type_name:
 			| PUBLICATION							{ $$ = OBJECT_PUBLICATION; }
 			| SCHEMA								{ $$ = OBJECT_SCHEMA; }
 			| SERVER								{ $$ = OBJECT_FOREIGN_SERVER; }
+			| GRAPH									{ $$ = OBJECT_GRAPH; }
 		;
 
 /* object types attached to a table */
@@ -6531,7 +6532,6 @@ comment_type_any_name:
 			| TEXT_P SEARCH DICTIONARY			{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH PARSER				{ $$ = OBJECT_TSPARSER; }
 			| TEXT_P SEARCH TEMPLATE			{ $$ = OBJECT_TSTEMPLATE; }
-			| GRAPH								{ $$ = OBJECT_GRAPH; }
 			| VLABEL							{ $$ = OBJECT_VLABEL; }
 			| ELABEL							{ $$ = OBJECT_ELABEL; }
 		;
@@ -6550,6 +6550,7 @@ comment_type_name:
 			| SERVER							{ $$ = OBJECT_FOREIGN_SERVER; }
 			| SUBSCRIPTION						{ $$ = OBJECT_SUBSCRIPTION; }
 			| TABLESPACE						{ $$ = OBJECT_TABLESPACE; }
+			| GRAPH								{ $$ = OBJECT_GRAPH; }
 		;
 
 comment_text:
@@ -7803,7 +7804,7 @@ createfunc_opt_item:
 				}
 			| LANGUAGE NonReservedWord_or_Sconst
 				{
-					$$ = makeDefElem("language", (Node *)makeString(preserve_downcasing_ident($2), @1));
+					$$ = makeDefElem("language", (Node *)makeString(preserve_downcasing_ident($2)), @1);
 				}
 			| TRANSFORM transform_type_list
 				{
@@ -8037,7 +8038,7 @@ dostmt_opt_item:
 				}
 			| LANGUAGE NonReservedWord_or_Sconst
 				{
-					$$ = makeDefElem("language", (Node *)makeString(preserve_downcasing_ident($2), @1));
+					$$ = makeDefElem("language", (Node *)makeString(preserve_downcasing_ident($2)), @1);
 				}
 		;
 
@@ -8356,8 +8357,8 @@ RenameStmt: ALTER AGGREGATE aggregate_with_argtypes RENAME TO name
 				{
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_LANGUAGE;
-					n->object = (Node *) makeString($4);
-					n->newname = $7;
+					n->object = (Node *) makeString(preserve_downcasing_ident($4));
+					n->newname = preserve_downcasing_ident($7);
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -8745,8 +8746,8 @@ RenameStmt: ALTER AGGREGATE aggregate_with_argtypes RENAME TO name
 				{
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_TYPE;
-					n->object = (Node *) $3;
-					n->newname = $6;
+					n->object = (Node *) preserve_downcasing_type_func_namelist($3);
+					n->newname = preserve_downcasing_type_func_name($6);
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -9090,7 +9091,7 @@ AlterObjectSchemaStmt:
 				{
 					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
 					n->objectType = OBJECT_TYPE;
-					n->object = (Node *) $3;
+					n->object = (Node *) preserve_downcasing_type_func_namelist($3);
 					n->newschema = $6;
 					n->missing_ok = false;
 					$$ = (Node *)n;
@@ -9190,7 +9191,7 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
 				{
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_LANGUAGE;
-					n->object = (Node *) makeString($4);
+					n->object = (Node *) makeString(preserve_downcasing_ident($4));
 					n->newowner = $7;
 					$$ = (Node *)n;
 				}
@@ -9238,7 +9239,7 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
 				{
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_TYPE;
-					n->object = (Node *) $3;
+					n->object = (Node *) preserve_downcasing_type_func_namelist($3);
 					n->newowner = $6;
 					$$ = (Node *)n;
 				}
@@ -9318,7 +9319,7 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
 				{
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_GRAPH;
-					n->object = list_make1(makeString($3));
+					n->object = (Node *) makeString($3);
 					n->newowner = $6;
 					$$ = (Node *)n;
 				}

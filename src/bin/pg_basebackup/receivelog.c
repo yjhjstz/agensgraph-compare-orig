@@ -478,9 +478,6 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 		if (stream->synchronous)
 			reportFlushPosition = true;
 		else
-			if (stream->synchronous)
-			reportFlushPosition = true;
-		else
 			reportFlushPosition = false;
 		slotcmd[0] = 0;
 	}

@@ -2344,6 +2344,7 @@ final_cost_nestloop(PlannerInfo *root, NestPath *path,
 	}
 	else if (path->jointype == JOIN_VLE)
 	{
+		SpecialJoinInfo *sjinfo = extra->sjinfo;
 		int base = (sjinfo->min_hops > 0) ? 1 : 0;
 		int max_hops = (sjinfo->max_hops == -1) ? 10 : sjinfo->max_hops;
 		int inner_loop_cnt = max_hops - base;
@@ -4375,7 +4376,6 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 	{
 		ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
 		bool		ref_is_outer;
-		bool		use_smallest_selectivity = false;
 		List	   *removedlist;
 		ListCell   *cell;
 		ListCell   *prev;
@@ -4552,26 +4552,6 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 			double		ref_tuples = Max(ref_rel->tuples, 1.0);
 
 			fkselec *= 1.0 / ref_tuples;
-		}
-
-		/*
-		 * Common code for cases where we should use the smallest selectivity
-		 * that would be computed for any one of the FK's clauses.
-		 */
-		if (use_smallest_selectivity)
-		{
-			Selectivity thisfksel = 1.0;
-
-			foreach(cell, removedlist)
-			{
-				RestrictInfo *rinfo = (RestrictInfo *) lfirst(cell);
-				Selectivity csel;
-
-				csel = clause_selectivity(root, (Node *) rinfo,
-										  0, jointype, sjinfo);
-				thisfksel = Min(thisfksel, csel);
-			}
-			fkselec *= thisfksel;
 		}
 	}
 

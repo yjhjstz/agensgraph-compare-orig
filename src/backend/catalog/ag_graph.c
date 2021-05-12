@@ -17,10 +17,8 @@
 #include "catalog/ag_graph_fn.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
-#include "catalog/objectaccess.h"
 #include "catalog/pg_namespace.h"
 #include "commands/schemacmds.h"
-#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
@@ -88,7 +86,8 @@ get_graph_path_oid(void)
 
 /* Create a graph (schema) with the name and owner OID. */
 Oid
-GraphCreate(CreateGraphStmt *stmt, const char *queryString)
+GraphCreate(CreateGraphStmt *stmt, const char *queryString,
+			int stmt_location, int stmt_len)
 {
 	const char *graphName = stmt->graphname;
 	CreateSchemaStmt *schemaStmt;
@@ -133,7 +132,8 @@ GraphCreate(CreateGraphStmt *stmt, const char *queryString)
 	schemaStmt->if_not_exists = stmt->if_not_exists;
 	schemaStmt->schemaElts = NIL;
 
-	schemaoid = CreateSchemaCommand(schemaStmt, queryString);
+	schemaoid = CreateSchemaCommand(schemaStmt, queryString,
+									stmt_location, stmt_len);
 
 	/* initialize nulls and values */
 	for (i = 0; i < Natts_ag_graph; i++)
@@ -150,10 +150,8 @@ GraphCreate(CreateGraphStmt *stmt, const char *queryString)
 
 	tup = heap_form_tuple(tupDesc, values, isnull);
 
-	graphoid = simple_heap_insert(graphdesc, tup);
+	graphoid = CatalogTupleInsert(graphdesc, tup);
 	Assert(OidIsValid(graphoid));
-
-	CatalogUpdateIndexes(graphdesc, tup);
 
 	heap_close(graphdesc, RowExclusiveLock);
 

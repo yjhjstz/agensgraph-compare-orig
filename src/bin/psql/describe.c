@@ -43,8 +43,6 @@ static bool describeOneTSConfig(const char *oid, const char *nspname,
 					const char *pnspname, const char *prsname);
 static void printACLColumn(PQExpBuffer buf, const char *colname);
 static bool listOneExtensionContents(const char *extname, const char *oid);
-static bool describeOneLabelDetails(const char *graphname,
-									const char *labelname);
 
 
 /*----------------
@@ -5567,7 +5565,7 @@ listLabels(const char *pattern, bool verbose, const char labkind)
  *
  * Based on describeOneTableDetails()
  */
-static bool
+bool
 describeOneLabelDetails(const char *graphname, const char *labelname)
 {
 	PQExpBufferData buf;

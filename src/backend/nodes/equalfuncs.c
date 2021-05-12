@@ -1077,6 +1077,10 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(withCheckOptions);
 	COMPARE_LOCATION_FIELD(stmt_location);
 	COMPARE_LOCATION_FIELD(stmt_len);
+
+	/*
+	 * AgensGraph
+	 */
 	COMPARE_SCALAR_FIELD(dijkstraWeight);
 	COMPARE_SCALAR_FIELD(dijkstraWeightOut);
 	COMPARE_NODE_FIELD(dijkstraEndId);
@@ -3242,7 +3246,6 @@ _equalGraphVertex(const GraphVertex *a, const GraphVertex *b)
 	COMPARE_SCALAR_FIELD(create);
 	COMPARE_SCALAR_FIELD(relid);
 	COMPARE_NODE_FIELD(expr);
-	COMPARE_NODE_FIELD(qual);
 
 	return true;
 }
@@ -3254,7 +3257,6 @@ _equalGraphEdge(const GraphEdge *a, const GraphEdge *b)
 	COMPARE_SCALAR_FIELD(resno);
 	COMPARE_SCALAR_FIELD(relid);
 	COMPARE_NODE_FIELD(expr);
-	COMPARE_NODE_FIELD(qual);
 
 	return true;
 }
