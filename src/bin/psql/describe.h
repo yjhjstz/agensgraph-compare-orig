@@ -116,7 +116,8 @@ bool		describeSubscriptions(const char *pattern, bool verbose);
 extern bool listGraphs(const char *pattern, bool verbose);
 
 /* \dGl, \dGv, \dGe */
-extern bool listLabels(const char *pattern, bool verbose, const char labkind);
+extern bool listLabels(const char *pattern, bool verbose, char labkind);
 
-bool        describeOneLabelDetails(const char *graphname, const char *labelname);
+/* \dGi */
+extern bool listGraphIndexes(const char *pattern, bool verbose);
 #endif   /* DESCRIBE_H */
