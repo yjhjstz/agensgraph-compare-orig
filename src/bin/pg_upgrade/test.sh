@@ -188,6 +188,7 @@ if "$MAKE" -C "$oldsrc" installcheck; then
 	fi
 
 	pg_dumpall --no-sync -f "$temp_root"/dump1.sql || pg_dumpall1_status=$?
+	psql -X -d regression -c "SELECT * FROM ag_graphmeta_view" -o "$temp_root"/meta1.out
 
 	if [ "$newsrc" != "$oldsrc" ]; then
 		# update references to old source tree's regress.so etc
@@ -253,6 +254,14 @@ case $testhost in
 	MINGW*)	cmd /c delete_old_cluster.bat ;;
 	*)	    sh ./delete_old_cluster.sh ;;
 esac
+
+if diff "$temp_root"/meta1.out "$temp_root"/meta2.out >/dev/null; then
+	echo "GRAPH META PASSED"
+else
+	echo "Files $temp_root/meta1.out and $temp_root/meta2.out differ"
+	echo "graphmetas were not identical"
+	exit 1
+fi
 
 if diff "$temp_root"/dump1.sql "$temp_root"/dump2.sql >/dev/null; then
 	echo PASSED
