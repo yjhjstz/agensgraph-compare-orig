@@ -3867,7 +3867,8 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 			char *name;
 
 			name = (labelStmt->labelKind == LABEL_VERTEX ? AG_VERTEX : AG_EDGE);
-			stmt->inhRelations = list_make1(makeRangeVar(graphname, name, -1));
+			//stmt->inhRelations = list_make1(makeRangeVar(graphname, name, -1));
+			stmt->inhRelations = NIL;
 		}
 		/* user requested inherit option */
 		else
@@ -3933,7 +3934,8 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 														  : "CREATE ELABEL";
 	cxt.relation = stmt->relation;
 	cxt.rel = NULL;
-	cxt.inhRelations = stmt->inhRelations;
+	//cxt.inhRelations = stmt->inhRelations;
+	cxt.inhRelations = NIL;
 	cxt.isforeign = false;
 	cxt.isalter = false;
 	cxt.hasoids = false;
