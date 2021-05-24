@@ -1983,7 +1983,7 @@ transformMatchNode(ParseState *pstate, CypherNode *cnode, bool force,
 	 * So, return a (invalid) future vertex at here for later use.
 	 */
 
-	id = makeNullConst(GRAPHIDOID, -1, InvalidOid);
+	id = makeNullConst(INT8OID, -1, InvalidOid);
 	prop_map = makeNullConst(JSONBOID, -1, InvalidOid);
 	tid = makeNullConst(TIDOID, -1, InvalidOid);
 	vertex = makeTypedRowExpr(list_make3(id, prop_map, tid), VERTEXOID, varloc);
@@ -4363,8 +4363,8 @@ makeNewEdge(ParseState *pstate, Relation relation, Node *prop_map)
 	Assert(id_attnum == 1);
 	id = build_column_default(relation, id_attnum);
 
-	start = (Node *) makeNullConst(GRAPHIDOID, -1, InvalidOid);
-	end = (Node *) makeNullConst(GRAPHIDOID, -1, InvalidOid);
+	start = (Node *) makeNullConst(INT8OID, -1, InvalidOid);
+	end = (Node *) makeNullConst(INT8OID, -1, InvalidOid);
 
 	prop_map_attnum = attnameAttNum(relation, AG_ELEM_PROP_MAP, false);
 	Assert(prop_map_attnum == 4);
@@ -6437,6 +6437,7 @@ makeTypedRowExpr(List *args, Oid typoid, int location)
 
 	row->args = args;
 	row->row_typeid = typoid;
+	//row->row_typeid = RECORDOID;
 	row->row_format = COERCE_EXPLICIT_CAST;
 	row->location = location;
 

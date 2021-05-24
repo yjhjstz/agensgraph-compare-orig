@@ -1005,7 +1005,7 @@ getEdgeVertex(HeapTupleHeader edge, EdgeVertexKind evk)
 	char		sqlcmd[256];
 	int			attnum = (evk == EVK_START ? Anum_edge_start : Anum_edge_end);
 	Datum		values[1];
-	Oid			argTypes[1] = {GRAPHIDOID};
+	Oid			argTypes[1] = {INT8OID};
 	int			ret;
 	Datum		vertex;
 	bool		isnull;
