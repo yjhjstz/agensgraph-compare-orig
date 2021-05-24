@@ -416,8 +416,8 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 
 	qry->commandType = CMD_DELETE;
 
-	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
-		elog(ERROR, "DML query to graph objects is not allowed");
+	// if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+	// 	elog(ERROR, "DML query to graph objects is not allowed");
 
 	/* process the WITH clause independently of all else */
 	if (stmt->withClause)
@@ -2235,8 +2235,8 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 	ParseNamespaceItem *nsitem;
 	Node	   *qual;
 
-	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
-		elog(ERROR, "DML query to graph objects is not allowed");
+	// if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+	// 	elog(ERROR, "DML query to graph objects is not allowed");
 
 	qry->commandType = CMD_UPDATE;
 	pstate->p_is_insert = false;
