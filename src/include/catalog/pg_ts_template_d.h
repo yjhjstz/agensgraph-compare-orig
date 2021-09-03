@@ -1,0 +1,1 @@
+/home/work/agensgraph-compare-orig/src/backend/catalog/pg_ts_template_d.h

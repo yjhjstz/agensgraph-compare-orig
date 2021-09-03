@@ -7,4 +7,4 @@
 #
 # ./config.sh [options]
 
-./configure --with-perl --with-python --with-tcl --with-gssapi --with-openssl --with-pam --with-ldap --with-libxml --with-libxslt $@
+./configure --with-blocksize=32 --enable-debug $@

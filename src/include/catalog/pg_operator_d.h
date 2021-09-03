@@ -1,0 +1,1 @@
+/home/work/agensgraph-compare-orig/src/backend/catalog/pg_operator_d.h
