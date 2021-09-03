@@ -15,7 +15,9 @@
 #define TRANSAM_H
 
 #include "access/xlogdefs.h"
-
+#ifdef PGXC
+#include "gtm/gtm_c.h"
+#endif
 
 /* ----------------
  *		Special transaction ID values
@@ -175,7 +177,19 @@ extern TransactionId TransactionIdLatest(TransactionId mainxid,
 extern XLogRecPtr TransactionIdGetCommitLSN(TransactionId xid);
 
 /* in transam/varsup.c */
+#ifdef PGXC  /* PGXC_DATANODE */
+extern void SetNextTransactionId(TransactionId xid);
+extern void SetForceXidFromGTM(bool value);
+extern bool GetForceXidFromGTM(void);
+extern TransactionId GetNewTransactionId(bool isSubXact, bool *timestamp_received, GTM_Timestamp *timestamp);
+#else
 extern TransactionId GetNewTransactionId(bool isSubXact);
+#endif /* PGXC */
+#ifdef XCP
+extern bool TransactionIdIsCurrentGlobalTransactionId(TransactionId xid);
+extern TransactionId GetNextTransactionId(void);
+extern void ExtendLogs(TransactionId xid);
+#endif
 extern TransactionId ReadNewTransactionId(void);
 extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 					  Oid oldest_datoid);

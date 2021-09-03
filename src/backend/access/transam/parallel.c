@@ -26,6 +26,7 @@
 #include "miscadmin.h"
 #include "optimizer/planmain.h"
 #include "pgstat.h"
+#include "pgxc/pgxcnode.h"
 #include "storage/ipc.h"
 #include "storage/sinval.h"
 #include "storage/spin.h"

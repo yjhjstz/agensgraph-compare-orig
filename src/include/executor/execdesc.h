@@ -16,6 +16,9 @@
 #define EXECDESC_H
 
 #include "nodes/execnodes.h"
+#ifdef XCP
+#include "pgxc/squeue.h"
+#endif
 #include "tcop/dest.h"
 
 
@@ -48,6 +51,13 @@ typedef struct QueryDesc
 	EState	   *estate;			/* executor's query-wide state */
 	PlanState  *planstate;		/* tree of per-plan-node state */
 
+#ifdef XCP
+	SharedQueue squeue; 		/* the shared memory queue to sent data to other
+								 * nodes */
+	int 		myindex;		/* -1 if locally executed subplan is producing
+								 * data and distribute via squeue. Otherwise
+								 * get local data from squeue */
+#endif
 	/* This field is set by ExecutorRun */
 	bool		already_executed;	/* true if previously executed */
 

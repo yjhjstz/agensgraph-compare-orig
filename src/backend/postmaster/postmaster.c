@@ -106,6 +106,15 @@
 #include "libpq/pqformat.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
+#ifdef PGXC
+#include "catalog/pgxc_node.h"
+#include "pgxc/pgxc.h"
+/* COORD */
+#include "pgxc/locator.h"
+#include "nodes/nodes.h"
+#include "pgxc/poolmgr.h"
+#include "access/gtm.h"
+#endif
 #include "pg_getopt.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
@@ -128,6 +137,9 @@
 #include "utils/memutils.h"
 #include "utils/pidfile.h"
 #include "utils/ps_status.h"
+#ifdef PGXC
+#include "utils/resowner.h"
+#endif
 #include "utils/timeout.h"
 #include "utils/varlena.h"
 
@@ -247,6 +259,12 @@ bool		restart_after_crash = true;
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
+#ifdef PGXC /* PGXC_COORD */
+			PgPoolerPID = 0,
+#endif /* PGXC_COORD */
+#ifdef XCP
+			ClusterMonPID = 0,
+#endif
 			BgWriterPID = 0,
 			CheckpointerPID = 0,
 			WalWriterPID = 0,
@@ -383,6 +401,17 @@ static bool LoadedSSL = false;
 
 #ifdef USE_BONJOUR
 static DNSServiceRef bonjour_sdref = NULL;
+#endif
+
+#ifdef PGXC
+char			*PGXCNodeName = NULL;
+int			PGXCNodeId = 0;
+/*
+ * When a particular node starts up, store the node identifier in this variable
+ * so that we dont have to calculate it OR do a search in cache any where else
+ * This will have minimal impact on performance
+ */
+uint32			PGXCNodeIdentifier = 0;
 #endif
 
 /*
@@ -546,6 +575,42 @@ static void ShmemBackendArrayAdd(Backend *bn);
 static void ShmemBackendArrayRemove(Backend *bn);
 #endif							/* EXEC_BACKEND */
 
+#ifdef XCP
+char *parentPGXCNode = NULL;
+int  parentPGXCNodeId = -1;
+int	 parentPGXCPid = -1;
+char parentPGXCNodeType = PGXC_NODE_DATANODE;
+#endif
+
+#ifdef PGXC
+bool isPGXCCoordinator = false;
+bool isPGXCDataNode = false;
+
+/*
+ * While adding a new node to the cluster we need to restore the schema of
+ * an existing database to the new node.
+ * If the new node is a datanode and we connect directly to it,
+ * it does not allow DDL, because it is in read only mode &
+ * If the new node is a coordinator it will send DDLs to all the other
+ * coordinators which we do not want it to do
+ * To provide ability to restore on the new node a new command line
+ * argument is provided called --restoremode
+ * It is to be provided in place of --coordinator OR --datanode.
+ * In restore mode both coordinator and datanode are internally
+ * treated as a datanode.
+ */
+bool isRestoreMode = false;
+
+int remoteConnType = REMOTE_CONN_APP;
+
+/* key pair to be used as object id while using advisory lock for backup */
+Datum xc_lockForBackupKey1;
+Datum xc_lockForBackupKey2;
+
+#define StartPoolManager()		StartChildProcess(PoolerProcess)
+#define StartClusterMonitor()	StartChildProcess(ClusterMonitorProcess)
+#endif
+
 #define StartupDataBase()		StartChildProcess(StartupProcess)
 #define StartBackgroundWriter() StartChildProcess(BgWriterProcess)
 #define StartCheckpointer()		StartChildProcess(CheckpointerProcess)
@@ -579,6 +644,9 @@ PostmasterMain(int argc, char *argv[])
 	char	   *userDoption = NULL;
 	bool		listen_addr_saved = false;
 	int			i;
+#ifdef PGXC /* PGXC_COORD */
+	MemoryContext 		oldcontext;
+#endif
 	char	   *output_config_variable = NULL;
 
 	MyProcPid = PostmasterPid = getpid();
@@ -813,6 +881,27 @@ PostmasterMain(int argc, char *argv[])
 							   *value;
 
 					ParseLongOption(optarg, &name, &value);
+
+#ifdef PGXC
+					/* A Coordinator is being activated */
+					if (strcmp(name, "coordinator") == 0 &&
+						!value)
+						isPGXCCoordinator = true;
+					else if (strcmp(name, "datanode") == 0 &&
+						!value)
+						isPGXCDataNode = true;
+					else if (strcmp(name, "restoremode") == 0 && !value)
+					{
+						/*
+						 * In restore mode both coordinator and datanode
+						 * are internally treeated as datanodes
+						 */
+						isRestoreMode = true;
+						isPGXCDataNode = true;
+					}
+					else /* default case */
+					{
+#endif
 					if (!value)
 					{
 						if (opt == '-')
@@ -828,6 +917,9 @@ PostmasterMain(int argc, char *argv[])
 					}
 
 					SetConfigOption(name, value, PGC_POSTMASTER, PGC_S_ARGV);
+#ifdef PGXC
+					}
+#endif
 					free(name);
 					if (value)
 						free(value);
@@ -841,6 +933,14 @@ PostmasterMain(int argc, char *argv[])
 		}
 	}
 
+#ifdef PGXC
+	if (!IS_PGXC_COORDINATOR && !IS_PGXC_DATANODE)
+	{
+		write_stderr("%s: Postgres-XL: must start as either a Coordinator (--coordinator) or Data Node (--datanode)\n",
+					 progname);
+		ExitPostmaster(1);
+	}
+#endif
 	/*
 	 * Postmaster accepts no non-option switch arguments.
 	 */
@@ -1357,6 +1457,17 @@ PostmasterMain(int argc, char *argv[])
 	StartupStatus = STARTUP_RUNNING;
 	pmState = PM_STARTUP;
 
+#ifdef PGXC /* PGXC_COORD */
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
+	/*
+	 * Initialize the Data Node connection pool
+	 */
+	PgPoolerPID = StartPoolManager();
+
+	MemoryContextSwitchTo(oldcontext);
+#endif /* PGXC */
+
 	/* Some workers may be scheduled to start now */
 	maybe_start_bgworkers();
 
@@ -1810,6 +1921,18 @@ ServerLoop(void)
 		if (PgStatPID == 0 &&
 			(pmState == PM_RUN || pmState == PM_HOT_STANDBY))
 			PgStatPID = pgstat_start();
+
+#ifdef PGXC
+		/* If we have lost the pooler, try to start a new one */
+		if (PgPoolerPID == 0 && pmState == PM_RUN)
+			PgPoolerPID = StartPoolManager();
+#endif /* PGXC */
+
+#ifdef XCP
+		/* If we have lost the cluster monitor, try to start a new one */
+		if (ClusterMonPID == 0 && pmState == PM_RUN)
+			ClusterMonPID = StartClusterMonitor();
+#endif
 
 		/* If we have lost the archiver, try to start a new one. */
 		if (PgArchPID == 0 && PgArchStartupAllowed())
@@ -2580,6 +2703,14 @@ SIGHUP_handler(SIGNAL_ARGS)
 		SignalChildren(SIGHUP);
 		if (StartupPID != 0)
 			signal_child(StartupPID, SIGHUP);
+#ifdef PGXC /* PGXC_COORD */
+		if (PgPoolerPID != 0)
+			signal_child(PgPoolerPID, SIGHUP);
+#endif /* PGXC */
+#ifdef XCP
+		if (ClusterMonPID != 0)
+			signal_child(ClusterMonPID, SIGHUP);
+#endif
 		if (BgWriterPID != 0)
 			signal_child(BgWriterPID, SIGHUP);
 		if (CheckpointerPID != 0)
@@ -2687,6 +2818,14 @@ pmdie(SIGNAL_ARGS)
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
 
+#ifdef PGXC /* PGXC_COORD */
+				/* and the pool manager too */
+				if (PgPoolerPID != 0)
+					signal_child(PgPoolerPID, SIGTERM);
+ 				if (ClusterMonPID != 0)
+ 					signal_child(ClusterMonPID, SIGTERM);
+#endif
+
 				/*
 				 * If we're in recovery, we can't kill the startup process
 				 * right away, because at present doing so does not release
@@ -2734,6 +2873,14 @@ pmdie(SIGNAL_ARGS)
 				signal_child(BgWriterPID, SIGTERM);
 			if (WalReceiverPID != 0)
 				signal_child(WalReceiverPID, SIGTERM);
+#ifdef XCP
+			/* and the pool manager too */
+			if (PgPoolerPID != 0)
+				signal_child(PgPoolerPID, SIGTERM);
+			/* and the cluster monitor too */
+			if (ClusterMonPID != 0)
+				signal_child(ClusterMonPID, SIGTERM);
+#endif /* XCP */
 			if (pmState == PM_RECOVERY)
 			{
 				SignalSomeChildren(SIGTERM, BACKEND_TYPE_BGWORKER);
@@ -2764,6 +2911,10 @@ pmdie(SIGNAL_ARGS)
 				/* and the walwriter too */
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
+#ifdef XCP
+				if (ClusterMonPID != 0)
+					signal_child(ClusterMonPID, SIGTERM);
+#endif
 				pmState = PM_WAIT_BACKENDS;
 			}
 
@@ -2928,6 +3079,15 @@ reaper(SIGNAL_ARGS)
 				PgArchPID = pgarch_start();
 			if (PgStatPID == 0)
 				PgStatPID = pgstat_start();
+#ifdef PGXC
+			if (PgPoolerPID == 0)
+				PgPoolerPID = StartPoolManager();
+#endif /* PGXC */
+
+#ifdef XCP
+			if (ClusterMonPID == 0)
+				ClusterMonPID = StartClusterMonitor();
+#endif
 
 			/* workers may be scheduled to start now */
 			maybe_start_bgworkers();
@@ -3105,6 +3265,31 @@ reaper(SIGNAL_ARGS)
 			continue;
 		}
 
+#ifdef PGXC /* PGXC_COORD */
+		/*
+		 * Was it the pool manager?  TODO decide how to handle
+		 * Probably we should restart the system
+		 */
+		if (pid == PgPoolerPID)
+		{
+			PgPoolerPID = 0;
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus,
+								 _("pool manager process"));
+			continue;
+		}
+#endif
+
+#ifdef XCP
+		if (pid == ClusterMonPID)
+		{
+			ClusterMonPID = 0;
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus,
+						_("cluster monitor process"));
+			continue;
+		}
+#endif
 		/* Was it one of our background workers? */
 		if (CleanupBackgroundWorker(pid, exitstatus))
 		{
@@ -3523,6 +3708,33 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		signal_child(AutoVacPID, (SendStop ? SIGSTOP : SIGQUIT));
 	}
 
+#ifdef PGXC
+	/* Take care of the pool manager too */
+	if (pid == PgPoolerPID)
+		PgPoolerPID = 0;
+	else if (PgPoolerPID != 0 && !FatalError)
+	{
+		ereport(DEBUG2,
+			(errmsg_internal("sending %s to process %d",
+							 (SendStop ? "SIGSTOP" : "SIGQUIT"),
+							 (int) PgPoolerPID)));
+		signal_child(PgPoolerPID, (SendStop ? SIGSTOP : SIGQUIT));
+	}
+#endif /* PGXC */
+
+#ifdef XCP
+	if (pid == ClusterMonPID)
+		ClusterMonPID = 0;
+	else if (ClusterMonPID != 0 && !FatalError)
+	{
+		ereport(DEBUG2,
+			(errmsg_internal("sending %s to process %d",
+							 (SendStop ? "SIGSTOP" : "SIGQUIT"),
+							 (int) ClusterMonPID)));
+		signal_child(ClusterMonPID, (SendStop ? SIGSTOP : SIGQUIT));
+	}
+#endif
+
 	/*
 	 * Force a power-cycle of the pgarch process too.  (This isn't absolutely
 	 * necessary, but it seems like a good idea for robustness, and it
@@ -3704,6 +3916,12 @@ PostmasterStateMachine(void)
 		 */
 		if (CountChildren(BACKEND_TYPE_NORMAL | BACKEND_TYPE_WORKER) == 0 &&
 			StartupPID == 0 &&
+#ifdef PGXC
+			PgPoolerPID == 0 &&
+#endif
+#ifdef XCP
+			ClusterMonPID == 0 &&
+#endif
 			WalReceiverPID == 0 &&
 			BgWriterPID == 0 &&
 			(CheckpointerPID == 0 ||
@@ -3801,6 +4019,12 @@ PostmasterStateMachine(void)
 			PgArchPID == 0 && PgStatPID == 0)
 		{
 			/* These other guys should be dead already */
+#ifdef PGXC
+			Assert(PgPoolerPID == 0);
+#endif
+#ifdef XCP
+			Assert(ClusterMonPID == 0);
+#endif
 			Assert(StartupPID == 0);
 			Assert(WalReceiverPID == 0);
 			Assert(BgWriterPID == 0);
@@ -3982,6 +4206,14 @@ TerminateChildren(int signal)
 		if (signal == SIGQUIT || signal == SIGKILL)
 			StartupStatus = STARTUP_SIGNALED;
 	}
+#ifdef PGXC /* PGXC_COORD */
+	if (PgPoolerPID != 0)
+		signal_child(PgPoolerPID, SIGQUIT);
+#endif
+#ifdef XCP
+	if (ClusterMonPID != 0)
+		signal_child(ClusterMonPID, signal);
+#endif
 	if (BgWriterPID != 0)
 		signal_child(BgWriterPID, signal);
 	if (CheckpointerPID != 0)
@@ -5371,6 +5603,16 @@ StartChildProcess(AuxProcType type)
 		errno = save_errno;
 		switch (type)
 		{
+#ifdef PGXC /* PGXC_COORD */
+			case PoolerProcess:
+				ereport(LOG,
+						(errmsg("could not fork pool manager process: %m")));
+				break;
+			case ClusterMonitorProcess:
+				ereport(LOG,
+						(errmsg("could not fork cluster monitor process: %m")));
+				break;
+#endif
 			case StartupProcess:
 				ereport(LOG,
 						(errmsg("could not fork startup process: %m")));

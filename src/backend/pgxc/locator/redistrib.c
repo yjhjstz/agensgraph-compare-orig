@@ -14,6 +14,7 @@
 
 #include "postgres.h"
 #include "miscadmin.h"
+//#include "rusagestub.h"
 
 #include "access/hash.h"
 #include "access/htup.h"

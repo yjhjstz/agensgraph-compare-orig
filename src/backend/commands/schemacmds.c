@@ -35,6 +35,10 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#endif
 
 static void AlterSchemaOwner_internal(HeapTuple tup, Relation rel, Oid newOwnerId);
 
@@ -49,6 +53,7 @@ static void AlterSchemaOwner_internal(HeapTuple tup, Relation rel, Oid newOwnerI
  */
 Oid
 CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
+					bool sentToRemote,
 					int stmt_location, int stmt_len)
 {
 	const char *schemaName = stmt->schemaname;
@@ -170,6 +175,16 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	 */
 	parsetree_list = transformCreateSchemaStmt(stmt);
 
+#ifdef PGXC
+	/*
+	 * Add a RemoteQuery node for a query at top level on a remote Coordinator,
+	 * if not done already.
+	 */
+	if (!sentToRemote)
+		parsetree_list = AddRemoteQueryNode(parsetree_list, queryString,
+											EXEC_ON_ALL_NODES);
+#endif
+
 	/*
 	 * Execute each command contained in the CREATE SCHEMA.  Since the grammar
 	 * allows only utility commands in CREATE SCHEMA, there is no need to pass
@@ -196,6 +211,9 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 					   NULL,
 					   NULL,
 					   None_Receiver,
+#ifdef PGXC
+					   true,
+#endif /* PGXC */
 					   NULL);
 
 		/* make sure later steps can see the object created here */
@@ -287,6 +305,26 @@ RenameSchema(const char *oldname, const char *newname)
 	InvokeObjectPostAlterHook(NamespaceRelationId, HeapTupleGetOid(tup), 0);
 
 	ObjectAddressSet(address, NamespaceRelationId, nspOid);
+
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR)
+	{
+		ObjectAddress		object;
+		Oid					namespaceId;
+
+		/* Check object dependency and see if there is a sequence. If yes rename it */
+		namespaceId = GetSysCacheOid(NAMESPACENAME,
+									 CStringGetDatum(oldname),
+									 0, 0, 0);
+		/* Create the object that will be checked for the dependencies */
+		object.classId = NamespaceRelationId;
+		object.objectId = namespaceId;
+		object.objectSubId = 0;
+
+		/* Rename all the objects depending on this schema */
+		performRename(&object, oldname, newname);
+	}
+#endif
 
 	heap_close(rel, NoLock);
 	heap_freetuple(tup);

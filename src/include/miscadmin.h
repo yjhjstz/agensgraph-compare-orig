@@ -257,6 +257,10 @@ extern int	VacuumPageDirty;
 extern int	VacuumCostBalance;
 extern bool VacuumCostActive;
 
+#ifdef PGXC
+extern bool useLocalXid;
+#endif
+
 
 /* in tcop/postgres.c */
 
@@ -319,6 +323,10 @@ extern void SetUserIdAndContext(Oid userid, bool sec_def_context);
 extern void InitializeSessionUserId(const char *rolename, Oid useroid);
 extern void InitializeSessionUserIdStandalone(void);
 extern void SetSessionAuthorization(Oid userid, bool is_superuser);
+#ifdef XCP
+extern void SetGlobalSession(Oid coordid, int coordpid);
+extern char *GetClusterUserName(void);
+#endif
 extern Oid	GetCurrentRoleId(void);
 extern void SetCurrentRoleId(Oid roleid, bool is_superuser);
 
@@ -397,6 +405,10 @@ typedef enum
 	CheckpointerProcess,
 	WalWriterProcess,
 	WalReceiverProcess,
+#ifdef PGXC
+	PoolerProcess,
+	ClusterMonitorProcess,
+#endif   
 
 	NUM_AUXPROCTYPES			/* Must be last! */
 } AuxProcType;
@@ -409,6 +421,7 @@ extern AuxProcType MyAuxProcType;
 #define AmCheckpointerProcess()		(MyAuxProcType == CheckpointerProcess)
 #define AmWalWriterProcess()		(MyAuxProcType == WalWriterProcess)
 #define AmWalReceiverProcess()		(MyAuxProcType == WalReceiverProcess)
+#define AmClusterMonitorProcess()	(MyAuxProcType == ClusterMonitorProcess)
 
 
 /*****************************************************************************

@@ -35,6 +35,9 @@
 #include "commands/createas.h"
 #include "commands/matview.h"
 #include "executor/functions.h"
+#ifdef XCP
+#include "executor/producerReceiver.h"
+#endif
 #include "executor/tqueue.h"
 #include "executor/tstoreReceiver.h"
 #include "libpq/libpq.h"
@@ -138,6 +141,11 @@ CreateDestReceiver(CommandDest dest)
 		case DestSQLFunction:
 			return CreateSQLFunctionDestReceiver();
 
+#ifdef XCP
+		case DestProducer:
+			return CreateProducerDestReceiver();
+#endif
+
 		case DestTransientRel:
 			return CreateTransientRelDestReceiver(InvalidOid);
 
@@ -176,6 +184,7 @@ EndCommand(const char *commandTag, CommandDest dest)
 		case DestIntoRel:
 		case DestCopyOut:
 		case DestSQLFunction:
+		case DestProducer:
 		case DestTransientRel:
 		case DestTupleQueue:
 			break;
@@ -220,6 +229,7 @@ NullCommand(CommandDest dest)
 		case DestIntoRel:
 		case DestCopyOut:
 		case DestSQLFunction:
+		case DestProducer:
 		case DestTransientRel:
 		case DestTupleQueue:
 			break;
@@ -266,6 +276,7 @@ ReadyForQuery(CommandDest dest)
 		case DestIntoRel:
 		case DestCopyOut:
 		case DestSQLFunction:
+		case DestProducer:
 		case DestTransientRel:
 		case DestTupleQueue:
 			break;

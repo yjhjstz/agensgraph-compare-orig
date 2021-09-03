@@ -42,4 +42,9 @@ extern uint64 PortalRunFetch(Portal portal,
 			   long count,
 			   DestReceiver *dest);
 
+#ifdef XCP
+extern int	AdvanceProducingPortal(Portal portal, bool can_wait);
+extern void cleanupClosedProducers(void);
+#endif
+
 #endif							/* PQUERY_H */

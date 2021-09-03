@@ -112,6 +112,12 @@ struct PGPROC
 	BackendId	backendId;		/* This backend's backend ID (if assigned) */
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
+#ifdef XCP
+	Oid			coordId;  		/* Oid of originating coordinator */
+	int			coordPid;		/* Pid of the originating session */
+	BackendId	firstBackendId;	/* Backend ID of the first backend of
+								 * the distributed session */
+#endif
 
 	bool		isBackgroundWorker; /* true if background worker. */
 
@@ -121,6 +127,11 @@ struct PGPROC
 	 * though not required. Accessed without lock, if needed.
 	 */
 	bool		recoveryConflictPending;
+
+#ifdef PGXC
+	/* Postgres-XC flags */
+	bool		isPooler;		/* true if process is Postgres-XC pooler */
+#endif
 
 	/* Info about LWLock the process is currently waiting for, if any. */
 	bool		lwWaiting;		/* true if waiting for an LW lock */
@@ -269,8 +280,14 @@ extern PGPROC *PreparedXactProcs;
  * Background writer, checkpointer and WAL writer run during normal operation.
  * Startup process and WAL receiver also consume 2 slots, but WAL writer is
  * launched only after startup has exited, so we only need 4 slots.
+ *
+ * PGXC needs another slot for the pool manager process
  */
+#ifdef PGXC
+#define NUM_AUXILIARY_PROCS		5
+#else
 #define NUM_AUXILIARY_PROCS		4
+#endif
 
 /* configurable options */
 extern PGDLLIMPORT int DeadlockTimeout;

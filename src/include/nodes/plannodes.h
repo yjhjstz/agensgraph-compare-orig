@@ -90,6 +90,19 @@ typedef struct PlannedStmt
 	List	   *invalItems;		/* other dependencies, as PlanInvalItems */
 
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
+#ifdef XCP
+	int			nParamRemote;	/* number of params sent from the master mode */
+
+	struct RemoteParam *remoteparams;/* parameter descriptors */
+
+	const char *pname;			/* the portal name */
+
+	/* Parameters to filter out result rows */
+	char		distributionType;
+	AttrNumber  distributionKey;
+	List	   *distributionNodes;
+	List	   *distributionRestrict;
+#endif	
 
 	Node	   *utilityStmt;	/* non-null if this is utility stmt */
 

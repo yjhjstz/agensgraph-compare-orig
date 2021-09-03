@@ -21,6 +21,9 @@
 #include "catalog/pg_publication.h"
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
+#ifdef PGXC
+#include "pgxc/locator.h"
+#endif
 #include "rewrite/prs2lock.h"
 #include "storage/block.h"
 #include "storage/relfilenode.h"
@@ -216,6 +219,9 @@ typedef struct RelationData
 
 	/* use "struct" here to avoid needing to include pgstat.h: */
 	struct PgStat_TableStatus *pgstat_info; /* statistics collection area */
+#ifdef PGXC
+	RelationLocInfo *rd_locator_info;
+#endif
 } RelationData;
 
 
@@ -509,8 +515,22 @@ typedef struct ViewOptions
  * RelationUsesLocalBuffers
  *		True if relation's pages are stored in local buffers.
  */
+#ifdef XCP
+#define RelationUsesLocalBuffers(relation) \
+	(!OidIsValid(MyCoordId) && \
+		((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP))
+#else
 #define RelationUsesLocalBuffers(relation) \
 	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+#endif
+
+#ifdef PGXC
+/*
+ * RelationGetLocInfo
+ *		Return the location info of relation
+ */
+#define RelationGetLocInfo(relation) ((relation)->rd_locator_info)
+#endif
 
 /*
  * RELATION_IS_LOCAL
@@ -520,9 +540,27 @@ typedef struct ViewOptions
  *
  * Beware of multiple eval of argument
  */
+#ifdef XCP
+#define RELATION_IS_LOCAL(relation) \
+	((!OidIsValid(MyCoordId) && (relation)->rd_backend == MyBackendId) || \
+	 (OidIsValid(MyCoordId) && (relation)->rd_backend == MyFirstBackendId) || \
+	 ((relation)->rd_backend == MyBackendId || \
+	 (relation)->rd_createSubid != InvalidSubTransactionId))
+#else
 #define RELATION_IS_LOCAL(relation) \
 	((relation)->rd_islocaltemp || \
 	 (relation)->rd_createSubid != InvalidSubTransactionId)
+#endif
+
+#ifdef XCP
+/*
+ * RelationGetLocatorType
+ *		Returns the rel's locator type.
+ */
+#define RelationGetLocatorType(relation) \
+	((relation)->rd_locator_info->locatorType)
+
+#endif
 
 /*
  * RELATION_IS_OTHER_TEMP
@@ -530,10 +568,26 @@ typedef struct ViewOptions
  *
  * Beware of multiple eval of argument
  */
+#ifdef XCP
+#define RELATION_IS_OTHER_TEMP(relation) \
+	(((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
+	 (relation)->rd_backend != MyBackendId) && \
+	 ((!OidIsValid(MyCoordId) && (relation)->rd_backend != MyBackendId) || \
+	  (OidIsValid(MyCoordId) && (relation)->rd_backend != MyFirstBackendId)))
+#else
 #define RELATION_IS_OTHER_TEMP(relation) \
 	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
 	 !(relation)->rd_islocaltemp)
+#endif
 
+#ifdef XCP
+/*
+ * RELATION_IS_COORDINATOR_LOCAL
+ * 	Test for a coordinator only relation such as LOCAL TEMP table or a MATVIEW
+ */
+#define RELATION_IS_COORDINATOR_LOCAL(relation) \
+	((RELATION_IS_LOCAL(relation) && !RelationGetLocInfo(relation)))
+#endif
 
 /*
  * RelationIsScannable

@@ -18,6 +18,9 @@
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 #include "storage/relfilenode.h"
+#ifdef PGXC  /* PGXC_COORD */
+#include "gtm/gtm_c.h"
+#endif
 #include "storage/sinval.h"
 #include "utils/datetime.h"
 
@@ -120,6 +123,19 @@ typedef enum
 typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 								 SubTransactionId parentSubid, void *arg);
 
+#ifdef PGXC
+/*
+ * GTM callback events
+ */
+typedef enum
+{
+	GTM_EVENT_COMMIT,
+	GTM_EVENT_ABORT,
+	GTM_EVENT_PREPARE
+} GTMEvent;
+
+typedef void (*GTMCallback) (GTMEvent event, void *arg);
+#endif
 
 /* ----------------
  *		transaction-related XLOG entries
@@ -332,6 +348,13 @@ extern TransactionId GetTopTransactionId(void);
 extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
+#ifdef PGXC  /* PGXC_COORD */
+extern GlobalTransactionId GetAuxilliaryTransactionId(void);
+extern GlobalTransactionId GetTopGlobalTransactionId(void);
+extern void SetAuxilliaryTransactionId(GlobalTransactionId gxid);
+extern void SetTopGlobalTransactionId(GlobalTransactionId gxid);
+extern void SetTopTransactionId(GlobalTransactionId xid);
+#endif
 extern TransactionId GetStableLatestTransactionId(void);
 extern SubTransactionId GetCurrentSubTransactionId(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
@@ -339,14 +362,24 @@ extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
 extern TimestampTz GetCurrentTransactionStartTimestamp(void);
 extern TimestampTz GetCurrentStatementStartTimestamp(void);
+#ifdef XCP
+extern TimestampTz GetCurrentLocalStatementStartTimestamp(void);
+#endif
 extern TimestampTz GetCurrentTransactionStopTimestamp(void);
 extern void SetCurrentStatementStartTimestamp(void);
+#ifdef PGXC
+extern TimestampTz GetCurrentGTMStartTimestamp(void);
+extern void SetCurrentGTMDeltaTimestamp(TimestampTz timestamp);
+#endif
 extern int	GetCurrentTransactionNestLevel(void);
 extern bool TransactionIdIsCurrentTransactionId(TransactionId xid);
 extern void CommandCounterIncrement(void);
 extern void ForceSyncCommit(void);
 extern void StartTransactionCommand(void);
 extern void CommitTransactionCommand(void);
+#ifdef PGXC
+extern void AbortCurrentTransactionOnce(void);
+#endif
 extern void AbortCurrentTransaction(void);
 extern void BeginTransactionBlock(void);
 extern bool EndTransactionBlock(void);
@@ -368,6 +401,7 @@ extern bool IsTransactionOrTransactionBlock(void);
 extern char TransactionBlockStatusCode(void);
 extern void AbortOutOfAnyTransaction(void);
 extern void PreventTransactionChain(bool isTopLevel, const char *stmtType);
+extern void PreventTransactionChainLocal(bool isTopLevel, const char *stmtType);
 extern void RequireTransactionChain(bool isTopLevel, const char *stmtType);
 extern void WarnNoTransactionChain(bool isTopLevel, const char *stmtType);
 extern bool IsInTransactionChain(bool isTopLevel);
@@ -375,6 +409,30 @@ extern void RegisterXactCallback(XactCallback callback, void *arg);
 extern void UnregisterXactCallback(XactCallback callback, void *arg);
 extern void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
+
+#ifdef PGXC
+extern void RegisterGTMCallback(GTMCallback callback, void *arg);
+extern void UnregisterGTMCallback(GTMCallback callback, void *arg);
+extern void RegisterTransactionNodes(int count, void **connections, bool write);
+extern void ForgetTransactionNodes(void);
+extern void RegisterTransactionLocalNode(bool write);
+extern bool IsTransactionLocalNode(bool write);
+extern void ForgetTransactionLocalNode(void);
+extern bool IsXidImplicit(const char *xid);
+extern void SaveReceivedCommandId(CommandId cid);
+extern void SetReceivedCommandId(CommandId cid);
+extern CommandId GetReceivedCommandId(void);
+extern void ReportCommandIdChange(CommandId cid);
+extern bool IsSendCommandId(void);
+extern void SetSendCommandId(bool status);
+extern bool IsPGXCNodeXactReadOnly(void);
+extern bool IsPGXCNodeXactDatanodeDirect(void);
+extern void TransactionRecordXidWait(TransactionId xid);
+extern void SetRequireRemoteTransactionBlock(void);
+extern bool IsRemoteTransactionBlockRequired(void);
+extern void SetRequireRemoteTransactionAutoCommit(void);
+extern bool IsRemoteTransactionAutoCommit(void);
+#endif
 
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 

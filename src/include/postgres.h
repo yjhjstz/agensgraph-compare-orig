@@ -48,6 +48,15 @@
 #include "utils/elog.h"
 #include "utils/palloc.h"
 
+#ifdef HAVE_SYS_RESOURCE_H
+#include <sys/time.h>
+#include <sys/resource.h>
+#endif
+
+#ifndef HAVE_GETRUSAGE
+#include "rusagestub.h"
+#endif
+
 /* ----------------------------------------------------------------
  *				Section 1:	variable-length datatypes (TOAST support)
  * ----------------------------------------------------------------
@@ -802,5 +811,11 @@ extern Datum Float8GetDatum(float8 X);
 extern void ExceptionalCondition(const char *conditionName,
 					 const char *errorType,
 					 const char *fileName, int lineNumber) pg_attribute_noreturn();
+
+
+extern void ResetUsageCommon(struct rusage *save_r, struct timeval *save_t);
+extern void ResetUsage(void);
+extern void ShowUsageCommon(const char *title, struct rusage *save_r, struct
+		timeval *save_t);
 
 #endif							/* POSTGRES_H */

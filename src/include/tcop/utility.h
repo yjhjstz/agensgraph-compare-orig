@@ -28,17 +28,23 @@ typedef void (*ProcessUtility_hook_type) (PlannedStmt *pstmt,
 										  const char *queryString, ProcessUtilityContext context,
 										  ParamListInfo params,
 										  QueryEnvironment *queryEnv,
-										  DestReceiver *dest, char *completionTag);
+										  DestReceiver *dest,
+										  bool sentToRemote,
+										  char *completionTag);
 extern PGDLLIMPORT ProcessUtility_hook_type ProcessUtility_hook;
 
 extern void ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 			   ProcessUtilityContext context, ParamListInfo params,
 			   QueryEnvironment *queryEnv,
-			   DestReceiver *dest, char *completionTag);
+			   DestReceiver *dest,
+			   bool sentToRemote,
+			   char *completionTag);
 extern void standard_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 						ProcessUtilityContext context, ParamListInfo params,
 						QueryEnvironment *queryEnv,
-						DestReceiver *dest, char *completionTag);
+						DestReceiver *dest,
+						bool sentToRemote,
+						char *completionTag);
 
 extern bool UtilityReturnsTuples(Node *parsetree);
 
@@ -51,5 +57,9 @@ extern const char *CreateCommandTag(Node *parsetree);
 extern LogStmtLevel GetCommandLogLevel(Node *parsetree);
 
 extern bool CommandIsReadOnly(PlannedStmt *pstmt);
+
+#ifdef PGXC
+extern bool pgxc_lock_for_utility_stmt(Node *parsetree);
+#endif
 
 #endif							/* UTILITY_H */

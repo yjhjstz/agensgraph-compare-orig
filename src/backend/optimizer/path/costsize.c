@@ -106,6 +106,10 @@ double		random_page_cost = DEFAULT_RANDOM_PAGE_COST;
 double		cpu_tuple_cost = DEFAULT_CPU_TUPLE_COST;
 double		cpu_index_tuple_cost = DEFAULT_CPU_INDEX_TUPLE_COST;
 double		cpu_operator_cost = DEFAULT_CPU_OPERATOR_COST;
+#ifdef XCP
+double		network_byte_cost = DEFAULT_NETWORK_BYTE_COST;
+double		remote_query_cost = DEFAULT_REMOTE_QUERY_COST;
+#endif
 double		parallel_tuple_cost = DEFAULT_PARALLEL_TUPLE_COST;
 double		parallel_setup_cost = DEFAULT_PARALLEL_SETUP_COST;
 
@@ -126,6 +130,7 @@ bool		enable_nestloop = true;
 bool		enable_material = true;
 bool		enable_mergejoin = true;
 bool		enable_hashjoin = true;
+bool		enable_fast_query_shipping = true;
 bool		enable_gathermerge = true;
 
 typedef struct
@@ -2832,6 +2837,15 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 								inner_path->pathtarget->width) >
 			 (work_mem * 1024L))
 		path->materialize_inner = true;
+#ifdef XCP
+	/*
+	 * Even if innersortkeys are specified, we never add the Sort node on top
+	 * of RemoteSubplan, instead we set up internal sorter.
+	 * Since RemoteSubplan does not support mark/restore we must materialize it
+	 */
+	else if (inner_path->pathtype == T_RemoteSubplan)
+		path->materialize_inner = true;
+#endif
 	else
 		path->materialize_inner = false;
 
@@ -5121,6 +5135,32 @@ page_size(double tuples, int width)
 {
 	return ceil(relation_byte_size(tuples, width) / BLCKSZ);
 }
+
+#ifdef XCP
+void
+cost_remote_subplan(Path *path,
+			  Cost input_startup_cost, Cost input_total_cost,
+			  double tuples, int width, int replication)
+{
+	Cost		startup_cost = input_startup_cost + remote_query_cost;
+	Cost		run_cost = input_total_cost - input_startup_cost;
+
+	path->rows = tuples;
+
+	/*
+	 * Charge 2x cpu_operator_cost per tuple to reflect bookkeeping overhead.
+	 */
+	run_cost += 2 * cpu_operator_cost * tuples;
+
+	/*
+	 * Estimate cost of sending data over network
+	 */
+	run_cost += network_byte_cost * tuples * width * replication;
+
+	path->startup_cost = startup_cost;
+	path->total_cost = startup_cost + run_cost;
+}
+#endif
 
 /*
  * Estimate the fraction of the work that each worker will do given the

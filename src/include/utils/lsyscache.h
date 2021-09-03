@@ -92,6 +92,11 @@ extern int32 get_atttypmod(Oid relid, AttrNumber attnum);
 extern void get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 					  Oid *typid, int32 *typmod, Oid *collid);
 extern char *get_collation_name(Oid colloid);
+#ifdef XCP
+extern Oid 	get_collation_namespace(Oid colloid);
+extern int32 get_collation_encoding(Oid colloid);
+extern Oid 	get_collid(const char *collname, int32 collencoding, Oid collnsp);
+#endif
 extern char *get_constraint_name(Oid conoid);
 extern char *get_language_name(Oid langoid, bool missing_ok);
 extern Oid	get_opclass_family(Oid opclass);
@@ -122,6 +127,9 @@ extern bool get_func_leakproof(Oid funcid);
 extern float4 get_func_cost(Oid funcid);
 extern float4 get_func_rows(Oid funcid);
 extern Oid	get_relname_relid(const char *relname, Oid relnamespace);
+#ifdef PGXC
+extern int	get_relnatts(Oid relid);
+#endif
 extern char *get_rel_name(Oid relid);
 extern Oid	get_rel_namespace(Oid relid);
 extern Oid	get_rel_type_id(Oid relid);
@@ -168,15 +176,41 @@ extern Oid	get_typcollation(Oid typid);
 extern bool type_is_collatable(Oid typid);
 extern Oid	getBaseType(Oid typid);
 extern Oid	getBaseTypeAndTypmod(Oid typid, int32 *typmod);
+#ifdef PGXC
+extern char *get_typename(Oid typid);
+extern char *get_pgxc_nodename(Oid nodeoid);
+extern Oid	get_pgxc_nodeoid(const char *nodename);
+extern uint32	get_pgxc_node_id(Oid nodeid);
+extern char	get_pgxc_nodetype(Oid nodeid);
+extern int	get_pgxc_nodeport(Oid nodeid);
+extern char *get_pgxc_nodehost(Oid nodeid);
+extern bool	is_pgxc_nodepreferred(Oid nodeid);
+extern bool	is_pgxc_nodeprimary(Oid nodeid);
+extern Oid	get_pgxc_groupoid(const char *groupname);
+extern int	get_pgxc_groupmembers(Oid groupid, Oid **members);
+extern int	get_pgxc_classnodes(Oid tableid, Oid **nodes);
+extern char * get_pgxc_groupname(Oid groupid);
+#endif
 extern int32 get_typavgwidth(Oid typid, int32 typmod);
 extern int32 get_attavgwidth(Oid relid, AttrNumber attnum);
 extern bool get_attstatsslot(AttStatsSlot *sslot, HeapTuple statstuple,
 				 int reqkind, Oid reqop, int flags);
 extern void free_attstatsslot(AttStatsSlot *sslot);
 extern char *get_namespace_name(Oid nspid);
+#ifdef XCP
+extern Oid	get_namespaceid(const char *nspname);
+extern char *get_typ_name(Oid typid);
+extern Oid	get_typ_namespace(Oid typid);
+extern Oid	get_typname_typid(const char *typname, Oid typnamespace);
+extern Oid	get_funcid(const char *funcname, oidvector *argtypes, Oid funcnsp);
+extern Oid	get_opnamespace(Oid opno);
+extern Oid	get_operid(const char *oprname, Oid oprleft, Oid oprright, Oid oprnsp);
+#endif
 extern char *get_namespace_name_or_temp(Oid nspid);
 extern Oid	get_range_subtype(Oid rangeOid);
-
+#ifdef XCP
+extern Oid	get_tablesample_method_id(const char *methodname);
+#endif
 extern char *get_graphid_graphname(Oid graphid);
 extern Oid	get_graphname_oid(const char *graphname);
 extern char *get_labid_labname(Oid graphid, uint16 labid);

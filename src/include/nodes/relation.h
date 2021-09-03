@@ -21,6 +21,25 @@
 #include "storage/block.h"
 
 
+#ifdef XCP
+/*
+ * Distribution
+ *
+ * Distribution is an attribute of distributed plan node. It describes on which
+ * node execution results can be found.
+ */
+typedef struct Distribution
+{
+	NodeTag		type;
+
+	char		distributionType;
+	Node	   *distributionExpr;
+	Bitmapset  *nodes;
+	Bitmapset  *restrictNodes;
+} Distribution;
+#endif
+
+
 /*
  * Relids
  *		Set of relation identifiers (indexes into the rangetable).
@@ -315,9 +334,21 @@ typedef struct PlannerInfo
 	/* These fields are workspace for createplan.c */
 	Relids		curOuterRels;	/* outer rels above current node */
 	List	   *curOuterParams; /* not-yet-assigned NestLoopParams */
+#ifdef XCP
+	Bitmapset  *curOuterRestrict; 	/* Datanodes where outer plan is executed */
+#endif
 
 	/* optional private data for join_search_hook, e.g., GEQO */
 	void	   *join_search_private;
+#ifdef XCP
+	/*
+	 * This is NULL for a SELECT query (NULL distribution means "Coordinator"
+	 * everywhere in the planner. For INSERT, UPDATE or DELETE it should match
+	 * to the target table distribution.
+	 */
+	Distribution *distribution; /* Query result distribution */
+	bool		recursiveOk;
+#endif
 } PlannerInfo;
 
 
@@ -971,6 +1002,9 @@ typedef struct Path
 
 	List	   *pathkeys;		/* sort ordering of path's output */
 	/* pathkeys is a List of PathKey nodes; see above */
+#ifdef XCP
+	Distribution *distribution;
+#endif
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
@@ -1258,6 +1292,14 @@ typedef struct UniquePath
 	List	   *uniq_exprs;		/* expressions to be made unique */
 } UniquePath;
 
+#ifdef XCP
+typedef struct RemoteSubPath
+{
+	Path		path;
+	Path	   *subpath;
+} RemoteSubPath;
+#endif
+
 /*
  * GatherPath runs several copies of a plan in parallel and collects the
  * results.  The parallel leader may also execute the plan, unless the
@@ -1301,6 +1343,10 @@ typedef struct JoinPath
 	Path	   *innerjoinpath;	/* path for the inner side of the join */
 
 	List	   *joinrestrictinfo;	/* RestrictInfos to apply to join */
+
+#ifdef XCP
+	List	   *movedrestrictinfo;		/* RestrictInfos moved down to inner path */
+#endif
 
 	/*
 	 * See the notes for RelOptInfo and ParamPathInfo to understand why

@@ -242,6 +242,11 @@ extern bool log_executor_stats;
 extern bool log_statement_stats;
 extern bool log_btree_build_stats;
 
+#ifdef XCP
+extern bool log_gtm_stats;
+extern bool log_remotesubplan_stats;
+#endif
+
 extern PGDLLIMPORT bool check_function_bodies;
 extern bool default_with_oids;
 extern bool	session_auth_is_superuser;
@@ -268,6 +273,9 @@ extern int	tcp_keepalives_idle;
 extern int	tcp_keepalives_interval;
 extern int	tcp_keepalives_count;
 
+#ifdef XCP
+extern char *global_session_string;
+#endif
 #ifdef TRACE_SORT
 extern bool trace_sort;
 #endif
@@ -374,6 +382,10 @@ extern int	GetNumConfigOptions(void);
 extern void SetPGVariable(const char *name, List *args, bool is_local);
 extern void GetPGVariable(const char *name, DestReceiver *dest);
 extern TupleDesc GetPGVariableResultDesc(const char *name);
+
+#ifdef PGXC
+extern char *RewriteBeginQuery(char *query_string, const char *name, List *args);
+#endif
 
 extern void ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel);
 extern char *ExtractSetVariableArgs(VariableSetStmt *stmt);

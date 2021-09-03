@@ -52,6 +52,10 @@ extern Path *get_cheapest_fractional_path(RelOptInfo *rel,
 							 double tuple_fraction);
 
 extern Expr *expression_planner(Expr *expr);
+#ifdef PGXC
+extern void GetHashExecNodes(RelationLocInfo *rel_loc_info, 
+							ExecNodes **exec_nodes, const Expr *expr);
+#endif
 
 extern Expr *preprocess_phv_expression(PlannerInfo *root, Expr *expr);
 

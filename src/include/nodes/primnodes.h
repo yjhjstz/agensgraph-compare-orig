@@ -112,6 +112,10 @@ typedef struct IntoClause
 	char	   *tableSpaceName; /* table space to use, or NULL */
 	Node	   *viewQuery;		/* materialized view's SELECT query */
 	bool		skipData;		/* true for WITH NO DATA */
+#ifdef PGXC
+	struct DistributeBy *distributeby;  /* distribution to use, or NULL */
+	struct PGXCSubCluster *subcluster;	/* subcluster node members */
+#endif
 } IntoClause;
 
 
@@ -294,6 +298,10 @@ typedef struct Aggref
 	Oid			aggtype;		/* type Oid of result of the aggregate */
 	Oid			aggcollid;		/* OID of collation of result */
 	Oid			inputcollid;	/* OID of collation that function should use */
+#ifdef PGXC
+	Oid			aggtrantype;	/* type Oid of transition results */
+	bool		agghas_collectfn;	/* is collection function available */
+#endif /* PGXC */
 	Oid			aggtranstype;	/* type Oid of aggregate's transition value */
 	List	   *aggargtypes;	/* type Oids of direct and aggregated args */
 	List	   *aggdirectargs;	/* direct arguments, if an ordered-set agg */
@@ -1472,6 +1480,57 @@ typedef struct FromExpr
 	List	   *fromlist;		/* List of join subtrees */
 	Node	   *quals;			/* qualifiers on join, if any */
 } FromExpr;
+
+#ifdef PGXC
+/*----------
+ * DistributionType - how to distribute the data
+ *
+ *----------
+ */
+typedef enum DistributionType
+{
+	DISTTYPE_REPLICATION,			/* Replicated */
+	DISTTYPE_HASH,				/* Hash partitioned */
+	DISTTYPE_ROUNDROBIN,			/* Round Robin */
+	DISTTYPE_MODULO				/* Modulo partitioned */
+} DistributionType;
+
+/*----------
+ * DistributeBy - represents a DISTRIBUTE BY clause in a CREATE TABLE statement
+ *
+ *----------
+ */
+typedef struct DistributeBy
+{
+	NodeTag		type;
+	DistributionType disttype;		/* Distribution type */
+	char	   	*colname;		/* Distribution column name */
+} DistributeBy;
+
+/*----------
+ * SubClusterType - type of subcluster used
+ *
+ *----------
+ */
+typedef enum PGXCSubClusterType
+{
+	SUBCLUSTER_NONE,
+	SUBCLUSTER_NODE,
+	SUBCLUSTER_GROUP
+} PGXCSubClusterType;
+
+/*----------
+ * PGXCSubCluster - Subcluster on which a table can be created
+ *
+ *----------
+ */
+typedef struct PGXCSubCluster
+{
+	NodeTag				type;
+	PGXCSubClusterType	clustertype;	/* Subcluster type */
+	List				*members;		/* List of nodes or groups */
+} PGXCSubCluster;
+#endif
 
 /*----------
  * OnConflictExpr - represents an ON CONFLICT DO ... expression

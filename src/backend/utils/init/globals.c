@@ -70,6 +70,16 @@ char		postgres_exec_path[MAXPGPATH];	/* full path to backend */
 /* note: currently this is not valid in backend processes */
 #endif
 
+#ifdef XCP
+Oid			MyCoordId = InvalidOid;
+char		MyCoordName[NAMEDATALEN];
+
+int 		MyCoordPid = 0;
+LocalTransactionId	MyCoordLxid = 0;
+
+BackendId	MyFirstBackendId = InvalidBackendId;
+#endif
+
 BackendId	MyBackendId = InvalidBackendId;
 
 BackendId	ParallelMasterBackendId = InvalidBackendId;
@@ -138,3 +148,7 @@ int			VacuumPageDirty = 0;
 
 int			VacuumCostBalance = 0;	/* working state for vacuum */
 bool		VacuumCostActive = false;
+
+#ifdef PGXC
+bool useLocalXid = false;
+#endif

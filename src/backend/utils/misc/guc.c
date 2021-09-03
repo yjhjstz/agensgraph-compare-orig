@@ -28,6 +28,10 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#ifdef PGXC
+#include "access/gtm.h"
+#include "pgxc/pgxc.h"
+#endif
 #include "access/rmgr.h"
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -60,6 +64,25 @@
 #include "parser/parser.h"
 #include "parser/scansup.h"
 #include "pgstat.h"
+#ifdef PGXC
+#include "commands/tablecmds.h"
+#include "commands/trigger.h"
+#include "nodes/nodes.h"
+#include "pgxc/execRemote.h"
+#include "pgxc/locator.h"
+#include "pgxc/planner.h"
+#include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
+#include "pgxc/xc_maintenance_mode.h"
+#include "storage/procarray.h"
+#endif
+#ifdef XCP
+#include "commands/sequence.h"
+#include "parser/parse_utilcmd.h"
+#include "pgxc/nodemgr.h"
+#include "pgxc/squeue.h"
+#include "utils/snapmgr.h"
+#endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
@@ -172,6 +195,9 @@ static bool check_bonjour(bool *newval, void **extra, GucSource source);
 static bool check_ssl(bool *newval, void **extra, GucSource source);
 static bool check_stage_log_stats(bool *newval, void **extra, GucSource source);
 static bool check_log_stats(bool *newval, void **extra, GucSource source);
+#ifdef PGXC
+static bool check_pgxc_maintenance_mode(bool *newval, void **extra, GucSource source);
+#endif
 static bool check_canonical_path(char **newval, void **extra, GucSource source);
 static bool check_timezone_abbreviations(char **newval, void **extra, GucSource source);
 static void assign_timezone_abbreviations(const char *newval, void *extra);
@@ -199,6 +225,10 @@ static const char *show_log_file_mode(void);
 /* Private functions in guc-file.l that need to be called from guc.c */
 static ConfigVariable *ProcessConfigFileInternal(GucContext context,
 						  bool applySettings, int elevel);
+
+#ifdef XCP
+static void strreplace_all(char *str, char *needle, char *replacement);
+#endif
 
 
 /*
@@ -444,6 +474,11 @@ bool		log_planner_stats = false;
 bool		log_executor_stats = false;
 bool		log_statement_stats = false;	/* this is sort of all three above
 											 * together */
+#ifdef XCP
+bool		log_gtm_stats = false;
+bool		log_remotesubplan_stats = false;
+#endif
+
 bool		log_btree_build_stats = false;
 char	   *event_source;
 
@@ -511,6 +546,9 @@ static char *timezone_abbreviations_string;
 static char *XactIsoLevel_string;
 static char *data_directory;
 static char *session_authorization_string;
+#ifdef XCP
+char *global_session_string;
+#endif
 static int	max_function_args;
 static int	max_index_keys;
 static int	max_identifier_length;

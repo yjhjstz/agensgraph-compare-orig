@@ -25,6 +25,9 @@
 #include "fmgr.h"
 #include "utils/relcache.h"
 
+#ifdef XCP
+struct ResponseCombiner;
+#endif
 
 /* Tuplesortstate is an opaque type whose details are not known outside
  * tuplesort.c.
@@ -80,6 +83,13 @@ extern Tuplesortstate *tuplesort_begin_datum(Oid datumType,
 					  Oid sortOperator, Oid sortCollation,
 					  bool nullsFirstFlag,
 					  int workMem, bool randomAccess);
+#ifdef PGXC
+extern Tuplesortstate *tuplesort_begin_merge(TupleDesc tupDesc,
+					 int nkeys, AttrNumber *attNums,
+					 Oid *sortOperators, Oid *sortCollations, bool *nullsFirstFlags,
+					 struct ResponseCombiner *combiner,
+					 int workMem);
+#endif
 
 extern void tuplesort_set_bound(Tuplesortstate *state, int64 bound);
 

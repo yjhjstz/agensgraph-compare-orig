@@ -76,6 +76,11 @@
 #include "catalog/pg_ts_template.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
+#ifdef PGXC
+#include "catalog/pgxc_class.h"
+#include "catalog/pgxc_node.h"
+#include "catalog/pgxc_group.h"
+#endif
 #include "utils/rel.h"
 #include "utils/catcache.h"
 #include "utils/syscache.h"
@@ -653,6 +658,74 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		8
 	},
+#ifdef PGXC
+	{PgxcClassRelationId,	/* PGXCCLASSRELID */
+		PgxcClassPgxcRelIdIndexId,
+		1,
+		{
+			Anum_pgxc_class_pcrelid,
+			0,
+			0,
+			0
+		},
+		1024
+	},
+	{PgxcGroupRelationId,	/* PGXCGROUPNAME */
+		PgxcGroupGroupNameIndexId,
+		1,
+		{
+			Anum_pgxc_group_name,
+			0,
+			0,
+			0
+		},
+		256
+	},
+	{PgxcGroupRelationId,	/* PGXCGROUPOID */
+		PgxcGroupOidIndexId,
+		1,
+		{
+			ObjectIdAttributeNumber,
+			0,
+			0,
+			0
+		},
+		256
+	},
+	{PgxcNodeRelationId,	/* PGXCNODENAME */
+		PgxcNodeNodeNameIndexId,
+		1,
+		{
+			Anum_pgxc_node_name,
+			0,
+			0,
+			0
+		},
+		256
+	},
+	{PgxcNodeRelationId,	/* PGXCNODEOID */
+		PgxcNodeOidIndexId,
+		1,
+		{
+			ObjectIdAttributeNumber,
+			0,
+			0,
+			0
+		},
+		256
+	},
+	{PgxcNodeRelationId,	/* PGXCNODEIDENTIFIER */
+		PgxcNodeNodeIdIndexId,
+		1,
+		{
+			Anum_pgxc_node_id,
+			0,
+			0,
+			0
+		},
+		256
+	},
+#endif
 	{PartitionedRelationId,		/* PARTRELID */
 		PartitionedRelidIndexId,
 		1,

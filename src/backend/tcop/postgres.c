@@ -42,6 +42,9 @@
 #include "catalog/pg_type.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
+#ifdef PGXC
+#include "commands/trigger.h"
+#endif
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
 #include "libpq/pqsignal.h"
@@ -52,6 +55,9 @@
 #include "pg_trace.h"
 #include "parser/analyze.h"
 #include "parser/parser.h"
+#ifdef PGXC
+#include "parser/parse_type.h"
+#endif /* PGXC */
 #include "pg_getopt.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
@@ -77,6 +83,27 @@
 #include "utils/timestamp.h"
 #include "mb/pg_wchar.h"
 
+#ifdef PGXC
+#include "catalog/pgxc_node.h"
+#include "storage/procarray.h"
+#include "pgxc/pgxc.h"
+#include "access/gtm.h"
+/* PGXC_COORD */
+#include "pgxc/execRemote.h"
+#include "pgxc/barrier.h"
+#include "pgxc/planner.h"
+#include "nodes/nodes.h"
+#include "pgxc/poolmgr.h"
+#include "pgxc/pgxcnode.h"
+#ifdef XCP
+#include "pgxc/pause.h"
+#include "pgxc/squeue.h"
+#endif
+#include "commands/copy.h"
+/* PGXC_DATANODE */
+#include "access/transam.h"
+#endif
+extern int	optind;
 
 /* ----------------
  *		global variables
@@ -184,6 +211,23 @@ static bool IsTransactionStmtList(List *pstmts);
 static void drop_unnamed_stmt(void);
 static void log_disconnections(int code, Datum arg);
 
+
+#ifdef PGXC /* PGXC_DATANODE */
+/* ----------------------------------------------------------------
+ *		PG-XC routines
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * Called when the backend is ending.
+ */
+static void
+DataNodeShutdown (int code, Datum arg)
+{
+	/* Close connection with GTM, if active */
+	CloseGTM();
+}
+#endif
 
 /* ----------------------------------------------------------------
  *		routines to obtain user input
@@ -326,7 +370,103 @@ SocketBackend(StringInfo inBuf)
 	 */
 	HOLD_CANCEL_INTERRUPTS();
 	pq_startmsgread();
+
+#ifdef XCP
+	/*
+	 * Session from data node may need to do some background work if it is
+	 * running producing subplans. So just poll the connection, and if it does
+	 * not have input for us do the work.
+	 * If we do not have producing portals we should use the blocking read
+	 * to avoid loop consuming 100% of CPU
+	 */
+	if (IS_PGXC_DATANODE && IsConnFromDatanode())
+	{
+		/*
+		 * Advance producing portals or poll client connection until we have
+		 * a client command to handle.
+		 */
+		while (true)
+		{
+			unsigned char c;
+
+			qtype = pq_getbyte_if_available(&c);
+			if (qtype == 0)			/* no commands, do producing */
+			{
+				/*
+				 * No command yet, try to advance producing portals, and
+				 * depending on result do:
+				 * -1 No producing portals, block and wait for client command
+				 * 0  All producing portals are paused, sleep for a moment and
+				 *    then check again either we have client command or some
+				 *    portal is awaken.
+				 * 1  check for client command and more continue advancing
+				 *    producers immediately
+				 */
+				int activePortals = -1;
+				ListCell   *lc = list_head(getProducingPortals());
+				while (lc)
+				{
+					Portal p = (Portal) lfirst(lc);
+					int result;
+
+					/*
+					 * Get next already, because next call may remove cell from
+					 * the list and invalidate next reference
+					 */
+					lc = lnext(lc);
+
+					result = AdvanceProducingPortal(p, true);
+					if (result == 0)
+					{
+						/* Portal is paused */
+						if (activePortals < 0)
+							activePortals = 0;
+					}
+					else if (result > 0)
+					{
+						if (activePortals < 0)
+							activePortals = result;
+						else
+							activePortals += result;
+					}
+				}
+				if (activePortals < 0)
+				{
+					/* no producers at all, we may wait while next command */
+					qtype = pq_getbyte();
+					break;
+				}
+				else if (activePortals == 0)
+				{
+					/* all producers are paused, sleep a little to allow other
+					 * processes to go */
+					pg_usleep(10000L);
+				}
+			}
+			else if (qtype == 1)
+			{
+				/* command code in c is defined, move it to qtype
+				 * and break to handle the command */
+				qtype = c;
+				break;
+			}
+			else
+			{
+				/* error, default handling, qtype is already set to EOF */
+				break;
+			}
+		}
+	}
+	else
+	{
+		/*
+		 * Get message type code from the frontend.
+		 */
+		qtype = pq_getbyte();
+	}
+#else
 	qtype = pq_getbyte();
+#endif
 
 	if (qtype == EOF)			/* frontend disconnected */
 	{
@@ -420,6 +560,9 @@ SocketBackend(StringInfo inBuf)
 			break;
 
 		case 'B':				/* bind */
+#ifdef XCP /* PGXC_DATANODE */
+		case 'p':				/* plan */
+#endif
 		case 'C':				/* close */
 		case 'D':				/* describe */
 		case 'E':				/* execute */
@@ -455,6 +598,14 @@ SocketBackend(StringInfo inBuf)
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("invalid frontend message type %d", qtype)));
 			break;
+#ifdef PGXC /* PGXC_DATANODE */
+		case 'M':				/* Command ID */
+		case 'g':				/* GXID */
+		case 's':				/* Snapshot */
+		case 't':				/* Timestamp */
+		case 'b':				/* Barrier */
+			break;
+#endif
 
 		default:
 
@@ -662,6 +813,13 @@ pg_analyze_and_rewrite(RawStmt *parsetree, const char *query_string,
 	 */
 	querytree_list = pg_rewrite_query(query);
 
+	/*
+	 * If we rewrote the query into more than one queries, then we must
+	 * enforce a transaction block while running remote queries.
+	 */
+	if (list_length(querytree_list) > 1)
+		SetRequireRemoteTransactionBlock();
+
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
 	return querytree_list;
@@ -736,6 +894,19 @@ pg_rewrite_query(Query *query)
 	if (log_parser_stats)
 		ResetUsage();
 
+#ifdef PGXC
+	if (query->commandType == CMD_UTILITY &&
+		IsA(query->utilityStmt, CreateTableAsStmt))
+	{
+		/*
+		 * CREATE TABLE AS SELECT and SELECT INTO are rewritten so that the
+		 * target table is created first. The SELECT query is then transformed
+		 * into an INSERT INTO statement
+		 */
+		querytree_list = QueryRewriteCTAS(query);
+	}
+	else
+#endif
 	if (query->commandType == CMD_UTILITY)
 	{
 		/* don't rewrite utilities, just dump 'em into result list */
@@ -887,7 +1058,7 @@ exec_simple_query(const char *query_string)
 	bool		was_logged = false;
 	bool		isTopLevel;
 	char		msec_str[32];
-
+	bool		multiCommands = false;
 
 	/*
 	 * Report query to various monitoring facilities.
@@ -933,6 +1104,44 @@ exec_simple_query(const char *query_string)
 	 */
 	parsetree_list = pg_parse_query(query_string);
 
+#ifdef XCP
+	if (IS_PGXC_LOCAL_COORDINATOR && list_length(parsetree_list) > 1)
+	{
+		/*
+		 * There is a bug in old code, if one query contains multiple utility
+		 * statements, entire query may be sent multiple times to the Datanodes
+		 * for execution. That is becoming a severe problem, if query contains
+		 * COMMIT or ROLLBACK. After executed for the first time the transaction
+		 * handling statement would write CLOG entry for current xid, but other
+		 * executions would be done with the same xid, causing PANIC on the
+		 * Datanodes because of already existing CLOG record. Datanode is
+		 * restarting all sessions if it PANICs, and affects all cluster users.
+		 * Multiple utility statements may result in strange error messages,
+		 * but somteime they work, and used in many applications, so we do not
+		 * want to disable them completely, just protect against severe
+		 * vulnerability here.
+		 */
+		foreach(parsetree_item, parsetree_list)
+		{
+			Node	   *parsetree = (Node *) lfirst(parsetree_item);
+
+			if (IsTransactionExitStmt(parsetree))
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						 errmsg("COMMIT or ROLLBACK "
+								"in multi-statement queries not allowed")));
+		}
+	}
+
+	/*
+	 * XXX We may receive multi-command string and the coordinator is not
+	 * equipped to handle multiple command-complete messages. So just send a
+	 * single command-complete until we fix the coordinator side of things
+	 */
+	if (!IS_PGXC_LOCAL_COORDINATOR && list_length(parsetree_list) > 1)
+		multiCommands = true;
+#endif
+
 	/* Log immediately if dictated by log_statement */
 	if (check_log_statement(parsetree_list))
 	{
@@ -971,6 +1180,15 @@ exec_simple_query(const char *query_string)
 		Portal		portal;
 		DestReceiver *receiver;
 		int16		format;
+#ifdef PGXC
+
+		/*
+		 * By default we do not want Datanodes or client Coordinators to contact GTM directly,
+		 * it should get this information passed down to it.
+		 */
+		if (IS_PGXC_DATANODE || IsConnFromCoord())
+			SetForceXidFromGTM(false);
+#endif
 
 		/*
 		 * Get the command name for use in status display (it also becomes the
@@ -1035,6 +1253,35 @@ exec_simple_query(const char *query_string)
 
 		/* If we got a cancel signal in analysis or planning, quit */
 		CHECK_FOR_INTERRUPTS();
+
+#ifdef PGXC
+		/* 
+		 * Force getting Xid from GTM for vacuum, cluster and reindex for
+		 * database or schema
+		 */
+		if (IS_PGXC_DATANODE && IsPostmasterEnvironment)
+		{
+			if (IsA(parsetree->stmt, VacuumStmt))
+			{
+				VacuumStmt *stmt = (VacuumStmt *) parsetree->stmt;
+				if (stmt->options & VACOPT_VACUUM)
+					SetForceXidFromGTM(true);
+			}
+			else if (IsA(parsetree->stmt, ClusterStmt))
+			{
+				ClusterStmt *stmt = (ClusterStmt *) parsetree->stmt;
+				if (stmt->relation == NULL)
+					SetForceXidFromGTM(true);
+			}
+			else if (IsA(parsetree->stmt, ReindexStmt))
+			{
+				ReindexStmt *stmt = (ReindexStmt *) parsetree->stmt;
+				if (stmt->kind == REINDEX_OBJECT_SCHEMA ||
+					stmt->kind == REINDEX_OBJECT_DATABASE)
+					SetForceXidFromGTM(true);
+			}
+		}
+#endif
 
 		/*
 		 * Create unnamed portal to run the query or queries in. If there
@@ -1147,9 +1394,12 @@ exec_simple_query(const char *query_string)
 		 * command the client sent, regardless of rewriting. (But a command
 		 * aborted by error will not send an EndCommand report at all.)
 		 */
-		EndCommand(completionTag, dest);
+		if (!multiCommands)
+			EndCommand(completionTag, dest);
 	}							/* end loop over parsetrees */
 
+	if (multiCommands)
+		EndCommand("MultiCommand", dest);
 	/*
 	 * Close down transaction statement, if one is open.
 	 */
@@ -1192,11 +1442,14 @@ exec_simple_query(const char *query_string)
  * exec_parse_message
  *
  * Execute a "Parse" protocol message.
+ * If paramTypeNames is specified, paraTypes is filled with corresponding OIDs.
+ * The caller is expected to allocate space for the paramTypes.
  */
 static void
 exec_parse_message(const char *query_string,	/* string to execute */
 				   const char *stmt_name,	/* name for prepared stmt */
 				   Oid *paramTypes, /* parameter types */
+				   char **paramTypeNames,	/* parameter type names */
 				   int numParams)	/* number of parameters */
 {
 	MemoryContext unnamed_stmt_context = NULL;
@@ -1265,6 +1518,23 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		oldcontext = MemoryContextSwitchTo(unnamed_stmt_context);
 	}
 
+#ifdef PGXC
+	/*
+	 * if we have the parameter types passed, which happens only in case of
+	 * connection from Coordinators, fill paramTypes with their OIDs for
+	 * subsequent use. We have to do name to OID conversion, in a transaction
+	 * context.
+	 */
+	if (IsConnFromCoord() && paramTypeNames)
+	{
+		int cnt_param;
+		/* we don't expect type mod */
+		for (cnt_param = 0; cnt_param < numParams; cnt_param++)
+			parseTypeString(paramTypeNames[cnt_param], &paramTypes[cnt_param],
+							NULL, false);
+	}
+#endif /* PGXC */
+
 	/*
 	 * Do basic parsing of the query or queries (this should be safe even if
 	 * we are in aborted transaction state!)
@@ -1314,7 +1584,11 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		 * Create the CachedPlanSource before we do parse analysis, since it
 		 * needs to see the unmodified raw parse tree.
 		 */
+#ifdef PGXC
+		psrc = CreateCachedPlan(raw_parse_tree, query_string, stmt_name, commandTag);
+#else
 		psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag);
+#endif
 
 		/*
 		 * Set up a snapshot if parse analysis will need one.
@@ -1366,7 +1640,11 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		/* Empty input string.  This is legal. */
 		raw_parse_tree = NULL;
 		commandTag = NULL;
+#ifdef PGXC
+		psrc = CreateCachedPlan(raw_parse_tree, query_string, stmt_name, commandTag);
+#else
 		psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag);
+#endif
 		querytree_list = NIL;
 	}
 
@@ -1398,7 +1676,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		/*
 		 * Store the query as a prepared statement.
 		 */
-		StorePreparedStatement(stmt_name, psrc, false);
+		StorePreparedStatement(stmt_name, psrc, false, false);
 	}
 	else
 	{
@@ -1449,6 +1727,154 @@ exec_parse_message(const char *query_string,	/* string to execute */
 
 	debug_query_string = NULL;
 }
+
+#ifdef XCP
+/*
+ * exec_plan_message
+ *
+ * Execute a "Plan" protocol message - already planned statement.
+ */
+static void
+exec_plan_message(const char *query_string,	/* source of the query */
+				  const char *stmt_name,		/* name for prepared stmt */
+				  const char *plan_string,		/* encoded plan to execute */
+				  char **paramTypeNames,	/* parameter type names */
+				  int numParams)		/* number of parameters */
+{
+	MemoryContext oldcontext;
+	bool		save_log_statement_stats = log_statement_stats;
+	char		msec_str[32];
+	Oid		   *paramTypes = NULL;
+	CachedPlanSource *psrc;
+
+	/* coord name + remote node + whatever */
+	static char		commandTag[NAMEDATALEN + NAMEDATALEN + 128];
+
+	/* Statement name should not be empty */
+	Assert(stmt_name[0]);
+
+	/*
+	 * Report query to various monitoring facilities.
+	 */
+	debug_query_string = query_string;
+
+	pgstat_report_activity(STATE_RUNNING, query_string);
+
+	set_ps_display("PLAN", false);
+
+	if (save_log_statement_stats)
+		ResetUsage();
+
+	ereport(DEBUG2,
+			(errmsg("plan %s: %s",
+					*stmt_name ? stmt_name : "<unnamed>",
+					query_string)));
+
+	/*
+	 * Start up a transaction command so we can decode plan etc. (Note
+	 * that this will normally change current memory context.) Nothing happens
+	 * if we are already in one.
+	 */
+	start_xact_command();
+
+	/*
+	 * XXX
+	 * Postgres decides about memory context to use based on "named/unnamed"
+	 * assuming named statement is executed multiple times and unnamed is
+	 * executed once.
+	 * Plan message always provide statement name, but we may use different
+	 * criteria, like if plan is referencing "internal" parameters it probably
+	 * will be executed multiple times, if not - once.
+	 * So far optimize for multiple executions.
+	 */
+	/* Named prepared statement --- parse in MessageContext */
+	oldcontext = MemoryContextSwitchTo(MessageContext);
+//	unnamed_stmt_context =
+//		AllocSetContextCreate(CacheMemoryContext,
+//							  "unnamed prepared statement",
+//							  ALLOCSET_DEFAULT_MINSIZE,
+//							  ALLOCSET_DEFAULT_INITSIZE,
+//							  ALLOCSET_DEFAULT_MAXSIZE);
+//	oldcontext = MemoryContextSwitchTo(unnamed_stmt_context);
+
+	/*
+	 * Determine parameter types
+	 */
+	if (numParams > 0)
+	{
+		int cnt_param;
+		paramTypes = (Oid *) palloc(numParams * sizeof(Oid));
+		/* we don't expect type mod */
+		for (cnt_param = 0; cnt_param < numParams; cnt_param++)
+			parseTypeString(paramTypeNames[cnt_param], &paramTypes[cnt_param],
+								NULL, false);
+
+	}
+
+	/* If we got a cancel signal, quit */
+	CHECK_FOR_INTERRUPTS();
+
+	snprintf(commandTag, sizeof (commandTag),
+			"REMOTE SUBPLAN (%s:%d) (%c:%s:%d)",
+			MyCoordName, MyCoordPid,
+			remoteConnType == REMOTE_CONN_APP ? 'A' : 
+				remoteConnType == REMOTE_CONN_DATANODE ? 'D' :
+				remoteConnType == REMOTE_CONN_COORD ? 'C' : 'U',
+			parentPGXCNode, parentPGXCPid
+			);
+	psrc = CreateCachedPlan(NULL, query_string, stmt_name, commandTag);
+
+	CompleteCachedPlan(psrc, NIL, NULL, paramTypes, numParams, NULL, NULL,
+					   CURSOR_OPT_GENERIC_PLAN, false);
+
+	/*
+	 * Store the query as a prepared statement.  See above comments.
+	 */
+	StorePreparedStatement(stmt_name, psrc, false, true);
+
+	SetRemoteSubplan(psrc, plan_string);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	/*
+	 * We do NOT close the open transaction command here; that only happens
+	 * when the client sends Sync.	Instead, do CommandCounterIncrement just
+	 * in case something happened during parse/plan.
+	 */
+	CommandCounterIncrement();
+
+	/*
+	 * Send ParseComplete.
+	 */
+	if (whereToSendOutput == DestRemote)
+		pq_putemptymessage('1');
+
+	/*
+	 * Emit duration logging if appropriate.
+	 */
+	switch (check_log_duration(msec_str, false))
+	{
+		case 1:
+			ereport(LOG,
+					(errmsg("duration: %s ms", msec_str),
+					 errhidestmt(true)));
+			break;
+		case 2:
+			ereport(LOG,
+					(errmsg("duration: %s ms  parse %s: %s",
+							msec_str,
+							*stmt_name ? stmt_name : "<unnamed>",
+							query_string),
+					 errhidestmt(true)));
+			break;
+	}
+
+	if (save_log_statement_stats)
+		ShowUsage("PLAN MESSAGE STATISTICS");
+
+	debug_query_string = NULL;
+}
+#endif
 
 /*
  * exec_bind_message
@@ -2108,7 +2534,11 @@ check_log_duration(char *msec_str, bool was_logged)
 		int			msecs;
 		bool		exceeded;
 
-		TimestampDifference(GetCurrentStatementStartTimestamp(),
+		/*
+		 * Since GetCurrentTimestamp() returns OS time, use local time for
+		 * statement-start for accurate comparison
+		 */
+		TimestampDifference(GetCurrentLocalStatementStartTimestamp(),
 							GetCurrentTimestamp(),
 							&secs, &usecs);
 		msecs = usecs / 1000;
@@ -2626,6 +3056,14 @@ die(SIGNAL_ARGS)
 		InterruptPending = true;
 		ProcDiePending = true;
 	}
+
+#ifdef XCP
+	/* release cluster lock if holding it */
+	if (cluster_ex_lock_held)
+	{
+		ReleaseClusterLock(true);
+	}
+#endif
 
 	/* If we're still here, waken anything waiting on the process latch */
 	SetLatch(MyLatch);
@@ -3327,6 +3765,9 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 	int			errs = 0;
 	GucSource	gucsource;
 	int			flag;
+#ifdef PGXC
+	bool		singleuser = false;
+#endif
 
 	if (secure)
 	{
@@ -3337,6 +3778,9 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 		{
 			argv++;
 			argc--;
+#ifdef PGXC
+			singleuser = true;
+#endif
 		}
 	}
 	else
@@ -3502,6 +3946,27 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 							   *value;
 
 					ParseLongOption(optarg, &name, &value);
+#ifdef PGXC
+					/* A Coordinator is being activated */
+					if (strcmp(name, "coordinator") == 0 &&
+						!value)
+						isPGXCCoordinator = true;
+					/* A Datanode is being activated */
+					else if (strcmp(name, "datanode") == 0 &&
+							 !value)
+						isPGXCDataNode = true;
+					else if (strcmp(name, "localxid") == 0 &&
+							 !value)
+					{
+						if (!singleuser)
+							ereport(ERROR,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("local xids can be used only in single user mode")));
+						useLocalXid = true;
+					}
+					else /* default case */
+					{
+#endif /* PGXC */
 					if (!value)
 					{
 						if (flag == '-')
@@ -3516,6 +3981,9 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 											optarg)));
 					}
 					SetConfigOption(name, value, ctx, gucsource);
+#ifdef PGXC
+					}
+#endif
 					free(name);
 					if (value)
 						free(value);
@@ -3530,6 +3998,25 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 		if (errs)
 			break;
 	}
+
+#ifdef PGXC
+	/*
+	 * Make sure we specified the mode if Coordinator or Datanode.
+	 * Allow for the exception of initdb by checking config option
+	 */
+	if (!IS_PGXC_COORDINATOR && !IS_PGXC_DATANODE && IsUnderPostmaster)
+	{
+		ereport(FATAL,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+			 errmsg("Postgres-XL: must start as either a Coordinator (--coordinator) or Datanode (-datanode)\n")));
+
+	}
+	if (!IsPostmasterEnvironment)
+	{
+		/* Treat it as a Datanode for initdb to work properly */
+		isPGXCDataNode = true;
+	}
+#endif
 
 	/*
 	 * Optional database name should be there only if *dbname is NULL.
@@ -3588,6 +4075,26 @@ PostgresMain(int argc, char *argv[],
 	sigjmp_buf	local_sigjmp_buf;
 	volatile bool send_ready_for_query = true;
 	bool		disable_idle_in_transaction_timeout = false;
+
+#ifdef PGXC /* PGXC_DATANODE */
+	/* Snapshot info */
+	TransactionId 			xmin;
+	TransactionId 			xmax;
+	int						xcnt;
+	TransactionId 			*xip;
+	/* Timestamp info */
+	TimestampTz		timestamp;
+
+	remoteConnType = REMOTE_CONN_APP;
+#endif
+
+#ifdef XCP
+	parentPGXCNode = NULL;
+	parentPGXCNodeId = -1;
+	parentPGXCNodeType = PGXC_NODE_DATANODE;
+	cluster_lock_held = false;
+	cluster_ex_lock_held = false;
+#endif /* XCP */
 
 	/* Initialize startup process environment if necessary. */
 	if (!IsUnderPostmaster)
@@ -3808,6 +4315,75 @@ PostgresMain(int argc, char *argv[],
 	if (!IsUnderPostmaster)
 		PgStartTime = GetCurrentTimestamp();
 
+#ifdef PGXC
+	/*
+	 * Initialize key pair to be used as object id while using advisory lock
+	 * for backup
+	 */
+	xc_lockForBackupKey1 = Int32GetDatum(XC_LOCK_FOR_BACKUP_KEY_1);
+	xc_lockForBackupKey1 = Int32GetDatum(XC_LOCK_FOR_BACKUP_KEY_2);
+
+#ifdef XCP
+	/*
+	 * Prepare to handle distributed requests. Do that after sending down
+	 * ReadyForQuery, to avoid pooler blocking.
+	 *
+	 * Also do this only when we can access the catalogs. For example, a
+	 * wal-sender can't do that since its not connected to a specific database
+	 */
+	if (IsUnderPostmaster && !am_walsender)
+	{
+		start_xact_command();
+		InitMultinodeExecutor(false);
+		finish_xact_command();
+	}
+
+#ifdef USE_MODULE_MSGIDS
+	AtProcStart_MsgModule();
+#endif
+
+	/* if we exit, try to release cluster lock properly */
+	on_shmem_exit(PGXCCleanClusterLock, 0);
+
+	/* if we exit, try to release shared queues */
+	on_shmem_exit(SharedQueuesCleanup, 0);
+
+	/* If we exit, first try and clean connections and send to pool */
+	on_proc_exit(PGXCNodeCleanAndRelease, 0);
+#else
+	/* If this postmaster is launched from another Coord, do not initialize handles. skip it */
+	if (IS_PGXC_COORDINATOR && !IsPoolHandle())
+	{
+		CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPGXCNodes");
+
+		InitMultinodeExecutor(false);
+
+		pool_handle = GetPoolManagerHandle();
+		if (pool_handle == NULL)
+		{
+			ereport(ERROR,
+				(errcode(ERRCODE_IO_ERROR),
+				 errmsg("Can not connect to pool manager")));
+		}
+		/* Pooler initialization has to be made before ressource is released */
+		PoolManagerConnect(pool_handle, dbname, username, session_options());
+
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
+		CurrentResourceOwner = NULL;
+
+		/* If we exit, first try and clean connections and send to pool */
+		on_proc_exit (PGXCNodeCleanAndRelease, 0);
+	}
+#endif /* XCP */
+	if (IS_PGXC_DATANODE)
+	{
+		/* If we exit, first try and clean connection to GTM */
+		on_proc_exit (DataNodeShutdown, 0);
+	}
+#endif
+
 	/*
 	 * POSTGRES main processing loop begins here
 	 *
@@ -4015,6 +4591,25 @@ PostgresMain(int argc, char *argv[],
 			}
 
 			ReadyForQuery(whereToSendOutput);
+#ifdef XCP
+			/*
+			 * Before we read any new command we now should wait while all
+			 * already closed portals which are still producing finish their
+			 * work.
+			 */
+			if (IS_PGXC_DATANODE && IsConnFromDatanode())
+				cleanupClosedProducers();
+#endif
+#ifdef PGXC
+			/*
+			 * Helps us catch any problems where we did not send down a snapshot
+			 * when it was expected. However if any deferred trigger is supposed
+			 * to be fired at commit time we need to preserve the snapshot sent previously
+			 */
+			if ((IS_PGXC_DATANODE || IsConnFromCoord()) && !IsAnyAfterTriggerDeferred())
+				UnsetGlobalSnapshotData();
+#endif
+
 			send_ready_for_query = false;
 		}
 
@@ -4069,6 +4664,24 @@ PostgresMain(int argc, char *argv[],
 		if (ignore_till_sync && firstchar != EOF)
 			continue;
 
+#ifdef XCP
+		/*
+		 * Acquire the ClusterLock before starting query processing.
+		 *
+		 * If we are inside a transaction block, this lock will be already held
+		 * when the transaction began
+		 *
+		 * If the session has invoked a PAUSE CLUSTER earlier, then this lock
+		 * will be held already in exclusive mode. No need to lock in that case
+		 */
+		if (IsUnderPostmaster && IS_PGXC_COORDINATOR && !cluster_ex_lock_held && !cluster_lock_held)
+		{
+			bool exclusive = false;
+			AcquireClusterLock(exclusive);
+			cluster_lock_held = true;
+		}
+#endif /* XCP */
+
 		switch (firstchar)
 		{
 			case 'Q':			/* simple query */
@@ -4099,6 +4712,7 @@ PostgresMain(int argc, char *argv[],
 					const char *query_string;
 					int			numParams;
 					Oid		   *paramTypes = NULL;
+					char 	  **paramTypeNames = NULL;
 
 					forbidden_in_wal_sender(firstchar);
 
@@ -4108,20 +4722,62 @@ PostgresMain(int argc, char *argv[],
 					stmt_name = pq_getmsgstring(&input_message);
 					query_string = pq_getmsgstring(&input_message);
 					numParams = pq_getmsgint(&input_message, 2);
+					paramTypes = (Oid *) palloc(numParams * sizeof(Oid));
 					if (numParams > 0)
 					{
 						int			i;
-
-						paramTypes = (Oid *) palloc(numParams * sizeof(Oid));
-						for (i = 0; i < numParams; i++)
-							paramTypes[i] = pq_getmsgint(&input_message, 4);
+#ifdef PGXC
+						if (IsConnFromCoord())
+						{
+							paramTypeNames = (char **)palloc(numParams * sizeof(char *));
+							for (i = 0; i < numParams; i++)
+								paramTypeNames[i] = (char *)pq_getmsgstring(&input_message);
+						}
+						else
+#endif /* PGXC */
+						{
+							for (i = 0; i < numParams; i++)
+								paramTypes[i] = pq_getmsgint(&input_message, 4);
+						}
 					}
 					pq_getmsgend(&input_message);
 
 					exec_parse_message(query_string, stmt_name,
-									   paramTypes, numParams);
+									   paramTypes, paramTypeNames, numParams);
 				}
 				break;
+
+#ifdef XCP
+			case 'p':			/* plan */
+				{
+					const char *stmt_name;
+					const char *query_string;
+					const char *plan_string;
+					int			numParams;
+					char 	  **paramTypes = NULL;
+
+					/* Set statement_timestamp() */
+					SetCurrentStatementStartTimestamp();
+
+					stmt_name = pq_getmsgstring(&input_message);
+					query_string = pq_getmsgstring(&input_message);
+					plan_string = pq_getmsgstring(&input_message);
+					numParams = pq_getmsgint(&input_message, 2);
+					paramTypes = (char **)palloc(numParams * sizeof(char *));
+					if (numParams > 0)
+					{
+						int			i;
+						for (i = 0; i < numParams; i++)
+							paramTypes[i] = (char *)
+									pq_getmsgstring(&input_message);
+					}
+					pq_getmsgend(&input_message);
+
+					exec_plan_message(query_string, stmt_name, plan_string,
+									  paramTypes, numParams);
+				}
+				break;
+#endif
 
 			case 'B':			/* bind */
 				forbidden_in_wal_sender(firstchar);
@@ -4197,6 +4853,10 @@ PostgresMain(int argc, char *argv[],
 					close_type = pq_getmsgbyte(&input_message);
 					close_target = pq_getmsgstring(&input_message);
 					pq_getmsgend(&input_message);
+
+					elog(DEBUG3, "Received a 'C' (close) command for %s, type %c",
+							close_target[0] ? close_target : "unnamed_stmt",
+							close_type);
 
 					switch (close_type)
 					{
@@ -4309,6 +4969,105 @@ PostgresMain(int argc, char *argv[],
 				 * is still sending data.
 				 */
 				break;
+#ifdef PGXC
+			case 'M':			/* Command ID */
+				{
+					CommandId cid = (CommandId) pq_getmsgint(&input_message, 4);
+					elog(DEBUG1, "Received cmd id %u", cid);
+					SaveReceivedCommandId(cid);
+				}
+				break;
+
+			case 'g':			/* gxid */
+				{
+					/* Set the GXID we were passed down */
+					TransactionId gxid;
+				   	memcpy(&gxid, pq_getmsgbytes(&input_message, sizeof (TransactionId)),
+							sizeof (TransactionId));
+					elog(DEBUG1, "Received new gxid %u", gxid);
+					SetNextTransactionId(gxid);
+					pq_getmsgend(&input_message);
+				}
+				break;
+
+			case 's':			/* snapshot */
+				/* Set the snapshot we were passed down */
+				memcpy(&xmin,
+						pq_getmsgbytes(&input_message, sizeof (TransactionId)),
+						sizeof (TransactionId));
+				memcpy(&xmax,
+						pq_getmsgbytes(&input_message, sizeof (TransactionId)),
+						sizeof (TransactionId));
+				memcpy(&RecentGlobalXmin,
+						pq_getmsgbytes(&input_message, sizeof (TransactionId)),
+						sizeof (TransactionId));
+				xcnt = pq_getmsgint(&input_message, 4);
+				if (xcnt > 0)
+				{
+					int i;
+					xip = palloc(xcnt * sizeof(TransactionId));
+					if (xip == NULL)
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_OUT_OF_MEMORY),
+								 errmsg("out of memory")));
+					}
+					for (i = 0; i < xcnt; i++)
+					       memcpy(&xip[i],
+								   pq_getmsgbytes(&input_message, sizeof (TransactionId)),
+								   sizeof (TransactionId));
+				}
+				else
+					xip = NULL;
+				pq_getmsgend(&input_message);
+				SetGlobalSnapshotData(xmin, xmax, xcnt, xip,
+						SNAPSHOT_COORDINATOR);
+				if (xip)
+					pfree(xip);
+				break;
+
+			case 't':			/* timestamp */
+				timestamp = (TimestampTz) pq_getmsgint64(&input_message);
+				pq_getmsgend(&input_message);
+
+				/*
+				 * Set in xact.x the static Timestamp difference value with GTM
+				 * and the timestampreceivedvalues for Datanode reference
+				 */
+				SetCurrentGTMDeltaTimestamp(timestamp);
+				break;
+
+			case 'b':			/* barrier */
+				{
+					int command;
+					char *id;
+
+					command = pq_getmsgbyte(&input_message);
+					id = (char *) pq_getmsgstring(&input_message);
+					pq_getmsgend(&input_message);
+
+					switch (command)
+					{
+						case CREATE_BARRIER_PREPARE:
+							ProcessCreateBarrierPrepare(id);
+							break;
+
+						case CREATE_BARRIER_END:
+							ProcessCreateBarrierEnd(id);
+							break;
+
+						case CREATE_BARRIER_EXECUTE:
+							ProcessCreateBarrierExecute(id);
+							break;
+
+						default:
+							ereport(ERROR,
+									(errcode(ERRCODE_INTERNAL_ERROR),
+									 errmsg("Invalid command received")));
+					}
+				}
+				break;
+#endif /* PGXC */
 
 			default:
 				ereport(FATAL,
@@ -4316,6 +5075,22 @@ PostgresMain(int argc, char *argv[],
 						 errmsg("invalid frontend message type %d",
 								firstchar)));
 		}
+
+#ifdef XCP
+		/*
+		 * If the connection is going idle, release the cluster lock. However
+		 * if the session had invoked a PAUSE CLUSTER earlier, then wait for a
+		 * subsequent UNPAUSE to release this lock
+		 */
+		if (IsUnderPostmaster && IS_PGXC_COORDINATOR && !IsAbortedTransactionBlockState()
+			&& !IsTransactionOrTransactionBlock()
+			&& cluster_lock_held && !cluster_ex_lock_held)
+		{
+			bool exclusive = false;
+			ReleaseClusterLock(exclusive);
+			cluster_lock_held = false;
+		}
+#endif /* XCP */
 	}							/* end of input-reading loop */
 }
 
@@ -4385,14 +5160,21 @@ static struct rusage Save_r;
 static struct timeval Save_t;
 
 void
-ResetUsage(void)
+ResetUsageCommon(struct rusage *save_r, struct timeval *save_t)
 {
-	getrusage(RUSAGE_SELF, &Save_r);
-	gettimeofday(&Save_t, NULL);
+	getrusage(RUSAGE_SELF, save_r);
+	gettimeofday(save_t, NULL);
 }
 
 void
-ShowUsage(const char *title)
+ResetUsage(void)
+{
+	ResetUsageCommon(&Save_r, &Save_t);
+}
+
+
+void
+ShowUsageCommon(const char *title, struct rusage *save_r, struct timeval *save_t)
 {
 	StringInfoData str;
 	struct timeval user,
@@ -4404,17 +5186,17 @@ ShowUsage(const char *title)
 	gettimeofday(&elapse_t, NULL);
 	memcpy((char *) &user, (char *) &r.ru_utime, sizeof(user));
 	memcpy((char *) &sys, (char *) &r.ru_stime, sizeof(sys));
-	if (elapse_t.tv_usec < Save_t.tv_usec)
+	if (elapse_t.tv_usec < save_t->tv_usec)
 	{
 		elapse_t.tv_sec--;
 		elapse_t.tv_usec += 1000000;
 	}
-	if (r.ru_utime.tv_usec < Save_r.ru_utime.tv_usec)
+	if (r.ru_utime.tv_usec < save_r->ru_utime.tv_usec)
 	{
 		r.ru_utime.tv_sec--;
 		r.ru_utime.tv_usec += 1000000;
 	}
-	if (r.ru_stime.tv_usec < Save_r.ru_stime.tv_usec)
+	if (r.ru_stime.tv_usec < save_r->ru_stime.tv_usec)
 	{
 		r.ru_stime.tv_sec--;
 		r.ru_stime.tv_usec += 1000000;
@@ -4432,12 +5214,12 @@ ShowUsage(const char *title)
 	appendStringInfoString(&str, "! system usage stats:\n");
 	appendStringInfo(&str,
 					 "!\t%ld.%06ld s user, %ld.%06ld s system, %ld.%06ld s elapsed\n",
-					 (long) (r.ru_utime.tv_sec - Save_r.ru_utime.tv_sec),
-					 (long) (r.ru_utime.tv_usec - Save_r.ru_utime.tv_usec),
-					 (long) (r.ru_stime.tv_sec - Save_r.ru_stime.tv_sec),
-					 (long) (r.ru_stime.tv_usec - Save_r.ru_stime.tv_usec),
-					 (long) (elapse_t.tv_sec - Save_t.tv_sec),
-					 (long) (elapse_t.tv_usec - Save_t.tv_usec));
+					 (long) (r.ru_utime.tv_sec - save_r->ru_utime.tv_sec),
+					 (long) (r.ru_utime.tv_usec - save_r->ru_utime.tv_usec),
+					 (long) (r.ru_stime.tv_sec - save_r->ru_stime.tv_sec),
+					 (long) (r.ru_stime.tv_usec - save_r->ru_stime.tv_usec),
+					 (long) (elapse_t.tv_sec - save_t->tv_sec),
+					 (long) (elapse_t.tv_usec - save_t->tv_usec));
 	appendStringInfo(&str,
 					 "!\t[%ld.%06ld s user, %ld.%06ld s system total]\n",
 					 (long) user.tv_sec,
@@ -4447,28 +5229,28 @@ ShowUsage(const char *title)
 #if defined(HAVE_GETRUSAGE)
 	appendStringInfo(&str,
 					 "!\t%ld/%ld [%ld/%ld] filesystem blocks in/out\n",
-					 r.ru_inblock - Save_r.ru_inblock,
+					 r.ru_inblock - save_r->ru_inblock,
 	/* they only drink coffee at dec */
-					 r.ru_oublock - Save_r.ru_oublock,
+					 r.ru_oublock - save_r->ru_oublock,
 					 r.ru_inblock, r.ru_oublock);
 	appendStringInfo(&str,
-					 "!\t%ld/%ld [%ld/%ld] page faults/reclaims, %ld [%ld] swaps\n",
-					 r.ru_majflt - Save_r.ru_majflt,
-					 r.ru_minflt - Save_r.ru_minflt,
+			  		 "!\t%ld/%ld [%ld/%ld] page faults/reclaims, %ld [%ld] swaps\n",
+					 r.ru_majflt - save_r->ru_majflt,
+					 r.ru_minflt - save_r->ru_minflt,
 					 r.ru_majflt, r.ru_minflt,
-					 r.ru_nswap - Save_r.ru_nswap,
+					 r.ru_nswap - save_r->ru_nswap,
 					 r.ru_nswap);
 	appendStringInfo(&str,
-					 "!\t%ld [%ld] signals rcvd, %ld/%ld [%ld/%ld] messages rcvd/sent\n",
-					 r.ru_nsignals - Save_r.ru_nsignals,
+		 			 "!\t%ld [%ld] signals rcvd, %ld/%ld [%ld/%ld] messages rcvd/sent\n",
+					 r.ru_nsignals - save_r->ru_nsignals,
 					 r.ru_nsignals,
-					 r.ru_msgrcv - Save_r.ru_msgrcv,
-					 r.ru_msgsnd - Save_r.ru_msgsnd,
+					 r.ru_msgrcv - save_r->ru_msgrcv,
+					 r.ru_msgsnd - save_r->ru_msgsnd,
 					 r.ru_msgrcv, r.ru_msgsnd);
 	appendStringInfo(&str,
-					 "!\t%ld/%ld [%ld/%ld] voluntary/involuntary context switches\n",
-					 r.ru_nvcsw - Save_r.ru_nvcsw,
-					 r.ru_nivcsw - Save_r.ru_nivcsw,
+			 		 "!\t%ld/%ld [%ld/%ld] voluntary/involuntary context switches\n",
+					 r.ru_nvcsw - save_r->ru_nvcsw,
+					 r.ru_nivcsw - save_r->ru_nivcsw,
 					 r.ru_nvcsw, r.ru_nivcsw);
 #endif							/* HAVE_GETRUSAGE */
 
@@ -4481,6 +5263,12 @@ ShowUsage(const char *title)
 			 errdetail_internal("%s", str.data)));
 
 	pfree(str.data);
+}
+
+void
+ShowUsage(const char *title)
+{
+	ShowUsageCommon(title, &Save_r, &Save_t);
 }
 
 /*

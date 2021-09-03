@@ -23,6 +23,18 @@
 #include "executor/tstoreReceiver.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
+#ifdef XCP
+#include "catalog/pgxc_node.h"
+#include "executor/producerReceiver.h"
+#include "pgxc/nodemgr.h"
+#endif
+#ifdef PGXC
+#include "pgstat.h"
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#include "pgxc/execRemote.h"
+#include "access/relscan.h"
+#endif
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
 #include "utils/memutils.h"
@@ -95,6 +107,11 @@ CreateQueryDesc(PlannedStmt *plannedstmt,
 	qd->estate = NULL;
 	qd->planstate = NULL;
 	qd->totaltime = NULL;
+
+#ifdef XCP
+	qd->squeue = NULL;
+	qd->myindex = -1;
+#endif
 
 	/* not yet executed */
 	qd->already_executed = false;
@@ -217,6 +234,63 @@ ProcessQuery(PlannedStmt *plan,
 	 * Now, we close down all the scans and free allocated resources.
 	 */
 	ExecutorFinish(queryDesc);
+
+	if (IsA(plan->planTree, RemoteQuery))
+	{
+		/*
+		 * Update coordinator statistics
+		 */
+		if (IS_PGXC_COORDINATOR)
+		{
+			EState *estate = queryDesc->estate;
+
+			if (estate->es_num_result_relations > 0 && estate->es_processed > 0)
+			{
+				switch (estate->es_plannedstmt->commandType)
+				{
+					case CMD_INSERT:
+						/* One statement can insert into only one relation */
+						pgstat_count_remote_insert(
+								estate->es_result_relations[0].ri_RelationDesc,
+								estate->es_processed);
+						break;
+					case CMD_UPDATE:
+					case CMD_DELETE:
+						{
+							/*
+							 * We can not determine here how many row were updated
+							 * or delete in each table, so assume same number of
+							 * affected row in each table.
+							 * If resulting number of rows is 0 because of rounding,
+							 * increment each counter at least on 1.
+							 */
+							int		i;
+							int 	n;
+							bool 	update;
+
+							update = (estate->es_plannedstmt->commandType == CMD_UPDATE);
+							n = estate->es_processed / estate->es_num_result_relations;
+							if (n == 0)
+								n = 1;
+							for (i = 0; i < estate->es_num_result_relations; i++)
+							{
+								Relation r;
+								r = estate->es_result_relations[i].ri_RelationDesc;
+								if (update)
+									pgstat_count_remote_update(r, n);
+								else
+									pgstat_count_remote_delete(r, n);
+							}
+						}
+						break;
+					default:
+						/* nothing to count */
+						break;
+				}
+			}
+		}
+
+	}
 	ExecutorEnd(queryDesc);
 
 	FreeQueryDesc(queryDesc);
@@ -267,11 +341,76 @@ ChoosePortalStrategy(List *stmts)
 					/* it can't be ONE_RETURNING, so give up */
 					return PORTAL_MULTI_QUERY;
 				}
+#ifdef PGXC
+				/*
+				 * This is possible with an EXECUTE DIRECT in a SPI.
+				 * PGXCTODO: there might be a better way to manage the
+				 * cases with EXECUTE DIRECT here like using a special
+				 * utility command and redirect it to a correct portal
+				 * strategy.
+				 * Something like PORTAL_UTIL_SELECT might be far better.
+				 */
+				if (query->commandType == CMD_SELECT &&
+					query->utilityStmt != NULL &&
+					IsA(query->utilityStmt, RemoteQuery))
+				{
+					RemoteQuery *step = (RemoteQuery *) stmt;
+					/*
+					 * Let's choose PORTAL_ONE_SELECT for now
+					 * After adding more PGXC functionality we may have more
+					 * sophisticated algorithm of determining portal strategy
+					 *
+					 * EXECUTE DIRECT is a utility but depending on its inner query
+					 * it can return tuples or not depending on the query used.
+					 */
+					if (step->exec_direct_type == EXEC_DIRECT_SELECT
+						|| step->exec_direct_type == EXEC_DIRECT_UPDATE
+						|| step->exec_direct_type == EXEC_DIRECT_DELETE
+						|| step->exec_direct_type == EXEC_DIRECT_INSERT
+						|| step->exec_direct_type == EXEC_DIRECT_LOCAL)
+						return PORTAL_ONE_SELECT;
+					else if (step->exec_direct_type == EXEC_DIRECT_UTILITY
+							 || step->exec_direct_type == EXEC_DIRECT_LOCAL_UTILITY)
+						return PORTAL_MULTI_QUERY;
+					else
+						return PORTAL_ONE_SELECT;
+				}
+#endif
 			}
 		}
+#ifdef PGXC
+		else if (IsA(stmt, RemoteQuery))
+		{
+			RemoteQuery *step = (RemoteQuery *) stmt;
+			/*
+			 * Let's choose PORTAL_ONE_SELECT for now
+			 * After adding more PGXC functionality we may have more
+			 * sophisticated algorithm of determining portal strategy.
+			 *
+			 * EXECUTE DIRECT is a utility but depending on its inner query
+			 * it can return tuples or not depending on the query used.
+			 */
+			if (step->exec_direct_type == EXEC_DIRECT_SELECT
+				|| step->exec_direct_type == EXEC_DIRECT_UPDATE
+				|| step->exec_direct_type == EXEC_DIRECT_DELETE
+				|| step->exec_direct_type == EXEC_DIRECT_INSERT
+				|| step->exec_direct_type == EXEC_DIRECT_LOCAL)
+				return PORTAL_ONE_SELECT;
+			else if (step->exec_direct_type == EXEC_DIRECT_UTILITY
+					 || step->exec_direct_type == EXEC_DIRECT_LOCAL_UTILITY)
+				return PORTAL_MULTI_QUERY;
+			else
+				return PORTAL_ONE_SELECT;
+		}
+#endif
 		else if (IsA(stmt, PlannedStmt))
 		{
 			PlannedStmt *pstmt = (PlannedStmt *) stmt;
+
+#ifdef XCP
+			if (list_length(pstmt->distributionRestrict) > 1)
+				return PORTAL_DISTRIBUTED;
+#endif
 
 			if (pstmt->canSetTag)
 			{
@@ -463,7 +602,11 @@ PortalStart(Portal portal, ParamListInfo params,
 	ResourceOwner saveResourceOwner;
 	MemoryContext savePortalContext;
 	MemoryContext oldContext;
+#ifdef XCP
+	QueryDesc  *queryDesc = NULL;
+#else
 	QueryDesc  *queryDesc;
+#endif
 	int			myeflags;
 
 	AssertArg(PortalIsValid(portal));
@@ -497,6 +640,205 @@ PortalStart(Portal portal, ParamListInfo params,
 		 */
 		switch (portal->strategy)
 		{
+#ifdef XCP
+			case PORTAL_DISTRIBUTED:
+				/* No special ability is needed */
+				eflags = 0;
+				/* Must set snapshot before starting executor. */
+				if (snapshot)
+					PushActiveSnapshot(GetActiveSnapshot());
+				else
+					PushActiveSnapshot(GetTransactionSnapshot());
+
+				/*
+				 * Create QueryDesc in portal's context; for the moment, set
+				 * the destination to DestNone.
+				 */
+				queryDesc = CreateQueryDesc((PlannedStmt *) linitial(portal->stmts),
+											portal->sourceText,
+											GetActiveSnapshot(),
+											InvalidSnapshot,
+											None_Receiver,
+											params,
+											NULL,
+											0);
+				/*
+				 * If parent node have sent down parameters, and at least one
+				 * of them is PARAM_EXEC we should avoid "single execution"
+				 * model. All parent nodes deliver the same values for
+				 * PARAM_EXTERN since these values are provided by client and
+				 * they are not changed during the query execution.
+				 * On the conrary, values of PARAM_EXEC are results of execution
+				 * on the parent node and in general diferent parents send to
+				 * this node different values and executions are not equivalent.
+				 * Since PARAM_EXECs are always at the end of the list we just
+				 * need to check last item to figure out if there are any
+				 * PARAM_EXECs.
+				 * NB: Check queryDesc->plannedstmt->nParamExec > 0 is incorrect
+				 * here since queryDesc->plannedstmt->nParamExec may be used
+				 * just to allocate space for them and no actual values passed.
+				 */
+				if (queryDesc->plannedstmt->nParamRemote > 0 &&
+						queryDesc->plannedstmt->remoteparams[queryDesc->plannedstmt->nParamRemote-1].paramkind == PARAM_EXEC)
+				{
+					int 	   *consMap;
+					int 		len;
+					ListCell   *lc;
+					int 		i;
+					Locator	   *locator;
+					Oid			keytype;
+					DestReceiver *dest;
+
+					len = list_length(queryDesc->plannedstmt->distributionNodes);
+					consMap = (int *) palloc0(len * sizeof(int));
+					queryDesc->squeue = NULL;
+					queryDesc->myindex = -1;
+					PGXC_PARENT_NODE_ID = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE,
+													   &PGXC_PARENT_NODE_TYPE);
+					i = 0;
+					foreach(lc, queryDesc->plannedstmt->distributionNodes)
+					{
+						if (PGXC_PARENT_NODE_ID == lfirst_int(lc))
+							consMap[i] = SQ_CONS_SELF;
+						else
+							consMap[i] = SQ_CONS_NONE;
+						i++;
+					}
+					/*
+					 * Multiple executions of the RemoteSubplan may lead to name
+					 * conflict of SharedQueue, if the subplan has more
+					 * RemoteSubplan nodes in the execution plan tree.
+					 * We need to make them unique.
+					 */
+					RemoteSubplanMakeUnique(
+							(Node *) queryDesc->plannedstmt->planTree,
+							PGXC_PARENT_NODE_ID);
+					/*
+					 * Call ExecutorStart to prepare the plan for execution
+					 */
+					ExecutorStart(queryDesc, eflags);
+
+					/*
+					 * Set up locator if result distribution is requested
+					 */
+					keytype = queryDesc->plannedstmt->distributionKey == InvalidAttrNumber ?
+							InvalidOid :
+							queryDesc->tupDesc->attrs[queryDesc->plannedstmt->distributionKey-1]->atttypid;
+					locator = createLocator(
+							queryDesc->plannedstmt->distributionType,
+							RELATION_ACCESS_INSERT,
+							keytype,
+							LOCATOR_LIST_INT,
+							len,
+							consMap,
+							NULL,
+							false);
+					dest = CreateDestReceiver(DestProducer);
+					SetProducerDestReceiverParams(dest,
+							queryDesc->plannedstmt->distributionKey,
+							locator, queryDesc->squeue);
+					queryDesc->dest = dest;
+				}
+				else
+				{
+					int 	   *consMap;
+					int 		len;
+
+					/* Distributed data requested, bind shared queue for data exchange */
+					len = list_length(queryDesc->plannedstmt->distributionNodes);
+					consMap = (int *) palloc(len * sizeof(int));
+					queryDesc->squeue = SharedQueueBind(portal->name,
+								queryDesc->plannedstmt->distributionRestrict,
+								queryDesc->plannedstmt->distributionNodes,
+								&queryDesc->myindex, consMap);
+					if (queryDesc->myindex == -1)
+					{
+						/* producer */
+						Locator	   *locator;
+						Oid			keytype;
+						DestReceiver *dest;
+
+						PG_TRY();
+						{
+							/*
+							 * Call ExecutorStart to prepare the plan for execution
+							 */
+							ExecutorStart(queryDesc, eflags);
+						}
+						PG_CATCH();
+						{
+							/* Ensure SharedQueue is released */
+							SharedQueueUnBind(queryDesc->squeue, true);
+							queryDesc->squeue = NULL;
+							PG_RE_THROW();
+						}
+						PG_END_TRY();
+
+						/*
+						 * This tells PortalCleanup to shut down the executor
+						 */
+						portal->queryDesc = queryDesc;
+
+						/*
+						 * Some basic sanity checking against invalid remote plans.
+						 */
+						Assert((queryDesc->plannedstmt->distributionKey == InvalidAttrNumber) ||
+							   (queryDesc->plannedstmt->distributionKey <= queryDesc->tupDesc->natts));
+
+						/*
+						 * Set up locator if result distribution is requested
+						 */
+						keytype = queryDesc->plannedstmt->distributionKey == InvalidAttrNumber ?
+								InvalidOid :
+								queryDesc->tupDesc->attrs[queryDesc->plannedstmt->distributionKey-1]->atttypid;
+						locator = createLocator(
+								queryDesc->plannedstmt->distributionType,
+								RELATION_ACCESS_INSERT,
+								keytype,
+								LOCATOR_LIST_INT,
+								len,
+								consMap,
+								NULL,
+								false);
+						dest = CreateDestReceiver(DestProducer);
+						SetProducerDestReceiverParams(dest,
+								queryDesc->plannedstmt->distributionKey,
+								locator, queryDesc->squeue);
+						queryDesc->dest = dest;
+
+						addProducingPortal(portal);
+					}
+					else
+					{
+						/*
+						 * We do not need to initialize executor, but need
+						 * a tuple descriptor
+						 */
+						queryDesc->tupDesc = ExecCleanTypeFromTL(
+								queryDesc->plannedstmt->planTree->targetlist,
+								false);
+					}
+					pfree(consMap);
+				}
+
+				portal->queryDesc = queryDesc;
+
+				/*
+				 * Remember tuple descriptor (computed by ExecutorStart)
+				 */
+				portal->tupDesc = queryDesc->tupDesc;
+
+				/*
+				 * Reset cursor position data to "start of query"
+				 */
+				portal->atStart = true;
+				portal->atEnd = false;	/* allow fetches */
+				portal->portalPos = 0;
+
+				PopActiveSnapshot();
+				break;
+#endif
+
 			case PORTAL_ONE_SELECT:
 
 				/* Must set snapshot before starting executor. */
@@ -608,6 +950,17 @@ PortalStart(Portal portal, ParamListInfo params,
 	{
 		/* Uncaught error while executing portal: mark it dead */
 		MarkPortalFailed(portal);
+
+#ifdef XCP
+		if (queryDesc && queryDesc->squeue)
+		{
+			/*
+			 * Associate the query desc with the portal so it is unbound upon
+			 * transaction end.
+			 */
+			portal->queryDesc = queryDesc;
+		}
+#endif
 
 		/* Restore global vars and propagate error */
 		ActivePortal = saveActivePortal;
@@ -828,6 +1181,164 @@ PortalRun(Portal portal, long count, bool isTopLevel, bool run_once,
 				/* Always complete at end of RunMulti */
 				result = true;
 				break;
+
+#ifdef XCP
+			case PORTAL_DISTRIBUTED:
+				if (count == FETCH_ALL)
+					count = 0;
+				nprocessed = 0;
+
+				if (portal->queryDesc->myindex == -1)
+				{
+					if (portal->queryDesc->squeue)
+					{
+						/* Make sure the producer is advancing */
+						while (count == 0 || nprocessed < count)
+						{
+							if (!portal->queryDesc->estate->es_finished)
+								AdvanceProducingPortal(portal, false);
+							/* make read pointer active */
+							tuplestore_select_read_pointer(portal->holdStore, 1);
+							/* perform reads */
+							nprocessed += RunFromStore(portal,
+													   ForwardScanDirection,
+											   count ? count - nprocessed : 0,
+													   dest);
+							/*
+							 * Switch back to the write pointer
+							 * We do not want to seek if the tuplestore operates
+							 * with a file, so copy pointer before.
+							 * Also advancing write pointer would allow to free some
+							 * memory.
+							 */
+							tuplestore_copy_read_pointer(portal->holdStore, 1, 0);
+							tuplestore_select_read_pointer(portal->holdStore, 0);
+							/* try to release occupied memory */
+							tuplestore_trim(portal->holdStore);
+							/* Break if we can not get more rows */
+							if (portal->queryDesc->estate->es_finished)
+								break;
+						}
+						if (nprocessed > 0)
+							portal->atStart = false; /* OK to go backward now */
+						portal->atEnd = portal->queryDesc->estate->es_finished &&
+							tuplestore_ateof(portal->holdStore);
+						portal->portalPos += nprocessed;
+					}
+					else
+					{
+						DestReceiver *olddest;
+
+						Assert(portal->queryDesc->dest->mydest == DestProducer);
+						olddest = SetSelfConsumerDestReceiver(
+								portal->queryDesc->dest, dest);
+						/*
+						 * Now fetch desired portion of results.
+						 */
+						nprocessed = PortalRunSelect(portal, true, count,
+													 portal->queryDesc->dest);
+						SetSelfConsumerDestReceiver(
+								portal->queryDesc->dest, olddest);
+					}
+				}
+				else
+				{
+					QueryDesc	   *queryDesc = portal->queryDesc;
+					SharedQueue		squeue = queryDesc->squeue;
+					int 			myindex = queryDesc->myindex;
+					TupleTableSlot *slot;
+
+					/*
+					 * We are the consumer.
+					 * We have skipped plan initialization, hence we do not have
+					 * a tuple table to get a slot to receive tuples, so prepare
+					 * standalone slot.
+					 */
+					slot = MakeSingleTupleTableSlot(queryDesc->tupDesc);
+
+					(*dest->rStartup) (dest, CMD_SELECT, queryDesc->tupDesc);
+
+					/*
+					 * Loop until we've processed the proper number of tuples
+					 * from the plan.
+					 */
+					for (;;)
+					{
+						List *producing = getProducingPortals();
+						bool done;
+
+						/*
+						 * Obtain a tuple from the queue.
+						 * If the session is running producing cursors it is
+						 * not safe to wait for available tuple. Two sessions
+						 * may deadlock each other. So if session is producing
+						 * it should keep advancing producing cursors.
+						 */
+						done = SharedQueueRead(squeue, myindex, slot,
+											   list_length(producing) == 0);
+
+						/*
+						 * if the tuple is null, then we assume there is nothing
+						 * more to process so we end the loop...
+						 * Also if null tuple is returned the squeue is reset
+						 * already, we want to prevent resetting it again
+						 */
+						if (TupIsNull(slot))
+						{
+							if (!done && producing)
+							{
+								/* No data to read, advance producing portals */
+								ListCell   *lc = list_head(producing);
+								while (lc)
+								{
+									Portal p = (Portal) lfirst(lc);
+									/* Get reference to next entry before
+									 * advancing current portal, because the
+									 * function may remove current entry from
+									 * the list.
+									 */
+									lc = lnext(lc);
+
+									AdvanceProducingPortal(p, false);
+								}
+								continue;
+							}
+							else
+							{
+								queryDesc->squeue = NULL;
+								break;
+							}
+						}
+						/*
+						 * Send the tuple
+						 */
+						(*dest->receiveSlot) (slot, dest);
+
+						/*
+						 * increment the number of processed tuples and check count.
+						 * If we've processed the proper number then quit, else
+						 * loop again and process more tuples. Zero count means
+						 * no limit.
+						 */
+						if (count && count == ++nprocessed)
+							break;
+					}
+					(*dest->rShutdown) (dest);
+
+					ExecDropSingleTupleTableSlot(slot);
+
+					if (nprocessed > 0)
+						portal->atStart = false;		/* OK to go backward now */
+					if (count == 0 ||
+						(unsigned long) nprocessed < (unsigned long) count)
+						portal->atEnd = true;	/* we retrieved 'em all */
+					portal->portalPos += nprocessed;
+				}
+				/* Mark portal not active */
+				portal->status = PORTAL_READY;
+				result = portal->atEnd;
+				break;
+#endif
 
 			default:
 				elog(ERROR, "unrecognized portal strategy: %d",
@@ -1184,7 +1695,13 @@ PortalRunUtility(Portal portal, PlannedStmt *pstmt,
 		  IsA(utilityStmt, ListenStmt) ||
 		  IsA(utilityStmt, NotifyStmt) ||
 		  IsA(utilityStmt, UnlistenStmt) ||
+#ifdef PGXC
+		  IsA(utilityStmt, PauseClusterStmt) ||
+		  IsA(utilityStmt, BarrierStmt) ||
+		  (IsA(utilityStmt, CheckPointStmt) && IS_PGXC_DATANODE)))
+#else
 		  IsA(utilityStmt, CheckPointStmt)))
+#endif
 	{
 		snapshot = GetTransactionSnapshot();
 		/* If told to, register the snapshot we're using and save in portal */
@@ -1206,6 +1723,9 @@ PortalRunUtility(Portal portal, PlannedStmt *pstmt,
 				   portal->portalParams,
 				   portal->queryEnv,
 				   dest,
+#ifdef PGXC
+				   false,
+#endif /* PGXC */
 				   completionTag);
 
 	/* Some utility statements may change context on us */
@@ -1234,6 +1754,12 @@ PortalRunMulti(Portal portal,
 {
 	bool		active_snapshot_set = false;
 	ListCell   *stmtlist_item;
+#ifdef PGXC
+	CombineTag	combine;
+
+	combine.cmdType = CMD_UNKNOWN;
+	combine.data[0] = '\0';
+#endif
 
 	/*
 	 * If the destination is DestRemoteExecute, change to DestNone.  The
@@ -1313,6 +1839,13 @@ PortalRunMulti(Portal portal,
 							 portal->portalParams,
 							 portal->queryEnv,
 							 dest, completionTag);
+#ifdef PGXC
+				/* it's special for INSERT */
+				if (IS_PGXC_COORDINATOR &&
+					pstmt->commandType == CMD_INSERT)
+					HandleCmdComplete(pstmt->commandType, &combine,
+							completionTag, strlen(completionTag));
+#endif
 			}
 			else
 			{
@@ -1389,6 +1922,12 @@ PortalRunMulti(Portal portal,
 	 * e.g.  an INSERT that does an UPDATE instead should not print "0 1" if
 	 * one row was updated.  See QueryRewrite(), step 3, for details.
 	 */
+
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR && combine.data[0] != '\0')
+		strcpy(completionTag, combine.data);
+#endif
+
 	if (completionTag && completionTag[0] == '\0')
 	{
 		if (portal->commandTag)
@@ -1731,3 +2270,356 @@ DoPortalRewind(Portal portal)
 	portal->atEnd = false;
 	portal->portalPos = 0;
 }
+
+#ifdef XCP
+/*
+ * Execute the specified portal's query and distribute tuples to consumers.
+ * Returs 1 if portal should keep producing, 0 if all consumers have enough
+ * rows in the buffers to pause producing temporarily, -1 if the query is
+ * completed.
+ */
+int
+AdvanceProducingPortal(Portal portal, bool can_wait)
+{
+	Portal		saveActivePortal;
+	ResourceOwner saveResourceOwner;
+	MemoryContext savePortalContext;
+	MemoryContext oldContext;
+	QueryDesc  *queryDesc;
+	SharedQueue squeue;
+	DestReceiver *treceiver;
+	int			result;
+
+	queryDesc = PortalGetQueryDesc(portal);
+	squeue = queryDesc->squeue;
+
+	Assert(queryDesc);
+	/* Make sure the portal is producing */
+	Assert(squeue && queryDesc->myindex == -1);
+	/* Make sure there is proper receiver */
+	Assert(queryDesc->dest && queryDesc->dest->mydest == DestProducer);
+
+	/*
+	 * Set up global portal context pointers.
+	 */
+	saveActivePortal = ActivePortal;
+	saveResourceOwner = CurrentResourceOwner;
+	savePortalContext = PortalContext;
+	PG_TRY();
+	{
+		ActivePortal = portal;
+		CurrentResourceOwner = portal->resowner;
+		PortalContext = PortalGetHeapMemory(portal);
+
+		oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
+
+		/*
+		 * That is the first pass thru if the hold store is not initialized yet,
+		 * Need to initialize stuff.
+		 */
+		if (portal->holdStore == NULL && portal->status != PORTAL_FAILED)
+		{
+			int idx;
+			char storename[64];
+
+			PortalCreateProducerStore(portal);
+			treceiver = CreateDestReceiver(DestTuplestore);
+			SetTuplestoreDestReceiverParams(treceiver,
+											portal->holdStore,
+											portal->holdContext,
+											false);
+			SetSelfConsumerDestReceiver(queryDesc->dest, treceiver);
+			SetProducerTempMemory(queryDesc->dest, portal->tmpContext);
+			snprintf(storename, 64, "%s producer store", portal->name);
+			tuplestore_collect_stat(portal->holdStore, storename);
+			/*
+			 * Tuplestore does not clear eof flag on the active read pointer,
+			 * causing the store is always in EOF state once reached when
+			 * there is a single read pointer. We do not want behavior like this
+			 * and workaround by using secondary read pointer.
+			 * Primary read pointer (0) is active when we are writing to
+			 * the tuple store, secondary read pointer is for reading, and its
+			 * eof flag is cleared if a tuple is written to the store.
+			 * We know the extra read pointer has index 1, so do not store it.
+			 */
+			idx = tuplestore_alloc_read_pointer(portal->holdStore, 0);
+			Assert(idx == 1);
+		}
+
+		if (queryDesc->estate && !queryDesc->estate->es_finished &&
+				portal->status != PORTAL_FAILED)
+		{
+			/*
+			 * If the portal's hold store has tuples available for read and
+			 * all consumer queues are not empty we skip advancing the portal
+			 * (pause it) to prevent buffering too many rows at the producer.
+			 * NB just created portal store would not be in EOF state, but in
+			 * this case consumer queues will be empty and do not allow
+			 * erroneous pause. After the first call to AdvanceProducingPortal
+			 * portal will try to read the hold store and EOF flag will be set
+			 * correctly.
+			 */
+			tuplestore_select_read_pointer(portal->holdStore, 1);
+			if (!tuplestore_ateof(portal->holdStore) &&
+					SharedQueueCanPause(squeue))
+				result = 0;
+			else
+				result = 1;
+			tuplestore_select_read_pointer(portal->holdStore, 0);
+
+			if (result)
+			{
+				/* Execute query and dispatch tuples via dest receiver */
+#define PRODUCE_TUPLES 100
+				PushActiveSnapshot(queryDesc->snapshot);
+				ExecutorRun(queryDesc, ForwardScanDirection, PRODUCE_TUPLES,
+						portal->run_once);
+				PopActiveSnapshot();
+
+				if (queryDesc->estate->es_processed < PRODUCE_TUPLES)
+				{
+					/*
+					 * Finish the executor, but we may still have some tuples
+					 * in the local storages.
+					 * We should keep trying pushing them into the squeue, so do not
+					 * remove the portal from the list of producers.
+					 */
+					ExecutorFinish(queryDesc);
+				}
+			}
+		}
+
+		/* Try to dump local tuplestores */
+		if ((queryDesc->estate == NULL || queryDesc->estate->es_finished) &&
+				ProducerReceiverPushBuffers(queryDesc->dest))
+		{
+			if (can_wait && queryDesc->estate == NULL)
+			{
+				(*queryDesc->dest->rDestroy) (queryDesc->dest);
+				queryDesc->dest = NULL;
+				portal->queryDesc = NULL;
+				squeue = NULL;
+
+				removeProducingPortal(portal);
+				FreeQueryDesc(queryDesc);
+
+				/*
+				 * Current context is the portal context, which is going
+				 * to be deleted
+				 */
+				MemoryContextSwitchTo(TopTransactionContext);
+
+				ActivePortal = saveActivePortal;
+				CurrentResourceOwner = saveResourceOwner;
+				PortalContext = savePortalContext;
+
+				if (portal->resowner)
+				{
+					bool		isCommit = (portal->status != PORTAL_FAILED);
+
+					ResourceOwnerRelease(portal->resowner,
+										 RESOURCE_RELEASE_BEFORE_LOCKS,
+										 isCommit, false);
+					ResourceOwnerRelease(portal->resowner,
+										 RESOURCE_RELEASE_LOCKS,
+										 isCommit, false);
+					ResourceOwnerRelease(portal->resowner,
+										 RESOURCE_RELEASE_AFTER_LOCKS,
+										 isCommit, false);
+					ResourceOwnerDelete(portal->resowner);
+				}
+				portal->resowner = NULL;
+
+				/*
+				 * Delete tuplestore if present.  We should do this even under error
+				 * conditions; since the tuplestore would have been using cross-
+				 * transaction storage, its temp files need to be explicitly deleted.
+				 */
+				if (portal->holdStore)
+				{
+					MemoryContext oldcontext;
+
+					oldcontext = MemoryContextSwitchTo(portal->holdContext);
+					tuplestore_end(portal->holdStore);
+					MemoryContextSwitchTo(oldcontext);
+					portal->holdStore = NULL;
+				}
+
+				/* delete tuplestore storage, if any */
+				if (portal->holdContext)
+					MemoryContextDelete(portal->holdContext);
+
+				/* release subsidiary storage */
+				MemoryContextDelete(PortalGetHeapMemory(portal));
+
+				/* release portal struct (it's in PortalMemory) */
+				pfree(portal);
+			}
+			/* report portal is not producing */
+			result = -1;
+		}
+		else
+		{
+			result = SharedQueueCanPause(queryDesc->squeue) ? 0 : 1;
+		}
+	}
+	PG_CATCH();
+	{
+		/* Uncaught error while executing portal: mark it dead */
+		portal->status = PORTAL_FAILED;
+		/*
+		 * Reset producer to allow consumers to finish, so receiving node will
+		 * handle the error.
+		 */
+		if (squeue)
+			SharedQueueReset(squeue, -1);
+
+		/* Restore global vars and propagate error */
+		ActivePortal = saveActivePortal;
+		CurrentResourceOwner = saveResourceOwner;
+		PortalContext = savePortalContext;
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	MemoryContextSwitchTo(oldContext);
+
+	ActivePortal = saveActivePortal;
+	CurrentResourceOwner = saveResourceOwner;
+	PortalContext = savePortalContext;
+
+	return result;
+}
+
+
+/*
+ * Iterate over producing portal, determine already closed, and clean them up,
+ * waiting while consumers finish their work. Closed producers should be
+ * cleaned up and resources are released before proceeding with handling of
+ * next request.
+ */
+void
+cleanupClosedProducers(void)
+{
+	ListCell   *lc = list_head(getProducingPortals());
+	while (lc)
+	{
+		Portal p = (Portal) lfirst(lc);
+		QueryDesc  *queryDesc = PortalGetQueryDesc(p);
+		SharedQueue squeue = queryDesc->squeue;
+
+		/*
+		 * Get next already, because next call may remove cell from
+		 * the list and invalidate next reference
+		 */
+		lc = lnext(lc);
+
+		/* When portal is closed executor state is not set */
+		if (queryDesc->estate == NULL)
+		{
+			/*
+			 * Set up global portal context pointers.
+			 */
+			Portal		saveActivePortal = ActivePortal;
+			ResourceOwner saveResourceOwner = CurrentResourceOwner;
+			MemoryContext savePortalContext = PortalContext;
+
+			PG_TRY();
+			{
+				MemoryContext oldContext;
+				ActivePortal = p;
+				CurrentResourceOwner = p->resowner;
+				PortalContext = PortalGetHeapMemory(p);
+
+				oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(p));
+
+				(*queryDesc->dest->rDestroy) (queryDesc->dest);
+				queryDesc->dest = NULL;
+				p->queryDesc = NULL;
+				squeue = NULL;
+
+				removeProducingPortal(p);
+				FreeQueryDesc(queryDesc);
+
+				/*
+				 * Current context is the portal context, which is going
+				 * to be deleted
+				 */
+				MemoryContextSwitchTo(TopTransactionContext);
+
+				ActivePortal = saveActivePortal;
+				CurrentResourceOwner = saveResourceOwner;
+				PortalContext = savePortalContext;
+
+				if (p->resowner)
+				{
+					bool		isCommit = (p->status != PORTAL_FAILED);
+
+					ResourceOwnerRelease(p->resowner,
+										 RESOURCE_RELEASE_BEFORE_LOCKS,
+										 isCommit, false);
+					ResourceOwnerRelease(p->resowner,
+										 RESOURCE_RELEASE_LOCKS,
+										 isCommit, false);
+					ResourceOwnerRelease(p->resowner,
+										 RESOURCE_RELEASE_AFTER_LOCKS,
+										 isCommit, false);
+					ResourceOwnerDelete(p->resowner);
+				}
+				p->resowner = NULL;
+
+				/*
+				 * Delete tuplestore if present.  We should do this even under error
+				 * conditions; since the tuplestore would have been using cross-
+				 * transaction storage, its temp files need to be explicitly deleted.
+				 */
+				if (p->holdStore)
+				{
+					MemoryContext oldcontext;
+
+					oldcontext = MemoryContextSwitchTo(p->holdContext);
+					tuplestore_end(p->holdStore);
+					MemoryContextSwitchTo(oldcontext);
+					p->holdStore = NULL;
+				}
+
+				/* delete tuplestore storage, if any */
+				if (p->holdContext)
+					MemoryContextDelete(p->holdContext);
+
+				/* release subsidiary storage */
+				MemoryContextDelete(PortalGetHeapMemory(p));
+
+				/* release portal struct (it's in PortalMemory) */
+				pfree(p);
+
+				MemoryContextSwitchTo(oldContext);
+			}
+			PG_CATCH();
+			{
+				/* Uncaught error while executing portal: mark it dead */
+				p->status = PORTAL_FAILED;
+				/*
+				 * Reset producer to allow consumers to finish, so receiving node will
+				 * handle the error.
+				 */
+				if (squeue)
+					SharedQueueReset(squeue, -1);
+
+				/* Restore global vars and propagate error */
+				ActivePortal = saveActivePortal;
+				CurrentResourceOwner = saveResourceOwner;
+				PortalContext = savePortalContext;
+
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			ActivePortal = saveActivePortal;
+			CurrentResourceOwner = saveResourceOwner;
+			PortalContext = savePortalContext;
+		}
+	}
+}
+#endif

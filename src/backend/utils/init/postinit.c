@@ -36,7 +36,12 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#ifdef XCP
+#include "pgxc/pgxc.h"
+#include "postmaster/clustermon.h"
+#endif
 #include "postmaster/autovacuum.h"
+#include "postmaster/clustermon.h"
 #include "postmaster/postmaster.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
@@ -349,6 +354,9 @@ CheckMyDatabase(const char *name, bool am_superuser)
 		 * just document that the connection limit is approximate.
 		 */
 		if (dbform->datconnlimit >= 0 &&
+#ifdef XCP
+			IS_PGXC_COORDINATOR &&
+#endif
 			!am_superuser &&
 			CountDBConnections(MyDatabaseId) > dbform->datconnlimit)
 			ereport(FATAL,
@@ -664,7 +672,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	before_shmem_exit(ShutdownPostgres, 0);
 
 	/* The autovacuum launcher is done here */
-	if (IsAutoVacuumLauncherProcess())
+	if (IsAutoVacuumLauncherProcess() || IsClusterMonitorProcess())
 	{
 		/* report this backend in the PgBackendStatus array */
 		pgstat_bestart();

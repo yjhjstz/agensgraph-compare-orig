@@ -102,6 +102,15 @@
 #include "utils/tqual.h"
 #include "utils/typcache.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "access/gtm.h"
+#include "catalog/pgxc_class.h"
+#include "catalog/pgxc_node.h"
+#include "commands/sequence.h"
+#include "pgxc/execRemote.h"
+#include "pgxc/redistrib.h"
+#endif
 
 /*
  * ON COMMIT action list
@@ -150,7 +159,12 @@ static List *on_commits = NIL;
 #define AT_PASS_ADD_INDEX		6	/* ADD indexes */
 #define AT_PASS_ADD_CONSTR		7	/* ADD constraints, defaults */
 #define AT_PASS_MISC			8	/* other stuff */
+#ifdef PGXC
+#define AT_PASS_DISTRIB			9	/* Redistribution pass */
+#define AT_NUM_PASSES			10
+#else
 #define AT_NUM_PASSES			9
+#endif
 
 typedef struct AlteredTableInfo
 {
@@ -299,6 +313,7 @@ static List *MergeAttributes(List *schema, List *supers, char relpersistence,
 static bool MergeCheckConstraint(List *constraints, char *name, Node *expr);
 static void MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel);
 static void MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel);
+static void MergeDistributionIntoExisting(Relation child_rel, Relation parent_rel);
 static void StoreCatalogInheritance(Oid relationId, List *supers,
 						bool child_is_partition);
 static void StoreCatalogInheritance1(Oid relationId, Oid parentOid,
@@ -454,6 +469,16 @@ static ObjectAddress ATExecAddOf(Relation rel, const TypeName *ofTypename, LOCKM
 static void ATExecDropOf(Relation rel, LOCKMODE lockmode);
 static void ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode);
 static void ATExecGenericOptions(Relation rel, List *options);
+#ifdef PGXC
+static void AtExecDistributeBy(Relation rel, DistributeBy *options);
+static void AtExecSubCluster(Relation rel, PGXCSubCluster *options);
+static void AtExecAddNode(Relation rel, List *options);
+static void AtExecDeleteNode(Relation rel, List *options);
+static void ATCheckCmd(Relation rel, AlterTableCmd *cmd);
+static RedistribState *BuildRedistribCommands(Oid relid, List *subCmds);
+static Oid *delete_node_list(Oid *old_oids, int old_num, Oid *del_oids, int del_num, int *new_num);
+static Oid *add_node_list(Oid *old_oids, int old_num, Oid *add_oids, int add_num, int *new_num);
+#endif
 static void ATExecEnableRowSecurity(Relation rel);
 static void ATExecDisableRowSecurity(Relation rel);
 static void ATExecForceNoForceRowSecurity(Relation rel, bool force_rls);
@@ -13245,6 +13270,123 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 
 	ReleaseSysCache(tuple);
 }
+
+#ifdef PGXC
+/*
+ * IsTempTable
+ *
+ * Check if given table Oid is temporary.
+ */
+bool
+IsTempTable(Oid relid)
+{
+	Relation	rel;
+	bool		res;
+	/*
+	 * PGXCTODO: Is it correct to open without locks?
+	 * we just check if this table is temporary though...
+	 */
+	rel = relation_open(relid, NoLock);
+	res = rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP;
+	relation_close(rel, NoLock);
+	return res;
+}
+
+bool
+IsLocalTempTable(Oid relid)
+{
+	Relation	rel;
+	bool		res;
+	rel = relation_open(relid, NoLock);
+	res = (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP &&
+			rel->rd_locator_info == NULL);
+	relation_close(rel, NoLock);
+	return res;
+}
+
+/*
+ * IsIndexUsingTemp
+ *
+ * Check if given index relation uses temporary tables.
+ */
+bool
+IsIndexUsingTempTable(Oid relid)
+{
+	bool res = false;
+	HeapTuple   tuple;
+	Oid parent_id = InvalidOid;
+
+	tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(relid));
+	if (HeapTupleIsValid(tuple))
+	{
+		Form_pg_index index = (Form_pg_index) GETSTRUCT(tuple);
+		parent_id = index->indrelid;
+
+		/* Release system cache BEFORE looking at the parent table */
+		ReleaseSysCache(tuple);
+
+		res = IsTempTable(parent_id);
+	}
+	else
+		res = false; /* Default case */
+
+	return res;
+}
+
+/*
+ * IsOnCommitActions
+ *
+ * Check if there are any on-commit actions activated.
+ */
+bool
+IsOnCommitActions(void)
+{
+	return list_length(on_commits) > 0;
+}
+
+/*
+ * DropTableThrowErrorExternal
+ *
+ * Error interface for DROP when looking for execution node type.
+ */
+void
+DropTableThrowErrorExternal(RangeVar *relation, ObjectType removeType, bool missing_ok)
+{
+	char relkind;
+
+	/* Determine required relkind */
+	switch (removeType)
+	{
+		case OBJECT_TABLE:
+			relkind = RELKIND_RELATION;
+			break;
+
+		case OBJECT_INDEX:
+			relkind = RELKIND_INDEX;
+			break;
+
+		case OBJECT_SEQUENCE:
+			relkind = RELKIND_SEQUENCE;
+			break;
+
+		case OBJECT_VIEW:
+			relkind = RELKIND_VIEW;
+			break;
+
+		case OBJECT_FOREIGN_TABLE:
+			relkind = RELKIND_FOREIGN_TABLE;
+			break;
+
+		default:
+			elog(ERROR, "unrecognized drop object type: %d",
+				 (int) removeType);
+			relkind = 0;		/* keep compiler quiet */
+			break;
+	}
+
+	DropErrorMsgNonExistent(relation, relkind, missing_ok);
+}
+#endif
 
 /*
  * Transform any expressions present in the partition key

@@ -26,6 +26,11 @@ typedef enum
 } AutoVacuumWorkItemType;
 
 
+
+#ifdef PGXC  /* PGXC_DATANODE */
+#define IsAutoVacuumAnalyzeWorker() (IsAutoVacuumWorkerProcess() && !(MyProc->vacuumFlags & PROC_IN_VACUUM))
+#endif
+
 /* GUC variables */
 extern bool autovacuum_start_daemon;
 extern int	autovacuum_max_workers;

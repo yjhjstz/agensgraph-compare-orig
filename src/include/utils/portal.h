@@ -92,6 +92,10 @@ typedef enum PortalStrategy
 	PORTAL_ONE_MOD_WITH,
 	PORTAL_UTIL_SELECT,
 	PORTAL_MULTI_QUERY
+#ifdef XCP
+	,
+	PORTAL_DISTRIBUTED
+#endif
 } PortalStrategy;
 
 /*
@@ -163,6 +167,9 @@ typedef struct PortalData
 	 */
 	Tuplestorestate *holdStore; /* store for holdable cursors */
 	MemoryContext holdContext;	/* memory containing holdStore */
+#ifdef XCP
+	MemoryContext tmpContext;	/* temporary memory */
+#endif
 
 	/*
 	 * Snapshot under which tuples in the holdStore were read.  We must keep a
@@ -236,6 +243,13 @@ extern void PortalDefineQuery(Portal portal,
 extern PlannedStmt *PortalGetPrimaryStmt(Portal portal);
 extern void PortalCreateHoldStore(Portal portal);
 extern void PortalHashTableDeleteAll(void);
+#ifdef XCP
+extern void PortalCreateProducerStore(Portal portal);
+extern List *getProducingPortals(void);
+extern void addProducingPortal(Portal portal);
+extern void removeProducingPortal(Portal portal);
+extern bool portalIsProducing(Portal portal);
+#endif
 extern bool ThereAreNoReadyPortals(void);
 
 #endif							/* PORTAL_H */

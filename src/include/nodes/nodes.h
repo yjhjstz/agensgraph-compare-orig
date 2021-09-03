@@ -85,6 +85,27 @@ typedef enum NodeTag
 	T_SetOp,
 	T_LockRows,
 	T_Limit,
+#ifdef PGXC
+	/*
+	 * TAGS FOR PGXC NODES
+	 * (planner.h, locator.h, nodemgr.h, groupmgr.h)
+	 */
+#ifdef XCP
+	T_Distribution,
+#endif
+	T_ExecNodes,
+	T_SimpleSort,
+	T_RemoteQuery,
+#ifdef XCP
+	T_RemoteSubplan,
+#endif
+	T_PGXCNodeHandle,
+	T_AlterNodeStmt,
+	T_CreateNodeStmt,
+	T_DropNodeStmt,
+	T_CreateGroupStmt,
+	T_DropGroupStmt,
+#endif
 	T_Eager,
 	T_ModifyGraph,
 	T_Shortestpath,
@@ -144,6 +165,12 @@ typedef enum NodeTag
 	T_SetOpState,
 	T_LockRowsState,
 	T_LimitState,
+#ifdef PGXC
+	T_RemoteQueryState,
+#ifdef XCP
+	T_RemoteSubplanState,
+#endif
+#endif
 	T_ModifyGraphState,
 	T_ShortestpathState,
 	T_Hash2SideState,
@@ -204,6 +231,10 @@ typedef enum NodeTag
 	T_FromExpr,
 	T_OnConflictExpr,
 	T_IntoClause,
+#ifdef PGXC
+	T_DistributeBy,
+	T_PGXCSubCluster,
+#endif
 	T_CypherTypeCast,
 	T_CypherMapExpr,
 	T_CypherListExpr,
@@ -288,6 +319,9 @@ typedef enum NodeTag
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
+#ifdef XCP
+	T_RemoteSubPath,
+#endif
 	T_RollupData,
 	T_GroupingSetData,
 	T_StatisticExtInfo,
@@ -379,6 +413,10 @@ typedef enum NodeTag
 	T_ConstraintsSetStmt,
 	T_ReindexStmt,
 	T_CheckPointStmt,
+#ifdef PGXC
+	T_BarrierStmt,
+	T_PauseClusterStmt,
+#endif
 	T_CreateSchemaStmt,
 	T_AlterDatabaseStmt,
 	T_AlterDatabaseSetStmt,
@@ -413,6 +451,11 @@ typedef enum NodeTag
 	T_CreateUserMappingStmt,
 	T_AlterUserMappingStmt,
 	T_DropUserMappingStmt,
+	T_ExecDirectStmt,
+	T_CleanConnStmt,
+#ifdef XCP
+	T_RemoteStmt,
+#endif
 	T_AlterTableSpaceOptionsStmt,
 	T_AlterTableMoveAllStmt,
 	T_SecLabelStmt,
@@ -648,6 +691,9 @@ castNodeImpl(NodeTag type, void *ptr)
 /*
  * nodes/{outfuncs.c,print.c}
  */
+#ifdef XCP
+extern void set_portable_output(bool value);
+#endif
 struct Bitmapset;				/* not to include bitmapset.h here */
 struct StringInfoData;			/* not to include stringinfo.h here */
 
@@ -663,6 +709,9 @@ extern char *bmsToString(const struct Bitmapset *bms);
 /*
  * nodes/{readfuncs.c,read.c}
  */
+#ifdef XCP
+extern bool set_portable_input(bool value);
+#endif
 extern void *stringToNode(char *str);
 extern struct Bitmapset *readBitmapset(void);
 extern uintptr_t readDatum(bool typbyval);
@@ -686,6 +735,7 @@ extern void *copyObjectImpl(const void *obj);
 /*
  * nodes/equalfuncs.c
  */
+extern bool equalDistribution(const void *a, const void *b);
 extern bool equal(const void *a, const void *b);
 
 

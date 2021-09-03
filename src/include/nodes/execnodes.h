@@ -29,6 +29,7 @@
 #include "utils/reltrigger.h"
 #include "utils/sortsupport.h"
 #include "utils/tuplestore.h"
+#include "pgxc/squeue.h"
 #include "utils/tuplesort.h"
 #include "nodes/tidbitmap.h"
 #include "storage/condition_variable.h"
@@ -975,6 +976,9 @@ typedef struct ModifyTableState
 	bool		canSetTag;		/* do we set the command tag/es_processed? */
 	bool		mt_done;		/* are we done? */
 	PlanState **mt_plans;		/* subplans (one per target rel) */
+#ifdef PGXC
+	PlanState **mt_remoterels;	/* per-target remote query node */
+#endif
 	int			mt_nplans;		/* number of plans in the array */
 	int			mt_whichplan;	/* which one is being executed (0..n-1) */
 	ResultRelInfo *resultRelInfo;	/* per-subplan target relations */

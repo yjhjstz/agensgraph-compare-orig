@@ -58,6 +58,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 #include "utils/tuplestore.h"
 
 
@@ -102,6 +105,9 @@ static void AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 static void AfterTriggerEnlargeQueryState(void);
 static bool before_stmt_triggers_fired(Oid relid, CmdType cmdType);
 
+#ifdef XCP
+bool enable_datanode_row_triggers;
+#endif
 
 /*
  * Create a trigger.  Returns the address of the created trigger.
@@ -1264,7 +1270,9 @@ ConvertTriggerToFK(CreateTrigStmt *stmt, Oid funcoid)
 		ProcessUtility(wrapper,
 					   "(generated ALTER TABLE ADD FOREIGN KEY command)",
 					   PROCESS_UTILITY_SUBCOMMAND, NULL, NULL,
-					   None_Receiver, NULL);
+					   None_Receiver,
+					   false,
+					   NULL);
 
 		/* Remove the matched item from the list */
 		info_list = list_delete_ptr(info_list, info);

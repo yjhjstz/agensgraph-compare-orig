@@ -30,11 +30,17 @@
 #include <utime.h>
 #endif
 
+#ifdef XCP
+#include "catalog/namespace.h"
+#endif
 #include "access/htup_details.h"
 #include "catalog/pg_authid.h"
 #include "libpq/libpq.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#ifdef XCP
+#include "pgxc/execRemote.h"
+#endif
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
@@ -47,8 +53,12 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#ifdef XCP
+#include "utils/snapmgr.h"
+#endif
 #include "utils/pidfile.h"
 #include "utils/syscache.h"
+#include "utils/lsyscache.h"
 #include "utils/varlena.h"
 
 
@@ -626,6 +636,124 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 					PGC_INTERNAL, PGC_S_OVERRIDE);
 }
 
+
+#ifdef XCP
+void
+SetGlobalSession(Oid coordid, int coordpid)
+{
+	bool 			reset = false;
+	BackendId 		firstBackend = InvalidBackendId;
+	int				bCount = 0;
+	int				bPids[MaxBackends];
+
+	/* If nothing changed do nothing */
+	if (MyCoordId == coordid && MyCoordPid == coordpid)
+		return;
+
+	/*
+	 * Need to reset pool manager agent if the backend being assigned to
+	 * different global session or assignment is canceled.
+	 */
+	if (OidIsValid(MyCoordId) &&
+			(MyCoordId != coordid || MyCoordPid != coordpid))
+		reset = true;
+
+retry:
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	/* Expose distributed session id in the PGPROC structure */
+	MyProc->coordId = coordid;
+	MyProc->coordPid = coordpid;
+	/*
+	 * Determine first backend id.
+	 * If this backend is the first backend of the distributed session on the
+	 * node we should clean up the temporary namespace.
+	 * Backend is the first if no backends with such distributed session id.
+	 * If such backends are found we can copy first found valid firstBackendId.
+	 * If none of them valid that means the first is still cleaning up the
+	 * temporary namespace.
+	 */
+	if (OidIsValid(coordid))
+		firstBackend = GetFirstBackendId(&bCount, bPids);
+	else
+		firstBackend = InvalidBackendId;
+	/* If first backend id is defined set it right now */
+	if (firstBackend != InvalidBackendId)
+		MyProc->firstBackendId = firstBackend;
+	LWLockRelease(ProcArrayLock);
+
+	if (OidIsValid(coordid) && firstBackend == InvalidBackendId)
+	{
+		/*
+		 * We are the first or need to retry
+		 */
+		if (bCount > 0)
+		{
+			/* XXX sleep ? */
+			goto retry;
+		}
+		else
+		{
+			/* Set globals for this backend */
+			MyCoordId = coordid;
+			MyCoordPid = coordpid;
+			MyFirstBackendId = MyBackendId;
+			/* XXX Maybe this lock is not needed because of atomic operation? */
+			LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+			MyProc->firstBackendId = MyBackendId;
+			LWLockRelease(ProcArrayLock);
+		}
+	}
+	else
+	{
+		/* Set globals for this backend */
+		MyCoordId = coordid;
+		MyCoordPid = coordpid;
+		MyFirstBackendId = firstBackend;
+	}
+
+	/*
+	 * Also invalidate any catalog snapshot which may become stale since this
+	 * session may join some open transaction which may have done catalog
+	 * changes that are not reflected in the current catalog snapshot
+	 */
+	InvalidateCatalogSnapshot();
+
+	if (reset)
+	{
+		/*
+		 * Next time when backend will be assigned to a global session it will
+		 * be referencing different temp namespace
+		 */
+		ForgetTempTableNamespace();
+		/*
+		 * Forget all local and session parameters cached for the Datanodes.
+		 * They do not belong to that session.
+		 */
+		PGXCNodeResetParams(false);
+		/*
+		 * Release node connections, if still held.
+		 */
+		release_handles();
+		/*
+		 * XXX Do other stuff like release secondary Datanode connections,
+		 * clean up shared queues ???
+		 */
+	}
+}
+
+
+/*
+ * Returns the name of the role that should be used to access other cluster
+ * nodes.
+ */
+char *
+GetClusterUserName(void)
+{
+	return GetUserNameFromId(AuthenticatedUserId, false);
+}
+#endif
+
+
 /*
  * Report current role id
  *		This follows the semantics of SET ROLE, ie return the outer-level ID
@@ -1065,6 +1193,12 @@ CreateLockFile(const char *filename, bool amPostmaster,
 	 * creation; this is critical!
 	 */
 	lock_files = lcons(pstrdup(filename), lock_files);
+}
+
+void
+ForgetLockFiles()
+{
+	lock_files = NIL;
 }
 
 /*

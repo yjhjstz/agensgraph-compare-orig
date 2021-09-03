@@ -16,8 +16,13 @@
 
 #include "parser/parse_node.h"
 
-
+#ifdef XCP
+extern bool loose_constraints;
+extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString,
+					bool autodistribute);
+#else
 extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString);
+#endif
 extern List *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 						const char *queryString);
 extern IndexStmt *transformIndexStmt(Oid relid, IndexStmt *stmt,
@@ -25,6 +30,9 @@ extern IndexStmt *transformIndexStmt(Oid relid, IndexStmt *stmt,
 extern void transformRuleStmt(RuleStmt *stmt, const char *queryString,
 				  List **actions, Node **whereClause);
 extern List *transformCreateSchemaStmt(CreateSchemaStmt *stmt);
+#ifdef PGXC
+extern bool CheckLocalIndexColumn (char loctype, char *partcolname, char *indexcolname);
+#endif
 extern PartitionBoundSpec *transformPartitionBound(ParseState *pstate, Relation parent,
 						PartitionBoundSpec *spec);
 

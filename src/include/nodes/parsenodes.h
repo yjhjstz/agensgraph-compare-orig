@@ -26,6 +26,10 @@
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "nodes/value.h"
+#ifdef PGXC
+#include "access/tupdesc.h"
+#include "pgxc/locator.h"
+#endif
 
 typedef enum OverridingKind
 {
@@ -967,6 +971,9 @@ typedef enum RTEKind
 	RTE_FUNCTION,				/* function in FROM */
 	RTE_TABLEFUNC,				/* TableFunc(.., column list) */
 	RTE_VALUES,					/* VALUES (<exprlist>), (<exprlist>), ... */
+#ifdef PGXC
+	RTE_REMOTE_DUMMY,			/* RTEs created by remote plan reduction */
+#endif /* PGXC */
 	RTE_CTE,					/* common table expr (WITH list element) */
 	RTE_NAMEDTUPLESTORE			/* tuplestore, e.g. for AFTER triggers */
 } RTEKind;
@@ -982,6 +989,10 @@ typedef struct RangeTblEntry
 	 * a union.  I didn't do this yet because the diffs would impact a lot of
 	 * code that is being actively worked on.  FIXME someday.
 	 */
+
+#ifdef PGXC
+	char		*relname;
+#endif
 
 	/*
 	 * Fields valid for a plain relation RTE (else zero):
@@ -1794,6 +1805,12 @@ typedef enum AlterTableType
 	AT_DropInherit,				/* NO INHERIT parent */
 	AT_AddOf,					/* OF <type_name> */
 	AT_DropOf,					/* NOT OF */
+#ifdef PGXC
+	AT_DistributeBy,			/* DISTRIBUTE BY ... */
+	AT_SubCluster,				/* TO [ NODE nodelist | GROUP groupname ] */
+	AT_AddNodeList,				/* ADD NODE nodelist */
+	AT_DeleteNodeList,			/* DELETE NODE nodelist */
+#endif
 	AT_ReplicaIdentity,			/* REPLICA IDENTITY */
 	AT_EnableRowSecurity,		/* ENABLE ROW SECURITY */
 	AT_DisableRowSecurity,		/* DISABLE ROW SECURITY */
@@ -2053,6 +2070,12 @@ typedef struct CreateStmt
 	OnCommitAction oncommit;	/* what do we do at COMMIT? */
 	char	   *tablespacename; /* table space to use, or NULL */
 	bool		if_not_exists;	/* just do nothing if it already exists? */
+#ifdef PGXC
+	ObjectType		relkind;		/* kind of relation to create */
+	bool			islocal;		/* create only on the current node */
+	DistributeBy *distributeby; 	/* distribution to use, or NULL */
+	PGXCSubCluster *subcluster;		/* subcluster of table */
+#endif
 } CreateStmt;
 
 
@@ -2512,6 +2535,9 @@ typedef struct CreateSeqStmt
 	RangeVar   *sequence;		/* the sequence to create */
 	List	   *options;
 	Oid			ownerId;		/* ID of owner, or InvalidOid for default */
+#ifdef PGXC
+	bool		is_serial;		/* Indicates if this sequence is part of SERIAL process */
+#endif
 	bool		for_identity;
 	bool		if_not_exists;	/* just do nothing if it already exists? */
 } CreateSeqStmt;
@@ -2523,6 +2549,9 @@ typedef struct AlterSeqStmt
 	List	   *options;
 	bool		for_identity;
 	bool		missing_ok;		/* skip error if a role is missing? */
+#ifdef PGXC
+	bool		is_serial;		/* Indicates if this sequence is part of SERIAL process */
+#endif
 } AlterSeqStmt;
 
 /* ----------------------
@@ -3137,7 +3166,11 @@ typedef enum VacuumOption
 	VACOPT_FULL = 1 << 4,		/* FULL (non-concurrent) vacuum */
 	VACOPT_NOWAIT = 1 << 5,		/* don't wait to get lock (autovacuum only) */
 	VACOPT_SKIPTOAST = 1 << 6,	/* don't process the TOAST table, if any */
-	VACOPT_DISABLE_PAGE_SKIPPING = 1 << 7	/* don't skip any pages */
+	VACOPT_DISABLE_PAGE_SKIPPING = 1 << 7,	/* don't skip any pages */
+	VACOPT_COORDINATOR = 1 << 8	/* don't trigger analyze on the datanodes, but
+								 * just collect existing info and populate
+								 * coordinator side stats.
+								 */
 } VacuumOption;
 
 typedef struct VacuumStmt
@@ -3147,6 +3180,82 @@ typedef struct VacuumStmt
 	RangeVar   *relation;		/* single table to process, or NULL */
 	List	   *va_cols;		/* list of column names, or NIL for all */
 } VacuumStmt;
+
+#ifdef PGXC
+/*
+ * ---------------------------
+ *  	Pause Cluster Statement
+ */
+typedef struct PauseClusterStmt
+{
+	NodeTag		type;
+	bool		pause;			/* will be false to unpause */
+} PauseClusterStmt;
+
+/*
+ * ----------------------
+ *      Barrier Statement
+ */
+typedef struct BarrierStmt
+{
+	NodeTag		type;
+	const char	*id;			/* User supplied barrier id, if any */
+} BarrierStmt;
+
+/*
+ * ----------------------
+ *      Create Node statement
+ */
+typedef struct CreateNodeStmt
+{
+	NodeTag		type;
+	char		*node_name;
+	List		*options;
+} CreateNodeStmt;
+
+/*
+ * ----------------------
+ *     Alter Node statement
+ */
+typedef struct AlterNodeStmt
+{
+	NodeTag		type;
+	char		*node_name;
+	bool		cluster;
+	List		*options;
+} AlterNodeStmt;
+
+/*
+ * ----------------------
+ *      Drop Node statement
+ */
+typedef struct DropNodeStmt
+{
+	NodeTag		type;
+	char		*node_name;
+} DropNodeStmt;
+
+/*
+ * ----------------------
+ *      Create Group statement
+ */
+typedef struct CreateGroupStmt
+{
+	NodeTag		type;
+	char		*group_name;
+	List		*nodes;
+} CreateGroupStmt;
+
+/*
+ * ----------------------
+ *      Drop Group statement
+ */
+typedef struct DropGroupStmt
+{
+	NodeTag		type;
+	char		*group_name;
+} DropGroupStmt;
+#endif
 
 /* ----------------------
  *		Explain Statement
@@ -3182,6 +3291,9 @@ typedef struct CreateTableAsStmt
 	Node	   *query;			/* the query (see comments above) */
 	IntoClause *into;			/* destination table */
 	ObjectType	relkind;		/* OBJECT_TABLE or OBJECT_MATVIEW */
+#ifdef PGXC
+	bool		islocal;		/* local table */
+#endif	
 	bool		is_select_into; /* it was written as SELECT INTO */
 	bool		if_not_exists;	/* just do nothing if it already exists? */
 } CreateTableAsStmt;
@@ -3416,6 +3528,30 @@ typedef struct AlterTSConfigurationStmt
 	bool		missing_ok;		/* for DROP - skip error if missing? */
 } AlterTSConfigurationStmt;
 
+/* PGXC_BEGIN */
+/*
+ * EXECUTE DIRECT statement
+ */
+typedef struct ExecDirectStmt
+{
+	NodeTag		type;
+	List		*node_names;
+	char		*query;
+} ExecDirectStmt;
+
+/*
+ * CLEAN CONNECTION statement
+ */
+typedef struct CleanConnStmt
+{
+	NodeTag		type;
+	List		*nodes;		/* list of nodes dropped */
+	char		*dbname;	/* name of database to drop connections */
+	char		*username;	/* name of user whose connections are dropped */
+	bool		is_coord;	/* type of connections dropped */
+	bool		is_force;	/* option force  */
+} CleanConnStmt;
+/* PGXC_END */
 
 typedef struct CreatePublicationStmt
 {

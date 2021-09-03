@@ -69,6 +69,14 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#ifdef PGXC
+#include "commands/prepare.h"
+#include "pgxc/execRemote.h"
+#ifdef XCP
+#include "pgxc/squeue.h"
+#endif
+#include "pgxc/pgxc.h"
+#endif
 
 
 /*
@@ -151,6 +159,9 @@ InitPlanCache(void)
 CachedPlanSource *
 CreateCachedPlan(RawStmt *raw_parse_tree,
 				 const char *query_string,
+#ifdef PGXC
+				 const char *stmt_name,
+#endif
 				 const char *commandTag)
 {
 	CachedPlanSource *plansource;
@@ -189,6 +200,10 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	plansource->fixed_result = false;
 	plansource->resultDesc = NULL;
 	plansource->context = source_context;
+#ifdef PGXC
+	plansource->stmt_name = (stmt_name ? pstrdup(stmt_name) : NULL);
+#endif
+
 	plansource->query_list = NIL;
 	plansource->relationOids = NIL;
 	plansource->invalItems = NIL;
@@ -533,6 +548,18 @@ ReleaseGenericPlan(CachedPlanSource *plansource)
 	{
 		CachedPlan *plan = plansource->gplan;
 
+#ifdef XCP
+		/* Release SharedQueue if still held */
+		if (IsConnFromDatanode() && plan && list_length(plan->stmt_list) == 1)
+		{
+			PlannedStmt *pstmt;
+
+			pstmt = (PlannedStmt *) linitial(plan->stmt_list);
+			if (IsA(pstmt, PlannedStmt) && pstmt->pname)
+				SharedQueueRelease(pstmt->pname);
+		}
+#endif
+
 		Assert(plan->magic == CACHEDPLAN_MAGIC);
 		plansource->gplan = NULL;
 		ReleaseCachedPlan(plan, false);
@@ -577,6 +604,23 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 		Assert(plansource->is_valid);
 		return NIL;
 	}
+
+#ifdef XCP
+	/*
+	 * In the raw_parse_tree is not available, there is no way the plan can be
+	 * revalidated and there must not be any need to do so. Trust the existing
+	 * plan
+	 *
+	 * XXX We should rather check this as an assertion, but currently
+	 * RemoteSubplan gets invalidated because of search_path changes as temp
+	 * namespace gets added in subsequent revalidation.
+	 */
+	if (plansource->raw_parse_tree == NULL)
+	{
+		Assert(plansource->is_valid);
+		return NIL;
+	}
+#endif
 
 	/*
 	 * If the query is currently valid, we should have a saved search_path ---
@@ -961,6 +1005,41 @@ BuildCachedPlan(CachedPlanSource *plansource, List *qlist,
 	}
 	else
 		plan_context = CurrentMemoryContext;
+
+#ifdef PGXC
+	/*
+	 * If this plansource belongs to a named prepared statement, store the stmt
+	 * name for the Datanode queries.
+	 */
+	if (IS_PGXC_LOCAL_COORDINATOR && plansource->stmt_name &&
+			plansource->stmt_name[0] != '\0')
+	{
+		ListCell	*lc;
+		int 		n;
+
+		/*
+		 * Scan the plans and set the statement field for all found RemoteQuery
+		 * nodes so they use Datanode statements
+		 */
+		n = 0;
+		foreach(lc, plist)
+		{
+			Node *st;
+			PlannedStmt *ps;
+
+			st = (Node *) lfirst(lc);
+
+			if (IsA(st, PlannedStmt))
+			{
+				ps = (PlannedStmt *)st;
+
+				n = SetRemoteStatementName(ps->planTree, plansource->stmt_name,
+							plansource->num_params,
+							plansource->param_types, n);
+			}
+		}
+	}
+#endif
 
 	/*
 	 * Create and fill the CachedPlan struct within the new context.
@@ -1674,6 +1753,9 @@ PlanCacheComputeResultDesc(List *stmt_list)
 
 	switch (ChoosePortalStrategy(stmt_list))
 	{
+#ifdef XCP
+		case PORTAL_DISTRIBUTED:
+#endif
 		case PORTAL_ONE_SELECT:
 		case PORTAL_ONE_MOD_WITH:
 			query = linitial_node(Query, stmt_list);
@@ -1903,3 +1985,118 @@ ResetPlanCache(void)
 		}
 	}
 }
+
+
+#ifdef XCP
+void
+SetRemoteSubplan(CachedPlanSource *plansource, const char *plan_string)
+{
+	CachedPlan 		   *plan;
+	MemoryContext 		plan_context;
+	MemoryContext 		oldcxt;
+	RemoteStmt 		   *rstmt;
+	PlannedStmt 	   *stmt;
+
+	Assert(IS_PGXC_DATANODE);
+	Assert(plansource->raw_parse_tree == NULL);
+	Assert(plansource->query_list == NIL);
+
+	/*
+	 * Make dedicated query context to store cached plan. It is in current
+	 * memory context for now, later it will be reparented to
+	 * CachedMemoryContext. If it is in CachedMemoryContext initially we would
+	 * have to destroy it in case of error.
+	 */
+	plan_context = AllocSetContextCreate(CurrentMemoryContext,
+										 "CachedPlan",
+										 ALLOCSET_SMALL_MINSIZE,
+										 ALLOCSET_SMALL_INITSIZE,
+										 ALLOCSET_DEFAULT_MAXSIZE);
+	oldcxt = MemoryContextSwitchTo(plan_context);
+
+	/*
+	 * Restore query plan.
+	 *
+	 * A try-catch block to ensure that we don't leave behind a stale state
+	 * if nodeToString fails for whatever reason.
+	 *
+	 * XXX We should probably rewrite it someday by either passing a
+	 * context to nodeToString() or remembering this information somewhere
+	 * else which gets reset in case of errors. But for now, this seems
+	 * enough.
+	 */
+	PG_TRY();
+	{
+		set_portable_input(true);
+		rstmt = (RemoteStmt *) stringToNode((char *) plan_string);
+	}
+	PG_CATCH();
+	{
+		set_portable_input(false);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	set_portable_input(false);
+
+	stmt = makeNode(PlannedStmt);
+
+	stmt->commandType = rstmt->commandType;
+	stmt->hasReturning = rstmt->hasReturning;
+	stmt->canSetTag = true;
+	stmt->transientPlan = false; // ???
+	stmt->planTree = rstmt->planTree;
+	stmt->rtable = rstmt->rtable;
+	stmt->resultRelations = rstmt->resultRelations;
+	stmt->utilityStmt = NULL;
+	stmt->subplans = rstmt->subplans;
+	stmt->rewindPlanIDs = NULL;
+	stmt->rowMarks = rstmt->rowMarks;
+	stmt->relationOids = NIL;
+	stmt->invalItems = NIL;
+	stmt->nParamExec = rstmt->nParamExec;
+	stmt->nParamRemote = rstmt->nParamRemote;
+	stmt->remoteparams = rstmt->remoteparams;
+	stmt->pname = plansource->stmt_name;
+	stmt->distributionType = rstmt->distributionType;
+	stmt->distributionKey = rstmt->distributionKey;
+	stmt->distributionNodes = rstmt->distributionNodes;
+	stmt->distributionRestrict = rstmt->distributionRestrict;
+
+	/*
+	 * Set up SharedQueue if intermediate results need to be distributed
+	 * on multiple destination Datanodes.
+	 */
+	if (IsConnFromDatanode() && stmt->pname &&
+			list_length(stmt->distributionRestrict) > 1)
+		SharedQueueAcquire(stmt->pname,
+						   list_length(stmt->distributionRestrict) - 1);
+
+	/*
+	 * Create and fill the CachedPlan struct within the new context.
+	 */
+	plan = (CachedPlan *) palloc(sizeof(CachedPlan));
+	plan->magic = CACHEDPLAN_MAGIC;
+	plan->stmt_list = list_make1(stmt);
+	plan->saved_xmin = InvalidTransactionId;
+	plan->refcount = 1; /* will be referenced by plansource */
+	plan->context = plan_context;
+	plan->dependsOnRole = false;
+	if (plansource->is_saved)
+	{
+		MemoryContextSetParent(plan_context, CacheMemoryContext);
+		plan->is_saved = true;
+	}
+	else
+	{
+		MemoryContextSetParent(plan_context,
+							   MemoryContextGetParent(plansource->context));
+		plan->is_saved = false;
+	}
+	plan->is_valid = true;
+	plan->is_oneshot = false;
+
+	plansource->gplan = plan;
+
+	MemoryContextSwitchTo(oldcxt);
+}
+#endif

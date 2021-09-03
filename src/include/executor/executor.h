@@ -63,6 +63,10 @@
 #define EXEC_FLAG_WITH_OIDS		0x0020	/* force OIDs in returned tuples */
 #define EXEC_FLAG_WITHOUT_OIDS	0x0040	/* force no OIDs in returned tuples */
 #define EXEC_FLAG_WITH_NO_DATA	0x0080	/* rel scannability doesn't matter */
+#ifdef XCP
+/* distributed executor may never execute the plan on this node  */
+#define EXEC_FLAG_SUBPLAN		0x0100
+#endif
 
 
 /* Hook for plugins to get control in ExecutorStart() */
@@ -110,6 +114,10 @@ extern bool execCurrentOf(CurrentOfExpr *cexpr,
 			  ExprContext *econtext,
 			  Oid table_oid,
 			  ItemPointer current_tid);
+
+#ifdef PGXC
+ScanState *search_plan_tree(PlanState *node, Oid table_oid);
+#endif
 
 /*
  * prototypes from functions in execGrouping.c
@@ -231,6 +239,9 @@ extern void EvalPlanQualEnd(EPQState *epqstate);
  * functions in execProcnode.c
  */
 extern PlanState *ExecInitNode(Plan *node, EState *estate, int eflags);
+#ifdef XCP
+extern void ExecFinishInitProcNode(PlanState *node);
+#endif
 extern Node *MultiExecProcNode(PlanState *node);
 extern void ExecEndNode(PlanState *node);
 extern bool ExecShutdownNode(PlanState *node);

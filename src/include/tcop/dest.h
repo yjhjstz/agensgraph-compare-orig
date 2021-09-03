@@ -95,6 +95,9 @@ typedef enum
 	DestIntoRel,				/* results sent to relation (SELECT INTO) */
 	DestCopyOut,				/* results sent to COPY TO code */
 	DestSQLFunction,			/* results sent to SQL-language func mgr */
+#ifdef XCP
+	DestProducer,				/* results sent to a SharedQueue */
+#endif
 	DestTransientRel,			/* results sent to transient relation */
 	DestTupleQueue				/* results sent to tuple queue */
 } CommandDest;

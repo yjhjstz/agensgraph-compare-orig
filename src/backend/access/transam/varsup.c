@@ -25,6 +25,14 @@
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "utils/syscache.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "access/gtm.h"
+#include "libpq/libpq.h"
+#include "storage/procarray.h"
+#include "tcop/tcopprot.h"
+#include "utils/lsyscache.h"
+#endif
 
 
 /* Number of OIDs to prefetch (preallocate) per XLOG write */
@@ -32,6 +40,65 @@
 
 /* pointer to "variable cache" in shared memory (set up by shmem.c) */
 VariableCache ShmemVariableCache = NULL;
+
+#ifdef PGXC  /* PGXC_DATANODE */
+static TransactionId next_xid = InvalidTransactionId;
+static bool force_get_xid_from_gtm = false;
+
+/*
+ * Set next transaction id to use
+ */
+void
+SetNextTransactionId(TransactionId xid)
+{
+	elog (DEBUG1, "[re]setting xid = %d, old_value = %d", xid, next_xid);
+	next_xid = xid;
+}
+
+/*
+ * Allow force of getting XID from GTM
+ * Useful for explicit VACUUM (autovacuum already handled)
+ */
+void
+SetForceXidFromGTM(bool value)
+{
+	force_get_xid_from_gtm = value;
+}
+
+/*
+ * See if we should force using GTM
+ * Useful for explicit VACUUM (autovacuum already handled)
+ */
+bool
+GetForceXidFromGTM(void)
+{
+	return force_get_xid_from_gtm;
+}
+#endif /* PGXC */
+
+
+/*
+ * Check if GlobalTransactionId associated with the current distributed session
+ * equals to specified xid.
+ * It is for tuple visibility checks in secondary datanode sessions, which are
+ * not associating next_xid with the current transaction.
+ */
+bool
+TransactionIdIsCurrentGlobalTransactionId(TransactionId xid)
+{
+	return TransactionIdIsValid(next_xid) && TransactionIdEquals(xid, next_xid);
+}
+
+
+/*
+ * Returns GlobalTransactionId associated with the current distributed session
+ * without assigning it to the transaction.
+ */
+TransactionId
+GetNextTransactionId(void)
+{
+	return next_xid;
+}
 
 
 /*
@@ -45,10 +112,19 @@ VariableCache ShmemVariableCache = NULL;
  * issue a warning about XID wrap.
  */
 TransactionId
+#ifdef PGXC
+GetNewTransactionId(bool isSubXact, bool *timestamp_received, GTM_Timestamp *timestamp)
+#else
 GetNewTransactionId(bool isSubXact)
+#endif /* PGXC */
 {
 	TransactionId xid;
-
+#ifdef PGXC
+	bool increment_xid = true;
+	*timestamp_received = false;
+	/* Will be set if we obtain from GTM */
+	IsXidFromGTM = false;
+#endif /* PGXC */
 	/*
 	 * Workers synchronize transaction state at the beginning of each parallel
 	 * operation, so we can't account for new XIDs after that point.
@@ -71,9 +147,139 @@ GetNewTransactionId(bool isSubXact)
 	if (RecoveryInProgress())
 		elog(ERROR, "cannot assign TransactionIds during recovery");
 
-	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+#ifdef PGXC
+	/* Initialize transaction ID */
+	xid = InvalidTransactionId;
 
+	/*
+	 * Get XID from GTM before acquiring the lock as concurrent connections are
+	 * being handled on GTM side even if the lock is acquired in a different
+	 * order.
+	 * 
+	 * PGXC sessions should typically use gloabl XID passed down by
+	 * coordinators (or datanodes in case of datanode-datanode connections).
+	 * But we make following exceptions:
+	 *
+	 * 1. If this is a coordinator to which client has connected
+	 *	(IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	 * 
+	 * 2. If we are autovacuum launcher or worker process
+	 * 3. We have been explicitly told to get an XID from the GTM, because
+	 * certain commands such as VACUUM and CLUSTER cannot be run inside a
+	 * transaction block
+	 * 4. Or we start currently starting up a new backend which requires a
+	 * valid XID/snapshot for catalog access
+	 *
+ 	 */
+	if (!useLocalXid &&
+		(!IsConnFromCoord() ||
+		IsAutoVacuumWorkerProcess() ||
+		IsAutoVacuumLauncherProcess() ||
+		GetForceXidFromGTM() ||
+		(IsInitProcessingMode() && IsPostmasterEnvironment)))
+	{
+		if (MyPgXact->vacuumFlags & PROC_IN_VACUUM)
+			next_xid = xid = (TransactionId) BeginTranAutovacuumGTM();
+		else
+		{
+			char global_session[NAMEDATALEN + 13 + 13];
+
+			/*
+			 * Generate unique global session identifier using coordinator
+			 * name, backend pid and virtual XID. 
+			 *
+			 * For global transactions i.e. those which may involve more than
+			 * one node, this code will be executed only on the coordinator and
+			 * hence its correct to use PGXCNodeName and fields from MyProc to
+			 * generate the global session identifier
+			 */
+			sprintf(global_session, "%s_%d_%d", PGXCNodeName, MyProc->pid,
+					MyProc->lxid);
+			next_xid = xid = (TransactionId) BeginTranGTM(timestamp,
+					global_session);
+		}
+		*timestamp_received = true;
+	}
+
+	/*
+	 * Unless we are running initdb (which sets useLocalXid to true), we must
+	 * have either got a valid global XID, either from the coordinator/datanode
+	 * or fetched directly from the GTM. Everything else warrants an error
+	 */
+	if (!useLocalXid)
+	{
+		if (TransactionIdIsValid(next_xid))
+		{
+			xid = next_xid;
+			next_xid = InvalidTransactionId;
+		}
+		else if ((IsConnFromCoord() || IsConnFromDatanode()) &&
+			MyCoordId != InvalidOid && MyCoordPid != 0 &&
+			MyCoordLxid != InvalidLocalTransactionId)
+		{
+			char global_session[NAMEDATALEN + 13 + 13];
+
+			/*
+			 * If we are running on a remote coordinator or a datanode,
+			 * start a new transaction and associate it with a global session
+			 * identifier which is guaranteed to be unique across the cluster
+			 */
+			sprintf(global_session, "%s_%d_%d", get_pgxc_nodename(MyCoordId), MyCoordPid,
+					MyCoordLxid);
+			xid = (TransactionId) BeginTranGTM(timestamp, global_session);
+			if (TransactionIdIsValid(xid))
+			{
+				elog(DEBUG2, "Received new XID from GTM: %s:%d", global_session, xid);
+				/*
+				 * Let the coordinator know about GXID assigned to this
+				 * transaction
+				 */
+				if (whereToSendOutput == DestRemote &&
+						!IS_PGXC_LOCAL_COORDINATOR)
+				{
+					pq_putmessage('x', (const char *) &xid, sizeof (GlobalTransactionId));
+					IsXidFromGTM = false;
+				}
+			}
+		}
+		else
+		{
+			char global_session[NAMEDATALEN + 13 + 13];
+
+			/*
+			 * This is the auto-commit, single datanode transaction. Just use
+			 * the local node-name and backend id in global session which
+			 * should give us a globally unique identifier
+			 */
+			sprintf(global_session, "%s_%d", PGXCNodeName, MyProcPid);
+			xid = (TransactionId) BeginTranGTM(timestamp, global_session);
+			if (TransactionIdIsValid(xid))
+			{
+				/*
+				 * Let the coordinator know about GXID assigned to this
+				 * transaction
+				 */
+				if (whereToSendOutput == DestRemote &&
+						!IS_PGXC_LOCAL_COORDINATOR)
+				{
+					pq_putmessage('x', (const char *) &xid, sizeof (GlobalTransactionId));
+					IsXidFromGTM = false;
+				}
+			}
+		}
+		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+		if (TransactionIdFollowsOrEquals(xid, ShmemVariableCache->nextXid))
+				ShmemVariableCache->nextXid = xid;
+	}
+	else
+	{
+		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+		xid = ShmemVariableCache->nextXid;
+	}
+#else
+	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
 	xid = ShmemVariableCache->nextXid;
+#endif /* PGXC */
 
 	/*----------
 	 * Check to see if it's safe to assign another XID.  This protects against
@@ -88,6 +294,28 @@ GetNewTransactionId(bool isSubXact)
 	 * Note that this coding also appears in GetNewMultiXactId.
 	 *----------
 	 */
+#ifdef PGXC
+	/*
+	 * In PG, the xid will never cross the wrap-around limit thanks to the
+	 * above checks. But in PGXC, if a new node is initialized and brought up,
+	 * it's own xid may not be in sync with the GTM gxid. The wrap-around limits
+	 * are initially set w.r.t. the last xid used. So if the Gxid-xid difference
+	 * is already more than 2^31, then the gxid is deemed to have already
+	 * crossed the wrap-around limit. So again in such cases as well, we should
+	 * allow only a standalone backend to run vacuum.
+	 */
+	if (TransactionIdFollowsOrEquals(xid, ShmemVariableCache->xidWrapLimit))
+	{
+		if (IsPostmasterEnvironment)
+		    ereport(ERROR,
+		       (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+		       errmsg("Xid wraparound might have already happened. database is not accepting commands on database with OID %u",
+		       ShmemVariableCache->oldestXidDB),
+		       errhint("Stop the postmaster and use a standalone backend to vacuum that database.\n"
+		               "You might also need to commit or roll back old prepared transactions.")));
+	}
+	else
+#endif
 	if (TransactionIdFollowsOrEquals(xid, ShmemVariableCache->xidVacLimit))
 	{
 		/*
@@ -115,11 +343,21 @@ GetNewTransactionId(bool isSubXact)
 		if (IsUnderPostmaster &&
 			TransactionIdFollowsOrEquals(xid, xidStopLimit))
 		{
+#ifdef PGXC
+			/*
+			 * Allow auto-vacuum to carry-on, so that it gets a chance to correct
+			 * the xid-wrap-limits w.r.t to gxid fetched from GTM.
+			 */
+			if (!IsAutoVacuumLauncherProcess() && !IsAutoVacuumWorkerProcess())
+			{
+				char  *oldest_datname = (OidIsValid(MyDatabaseId) ?
+			           get_database_name(oldest_datoid): NULL);
+#else
 			char	   *oldest_datname = get_database_name(oldest_datoid);
-
-			/* complain even if that DB has disappeared */
-			if (oldest_datname)
-				ereport(ERROR,
+#endif
+				/* complain even if that DB has disappeared */
+				if (oldest_datname)
+					ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("database is not accepting commands to avoid wraparound data loss in database \"%s\"",
 								oldest_datname),
@@ -132,6 +370,9 @@ GetNewTransactionId(bool isSubXact)
 								oldest_datoid),
 						 errhint("Stop the postmaster and vacuum that database in single-user mode.\n"
 								 "You might also need to commit or roll back old prepared transactions.")));
+#ifdef PGXC
+			}
+#endif
 		}
 		else if (TransactionIdFollowsOrEquals(xid, xidWarnLimit))
 		{
@@ -156,8 +397,25 @@ GetNewTransactionId(bool isSubXact)
 
 		/* Re-acquire lock and start over */
 		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+
+#ifndef PGXC
+		/*
+		 * In the case of Postgres-XC, transaction ID is managed globally at GTM level,
+		 * so updating the GXID here based on the cache that might have been changed
+		 * by another session when checking for wraparound errors at this local node
+		 * level breaks transaction ID consistency of cluster.
+		 */
 		xid = ShmemVariableCache->nextXid;
+#endif
 	}
+
+#ifdef XCP
+	if (!TransactionIdIsValid(xid))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Could not obtain a transaction ID from GTM. The GTM"
+					 " might have failed or lost connectivity")));
+#endif
 
 	/*
 	 * If we are allocating the first XID of a new page of the commit log,
@@ -178,7 +436,24 @@ GetNewTransactionId(bool isSubXact)
 	 * want the next incoming transaction to try it again.  We cannot assign
 	 * more XIDs until there is CLOG space for them.
 	 */
+#ifdef PGXC
+	/*
+	 * But first bring nextXid in sync with global xid. Actually we get xid
+	 * externally anyway, so it should not be needed to update nextXid in
+	 * theory, but it is required to keep nextXid close to the gxid
+	 * especially when vacuumfreeze is run using a standalone backend.
+	 */
+	if (increment_xid || !IsPostmasterEnvironment)
+	{
+		if (TransactionIdFollowsOrEquals(xid, ShmemVariableCache->nextXid))
+		{
+			ShmemVariableCache->nextXid = xid;
+			TransactionIdAdvance(ShmemVariableCache->nextXid);
+		}
+	}
+#else
 	TransactionIdAdvance(ShmemVariableCache->nextXid);
+#endif
 
 	/*
 	 * We must store the new XID into the shared ProcArray before releasing
@@ -526,3 +801,15 @@ GetNewObjectId(void)
 
 	return result;
 }
+
+#ifdef XCP
+void
+ExtendLogs(TransactionId xid)
+{
+	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+	ExtendCLOG(xid);
+	ExtendCommitTs(xid);
+	ExtendSUBTRANS(xid);
+	LWLockRelease(XidGenLock);
+}
+#endif

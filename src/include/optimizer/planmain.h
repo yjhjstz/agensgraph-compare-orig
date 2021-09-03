@@ -16,6 +16,9 @@
 
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
+#ifdef XCP
+#include "pgxc/planner.h"
+#endif
 
 /* possible values for force_parallel_mode */
 typedef enum
@@ -72,7 +75,13 @@ extern Agg *make_agg(List *tlist, List *qual,
 		 int numGroupCols, AttrNumber *grpColIdx, Oid *grpOperators,
 		 List *groupingSets, List *chain,
 		 double dNumGroups, Plan *lefttree);
-extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount);
+extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
+						 int64 offset_est, int64 count_est);
+extern RemoteSubplan *make_remotesubplan(PlannerInfo *root,
+				   Plan *lefttree,
+				   Distribution *resultDistribution,
+				   Distribution *execDistribution,
+				   List *pathkeys);
 
 /*
  * prototypes for plan/initsplan.c
