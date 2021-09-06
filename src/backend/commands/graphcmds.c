@@ -79,7 +79,7 @@ CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString,
 		wrapper->stmt_len = stmt_len;
 
 		ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,
-					   NULL, NULL, None_Receiver, NULL);
+					   NULL, NULL, None_Receiver, false, NULL);
 
 		CommandCounterIncrement();
 	}
@@ -200,7 +200,7 @@ CreateLabelCommand(CreateLabelStmt *labelStmt, const char *queryString,
 			wrapper->stmt_len = stmt_len;
 
 			ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,
-						   params, NULL, None_Receiver, NULL);
+						   params, NULL, None_Receiver, false, NULL);
 		}
 
 		CommandCounterIncrement();
@@ -522,7 +522,7 @@ CreateConstraintCommand(CreateConstraintStmt *constraintStmt,
 	wrapper->stmt_len = stmt_len;
 
 	ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,
-				   params, NULL, None_Receiver, NULL);
+				   params, NULL, None_Receiver, false, NULL);
 
 	CommandCounterIncrement();
 
@@ -551,7 +551,7 @@ DropConstraintCommand(DropConstraintStmt *constraintStmt,
 	wrapper->stmt_len = stmt_len;
 
 	ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,
-				   params, NULL, None_Receiver, NULL);
+				   params, NULL, None_Receiver, false, NULL);
 
 	CommandCounterIncrement();
 

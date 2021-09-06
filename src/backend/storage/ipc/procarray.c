@@ -53,6 +53,7 @@
 #include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
+#include "postmaster/clustermon.h"
 #include "pgstat.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -60,6 +61,15 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "gtm/gtm.h"
+#include "access/gtm.h"
+#include "storage/ipc.h"
+#include "utils/guc.h"
+/* PGXC_DATANODE */
+#include "postmaster/autovacuum.h"
+#endif
 
 
 /* Our shared memory area */
@@ -151,6 +161,34 @@ static void DisplayXidCache(void);
 #define xc_slow_answer_inc()		((void) 0)
 #endif							/* XIDCACHE_DEBUG */
 
+#ifdef PGXC  /* PGXC_DATANODE */
+
+static bool GetPGXCSnapshotData(Snapshot snapshot, bool latest);
+
+typedef struct
+{
+	/* Global snapshot data */
+	SnapshotSource snapshot_source;
+	TransactionId gxmin;
+	TransactionId gxmax;
+	int gxcnt;
+	int max_gxcnt;
+	TransactionId *gxip;
+} GlobalSnapshotData;
+
+GlobalSnapshotData globalSnapshot = {
+	SNAPSHOT_UNDEFINED,
+	InvalidTransactionId,
+	InvalidTransactionId,
+	0,
+	0,
+	NULL
+};
+
+static void GetSnapshotFromGlobalSnapshot(Snapshot snapshot);
+static void GetSnapshotDataFromGTM(Snapshot snapshot);
+#endif
+
 /* Primitives for KnownAssignedXids array handling for standby */
 static void KnownAssignedXidsCompress(bool force);
 static void KnownAssignedXidsAdd(TransactionId from_xid, TransactionId to_xid,
@@ -171,6 +209,10 @@ static void KnownAssignedXidsReset(void);
 static inline void ProcArrayEndTransactionInternal(PGPROC *proc,
 								PGXACT *pgxact, TransactionId latestXid);
 static void ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid);
+
+#ifdef XCP
+int	GlobalSnapshotSource;
+#endif
 
 /*
  * Report shared-memory space needed by CreateSharedProcArray.
@@ -237,7 +279,8 @@ CreateSharedProcArray(void)
 		 */
 		procArray->numProcs = 0;
 		procArray->maxProcs = PROCARRAY_MAXPROCS;
-		procArray->maxKnownAssignedXids = TOTAL_MAX_CACHED_SUBXIDS;
+		procArray->maxKnownAssignedXids = TOTAL_MAX_CACHED_SUBXIDS +
+			CONTROL_INTERVAL;
 		procArray->numKnownAssignedXids = 0;
 		procArray->tailKnownAssignedXids = 0;
 		procArray->headKnownAssignedXids = 0;
@@ -256,11 +299,12 @@ CreateSharedProcArray(void)
 		KnownAssignedXids = (TransactionId *)
 			ShmemInitStruct("KnownAssignedXids",
 							mul_size(sizeof(TransactionId),
-									 TOTAL_MAX_CACHED_SUBXIDS),
+									 procArray->maxKnownAssignedXids),
 							&found);
 		KnownAssignedXidsValid = (bool *)
 			ShmemInitStruct("KnownAssignedXidsValid",
-							mul_size(sizeof(bool), TOTAL_MAX_CACHED_SUBXIDS),
+							mul_size(sizeof(bool),
+								procArray->maxKnownAssignedXids),
 							&found);
 	}
 
@@ -354,6 +398,9 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 	}
 	else
 	{
+#ifdef PGXC
+		if (IS_PGXC_DATANODE || !IsConnFromCoord())
+#endif
 		/* Shouldn't be trying to remove a live transaction here */
 		Assert(!TransactionIdIsValid(allPgXact[proc->pgprocno].xid));
 	}
@@ -405,7 +452,17 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 		 * else is taking a snapshot.  See discussion in
 		 * src/backend/access/transam/README.
 		 */
+#ifdef PGXC
+		/*
+		 * Remove this assertion. We have seen this failing because a ROLLBACK
+		 * statement may get canceled by a Coordinator, leading to recursive
+		 * abort of a transaction. This must be a PostgreSQL issue, highlighted
+		 * by XC. See thread on hackers with subject "Canceling ROLLBACK
+		 * statement"
+		 */
+#else
 		Assert(TransactionIdIsValid(allPgXact[proc->pgprocno].xid));
+#endif
 
 		/*
 		 * If we can immediately acquire ProcArrayLock, we clear our own XID
@@ -427,6 +484,10 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 		 * anyone else's calculation of a snapshot.  We might change their
 		 * estimate of global xmin, but that's OK.
 		 */
+#ifdef XCP
+		if (IsConnFromDatanode())
+			allPgXact[proc->pgprocno].xid = InvalidTransactionId;
+#endif
 		Assert(!TransactionIdIsValid(allPgXact[proc->pgprocno].xid));
 
 		proc->lxid = InvalidLocalTransactionId;
@@ -1314,10 +1375,38 @@ TransactionIdIsActive(TransactionId xid)
 TransactionId
 GetOldestXmin(Relation rel, int flags)
 {
+	return GetOldestXminInternal(rel, flags, false,
+			InvalidTransactionId);
+}
+
+/*
+ * This implements most of the logic that GetOldestXmin needs. In XL, we don't
+ * actually compute OldestXmin unless specifically told to do by computeLocal
+ * argument set to true which GetOldestXmin never done. So we just return the
+ * value from the shared memory. The OldestXmin itself is always computed by
+ * the Cluster Monitor process by sending local state information to the GTM,
+ * which then aggregates information from all the nodes and gives out final
+ * OldestXmin or GlobalXmin which is consistent across the entire cluster.
+ *
+ * In addition, Cluster Monitor also passes the last reported xmin (or the one
+ * sent back by GTM in case we were idle) and the last received GlobalXmin. We
+ * must ensure that we don't see an XID or xmin which is beyond these horizons.
+ * Otherwise it signals problems with the GlobalXmin calculation. This can
+ * happen because of network disconnects or extreme load on the machine
+ * (unlikely). In any case, we must restart ourselves to avoid any data
+ * consistency problem. A more careful approach could involve killing only
+ * those backends which are running with old xid or xmin. We can consider
+ * implementing it that way in future
+ */
+TransactionId
+GetOldestXminInternal(Relation rel, int flags, bool computeLocal,
+		TransactionId lastGlobalXmin)
+{
 	ProcArrayStruct *arrayP = procArray;
 	TransactionId result;
 	int			index;
 	bool		allDbs;
+	TransactionId xmin;
 
 	volatile TransactionId replication_slot_xmin = InvalidTransactionId;
 	volatile TransactionId replication_slot_catalog_xmin = InvalidTransactionId;
@@ -1328,6 +1417,16 @@ GetOldestXmin(Relation rel, int flags)
 	 * considered.
 	 */
 	allDbs = rel == NULL || rel->rd_rel->relisshared;
+
+#ifdef XCP
+	if (!computeLocal)
+	{
+		xmin = (TransactionId) ClusterMonitorGetGlobalXmin();
+		if (!TransactionIdIsValid(xmin))
+			xmin = FirstNormalTransactionId;
+		return xmin;
+	}
+#endif
 
 	/* Cannot look for individual databases during recovery */
 	Assert(allDbs || !RecoveryInProgress());
@@ -1341,8 +1440,19 @@ GetOldestXmin(Relation rel, int flags)
 	 * additions.
 	 */
 	result = ShmemVariableCache->latestCompletedXid;
+#ifdef XCP
+	if (!TransactionIdIsValid(result))
+		result = FirstNormalTransactionId;
+	else
+		TransactionIdAdvance(result);
+
+#else
 	Assert(TransactionIdIsNormal(result));
 	TransactionIdAdvance(result);
+#endif
+
+	elog(DEBUG1, "GetOldestXminInternal - Starting computation with"
+			"latestCompletedXid %d + 1", result);
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
@@ -1359,6 +1469,9 @@ GetOldestXmin(Relation rel, int flags)
 		{
 			/* Fetch xid just once - see GetNewTransactionId */
 			TransactionId xid = pgxact->xid;
+#ifdef XCP
+			TransactionId xmin = pgxact->xmin; /* Fetch just once */
+#endif
 
 			/* First consider the transaction's own Xid, if any */
 			if (TransactionIdIsNormal(xid) &&
@@ -1372,10 +1485,34 @@ GetOldestXmin(Relation rel, int flags)
 			 * have an Xmin but not (yet) an Xid; conversely, if it has an
 			 * Xid, that could determine some not-yet-set Xmin.
 			 */
+#ifdef XCP
+
+			elog(DEBUG1, "proc: pid:%d, xmin: %d, xid: %d", proc->pid,
+					xmin, xid);
+
+			if (TransactionIdIsNormal(xmin) &&
+				 TransactionIdPrecedes(xmin, result))
+				result = xmin;
+
+			/*
+			 * If we see an xid or an xmin which precedes the GlobalXmin calculated by the
+			 * Cluster Monitor process then it signals bad things and we must
+			 * abort and restart the database server
+			 */
+			if (TransactionIdIsValid(lastGlobalXmin))
+			{
+				if ((TransactionIdIsValid(xmin) && TransactionIdPrecedes(xmin, lastGlobalXmin)) ||
+					(TransactionIdIsValid(xid) && TransactionIdPrecedes(xid,
+																		lastGlobalXmin)))
+					elog(PANIC, "Found xid (%d) or xmin (%d) precedes "
+							"global xmin (%d)", xid, xmin, lastGlobalXmin);
+			}
+#else
 			xid = pgxact->xmin; /* Fetch just once */
 			if (TransactionIdIsNormal(xid) &&
 				TransactionIdPrecedes(xid, result))
 				result = xid;
+#endif
 		}
 	}
 
@@ -1506,7 +1643,7 @@ GetMaxSnapshotSubxidCount(void)
  * not statically allocated (see xip allocation below).
  */
 Snapshot
-GetSnapshotData(Snapshot snapshot)
+GetSnapshotData(Snapshot snapshot, bool latest)
 {
 	ProcArrayStruct *arrayP = procArray;
 	TransactionId xmin;
@@ -1518,7 +1655,47 @@ GetSnapshotData(Snapshot snapshot)
 	bool		suboverflowed = false;
 	volatile TransactionId replication_slot_xmin = InvalidTransactionId;
 	volatile TransactionId replication_slot_catalog_xmin = InvalidTransactionId;
+#ifdef XCP
+	TransactionId clustermon_xmin;
+#endif
 
+#ifdef PGXC  /* PGXC_DATANODE */
+	/*
+	 * If the user has chosen to work with a coordinator-local snapshot, just
+	 * compute snapshot locally. This can have adverse effects on the global
+	 * consistency, in a multi-coordinator environment, but also in a
+	 * single-coordinator setup because our recent changes to transaction
+	 * management now allows datanodes to start global snapshots or more
+	 * precisely attach current transaction to a global transaction. But users
+	 * may still want to use this model for performance of their XL cluster, at
+	 * the cost of reduced global consistency
+	 */ 
+	if (GlobalSnapshotSource == GLOBAL_SNAPSHOT_SOURCE_GTM)
+	{
+		/*
+		 * Obtain a global snapshot for a Postgres-XC session
+		 * if possible.
+		 */
+		if (GetPGXCSnapshotData(snapshot, latest))
+			return snapshot;
+		/*
+		 * We only make one exception for using local snapshot and that's the
+		 * initdb time. When IsPostmasterEnvironment is true, snapshots must
+		 * either be pushed down from the coordinator or directly obtained from
+		 * the GTM.
+		 *
+		 * !!TODO We don't seem to fully support Hot Standby. So why should we
+		 * even exempt RecoveryInProgress()?
+		 */
+		if (IsPostmasterEnvironment && !useLocalXid)
+			elog(ERROR, "Was unable to obtain a snapshot from GTM.");
+	}
+#endif
+
+	/*
+	 * Fallback to standard routine, calculate snapshot from local proc arrey
+	 * if no master connection
+	 */
 	Assert(snapshot != NULL);
 
 	/*
@@ -1720,6 +1897,12 @@ GetSnapshotData(Snapshot snapshot)
 	if (TransactionIdPrecedes(xmin, globalxmin))
 		globalxmin = xmin;
 
+#ifdef XCP
+	clustermon_xmin = ClusterMonitorGetGlobalXmin();
+	if (TransactionIdPrecedes(clustermon_xmin, globalxmin))
+		globalxmin = clustermon_xmin;
+#endif
+
 	/* Update global variables too */
 	RecentGlobalXmin = globalxmin - vacuum_defer_cleanup_age;
 	if (!TransactionIdIsNormal(RecentGlobalXmin))
@@ -1750,6 +1933,12 @@ GetSnapshotData(Snapshot snapshot)
 	snapshot->suboverflowed = suboverflowed;
 
 	snapshot->curcid = GetCurrentCommandId(false);
+
+#ifdef PGXC
+	if (!RecoveryInProgress())
+		elog(DEBUG1, "Local snapshot is built, xmin: %d, xmax: %d, xcnt: %d, RecentGlobalXmin: %d",
+			 xmin, xmax, count, globalxmin);
+#endif
 
 	/*
 	 * This is a new snapshot, so set both refcounts are zero, and mark it as
@@ -2918,6 +3107,14 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 				continue;
 			if (proc == MyProc)
 				continue;
+#ifdef PGXC
+			/*
+			 * PGXC pooler just refers to XC-specific catalogs,
+			 * it does not create any consistency issues.
+			 */
+			if (proc->isPooler)
+				continue;
+#endif
 
 			found = true;
 
@@ -2952,6 +3149,55 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 
 	return true;				/* timed out, still conflicts */
 }
+
+#ifdef PGXC
+/*
+ * ReloadConnInfoOnBackends -- reload/refresh connection information
+ * for all the backends
+ *
+ * "refresh" is less destructive than "reload"
+ */
+void
+ReloadConnInfoOnBackends(bool refresh_only)
+{
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+	pid_t		pid = 0;
+
+	/* tell all backends to reload except this one who already reloaded */
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		int			pgprocno = arrayP->pgprocnos[index];
+		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		VirtualTransactionId vxid;
+		GET_VXID_FROM_PGPROC(vxid, *proc);
+
+		if (proc == MyProc)
+			continue;			/* do not do that on myself */
+		if (proc->isPooler)
+			continue;			/* Pooler cannot do that */
+		if (proc->pid == 0)
+			continue;			/* useless on prepared xacts */
+		if (!OidIsValid(proc->databaseId))
+			continue;			/* ignore backends not connected to a database */
+		if (pgxact->vacuumFlags & PROC_IN_VACUUM)
+			continue;			/* ignore vacuum processes */
+
+		pid = proc->pid;
+		/*
+		 * Send the reload signal if backend still exists
+		 */
+		(void) SendProcSignal(pid, refresh_only?
+					  PROCSIG_PGXCPOOL_REFRESH:PROCSIG_PGXCPOOL_RELOAD,
+					  vxid.backendId);
+	}
+
+	LWLockRelease(ProcArrayLock);
+}
+#endif
 
 /*
  * ProcArraySetReplicationSlotXmin
@@ -3102,6 +3348,282 @@ DisplayXidCache(void)
 }
 #endif							/* XIDCACHE_DEBUG */
 
+
+#ifdef PGXC
+/*
+ * Store snapshot data received from the Coordinator
+ */
+void
+SetGlobalSnapshotData(TransactionId xmin, TransactionId xmax,
+		int xcnt, TransactionId *xip, SnapshotSource source)
+{
+	if (globalSnapshot.max_gxcnt < xcnt)
+	{
+		globalSnapshot.gxip = (TransactionId *) realloc(globalSnapshot.gxip,
+				sizeof (TransactionId) * xcnt);
+		if (globalSnapshot.gxip == NULL)
+			elog(ERROR, "Out of memory");
+		globalSnapshot.max_gxcnt = xcnt;
+	}
+
+	globalSnapshot.snapshot_source = source;
+	globalSnapshot.gxmin = xmin;
+	globalSnapshot.gxmax = xmax;
+	globalSnapshot.gxcnt = xcnt;
+	memcpy(globalSnapshot.gxip, xip, sizeof (TransactionId) * xcnt);
+	elog (DEBUG1, "global snapshot info: gxmin: %d, gxmax: %d, gxcnt: %d", xmin, xmax, xcnt);
+}
+
+/*
+ * Force Datanode to use local snapshot data
+ */
+void
+UnsetGlobalSnapshotData(void)
+{
+	globalSnapshot.snapshot_source = SNAPSHOT_UNDEFINED;
+	globalSnapshot.gxmin = InvalidTransactionId;
+	globalSnapshot.gxmax = InvalidTransactionId;
+	globalSnapshot.gxcnt = 0;
+	elog (DEBUG1, "unset snapshot info");
+}
+
+
+/*
+ * Entry of snapshot obtention for Postgres-XC node
+ */
+static bool
+GetPGXCSnapshotData(Snapshot snapshot, bool latest)
+{
+	/*
+	 * If this node is in recovery phase,
+	 * snapshot has to be taken directly from WAL information.
+	 */
+	if (RecoveryInProgress())
+		return false;
+
+	/*
+	 * The typical case is that the local Coordinator passes down the snapshot to the
+	 * remote nodes to use, while it itself obtains it from GTM. Autovacuum processes
+	 * need however to connect directly to GTM themselves to obtain XID and snapshot
+	 * information for autovacuum worker threads.
+	 * A vacuum analyze uses a special function to get a transaction ID and signal
+	 * GTM not to include this transaction ID in snapshot.
+	 * A vacuum worker starts as a normal transaction would.
+	 */
+
+	if ((IsConnFromCoord() || IsConnFromDatanode())
+			&& !IsInitProcessingMode() && !GetForceXidFromGTM() &&
+			!latest)
+	{
+		if (globalSnapshot.snapshot_source == SNAPSHOT_COORDINATOR)
+			GetSnapshotFromGlobalSnapshot(snapshot);
+		else
+			GetSnapshotDataFromGTM(snapshot);
+		return true;
+	}
+	else if (IsPostmasterEnvironment)
+	{
+		GetSnapshotDataFromGTM(snapshot);
+		return true;
+	}
+
+	return false;
+}
+
+static void
+GetSnapshotDataFromGTM(Snapshot snapshot)
+{
+	GTM_Snapshot gtm_snapshot;
+	GlobalTransactionId reporting_xmin;
+	bool canbe_grouped = (!FirstSnapshotSet) || (!IsolationUsesXactSnapshot());
+	bool xmin_changed = false;
+
+	/*
+	 * We never want to use a snapshot whose xmin is older than the
+	 * RecentGlobalXmin computed by the GTM. While it does not look likely that
+	 * that this will ever happen because both these computations happen on the
+	 * GTM, we are still worried about a race condition where a backend sends a
+	 * snapshot request, and before snapshot is received, the cluster monitor
+	 * reports our Xmin (which obviously does not include this snapshot's
+	 * xmin). Now if GTM processes the snapshot request first, computes
+	 * snapshot's xmin and then receives our Xmin-report, it may actually moves
+	 * RecentGlobalXmin beyond snapshot's xmin assuming some transactions
+	 * finished in between.
+	 *
+	 * We try to introduce some interlock between the Xmin reporting and
+	 * snapshot request. Since we don't want to wait on a lock while Xmin is
+	 * being reported by the cluster monitor process, we just make sure that
+	 * the snapshot's xmin is not older than the Xmin we are currently
+	 * reporting. Given that this is a very rare possibility, we just get a
+	 * fresh snapshot from the GTM.
+	 *
+	 */
+	
+	LWLockAcquire(ClusterMonitorLock, LW_SHARED);
+
+retry:
+	reporting_xmin = ClusterMonitorGetReportingGlobalXmin();
+	
+	xmin_changed = false;
+	if (TransactionIdIsValid(reporting_xmin) &&
+		!TransactionIdIsValid(MyPgXact->xmin))
+	{
+		MyPgXact->xmin = reporting_xmin;
+		xmin_changed = true;
+	}
+
+	gtm_snapshot = GetSnapshotGTM(GetCurrentTransactionIdIfAny(), canbe_grouped);
+
+	if (!gtm_snapshot)
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("GTM error, could not obtain snapshot. Current XID = %d, Autovac = %d", GetCurrentTransactionId(), IsAutoVacuumWorkerProcess())));
+	else
+	{
+		if (xmin_changed)
+			MyPgXact->xmin = InvalidTransactionId;
+		if (TransactionIdPrecedes(gtm_snapshot->sn_xmin, reporting_xmin))
+			goto retry;
+
+		/* 
+		 * Set RecentGlobalXmin by copying from the shared memory state
+		 * maintained by the Clutser Monitor
+		 */
+		RecentGlobalXmin = ClusterMonitorGetGlobalXmin();
+		if (!TransactionIdIsValid(RecentGlobalXmin))
+			RecentGlobalXmin = FirstNormalTransactionId;
+		/*
+		 * XXX Is it ok to set RecentGlobalDataXmin same as RecentGlobalXmin ?
+		 */
+		RecentGlobalDataXmin = RecentGlobalXmin;
+		SetGlobalSnapshotData(gtm_snapshot->sn_xmin, gtm_snapshot->sn_xmax,
+				gtm_snapshot->sn_xcnt, gtm_snapshot->sn_xip, SNAPSHOT_DIRECT);
+		GetSnapshotFromGlobalSnapshot(snapshot);
+	}
+	LWLockRelease(ClusterMonitorLock);
+}
+
+static void
+GetSnapshotFromGlobalSnapshot(Snapshot snapshot)
+{
+	if ((globalSnapshot.snapshot_source == SNAPSHOT_COORDINATOR ||
+				globalSnapshot.snapshot_source == SNAPSHOT_DIRECT)
+				&& TransactionIdIsValid(globalSnapshot.gxmin))
+	{
+		TransactionId global_xmin;
+
+		snapshot->xmin = globalSnapshot.gxmin;
+		snapshot->xmax = globalSnapshot.gxmax;
+		snapshot->xcnt = globalSnapshot.gxcnt;
+		/*
+		 * Allocating space for maxProcs xids is usually overkill; numProcs would
+		 * be sufficient.  But it seems better to do the malloc while not holding
+		 * the lock, so we can't look at numProcs.  Likewise, we allocate much
+		 * more subxip storage than is probably needed.
+		 *
+		 * This does open a possibility for avoiding repeated malloc/free: since
+		 * maxProcs does not change at runtime, we can simply reuse the previous
+		 * xip arrays if any.  (This relies on the fact that all callers pass
+		 * static SnapshotData structs.) */
+		if (snapshot->xip == NULL)
+		{
+			ProcArrayStruct *arrayP = procArray;
+			/*
+			 * First call for this snapshot
+			 */
+			snapshot->xip = (TransactionId *)
+				malloc(Max(arrayP->maxProcs, globalSnapshot.gxcnt) * sizeof(TransactionId));
+			if (snapshot->xip == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+			snapshot->max_xcnt = Max(arrayP->maxProcs, globalSnapshot.gxcnt);
+
+			Assert(snapshot->subxip == NULL);
+			snapshot->subxip = (TransactionId *)
+				malloc(arrayP->maxProcs * PGPROC_MAX_CACHED_SUBXIDS * sizeof(TransactionId));
+			if (snapshot->subxip == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+		}
+		else if (snapshot->max_xcnt < globalSnapshot.gxcnt)
+		{
+			snapshot->xip = (TransactionId *)
+				realloc(snapshot->xip, globalSnapshot.gxcnt * sizeof(TransactionId));
+			if (snapshot->xip == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+			snapshot->max_xcnt = globalSnapshot.gxcnt;
+		}
+
+		/* PGXCTODO - set this until we handle subtransactions. */
+		snapshot->subxcnt = 0;
+
+		/*
+		 * This is a new snapshot, so set both refcounts are zero, and mark it
+		 * as not copied in persistent memory.
+		 */
+		snapshot->active_count = 0;
+		snapshot->regd_count = 0;
+		snapshot->copied = false;
+
+		/*
+		 * Start of handling for local ANALYZE
+		 * Make adjustments for any running auto ANALYZE commands
+		 */
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+		/*
+		 * Once we have a SHARED lock on the ProcArrayLock, fetch the
+		 * GlobalXmin and ensure that the snapshot we are dealing with isn't
+		 * too old. Since such a snapshot may need to see rows that have
+		 * already been removed by the server
+		 *
+		 * These scenarios are not very likely to happen because the
+		 * ClusterMonitor will ensure that GlobalXmins are reported to GTM in
+		 * time and the GlobalXmin on the GTM can't advance past the reported
+		 * xmins. But in some cases where a node fails to report its GlobalXmin
+		 * and gets excluded from the list of nodes on GTM, the GlobalXmin will
+		 * be advanced. Usually such node will shoot itself in the head
+		 * and rejoin the cluster, but if at all it sends a snapshot to us, we
+		 * should protect ourselves from using it
+		 */
+		global_xmin = ClusterMonitorGetGlobalXmin();
+		if (!TransactionIdIsValid(global_xmin))
+			global_xmin = FirstNormalTransactionId;
+
+		if (TransactionIdPrecedes(globalSnapshot.gxmin, global_xmin))
+			elog(ERROR, "Snapshot too old - RecentGlobalXmin (%d) has already "
+					"advanced past the snapshot xmin (%d)",
+					global_xmin, globalSnapshot.gxmin);
+
+		memcpy(snapshot->xip, globalSnapshot.gxip,
+				globalSnapshot.gxcnt * sizeof(TransactionId));
+		snapshot->curcid = GetCurrentCommandId(false);
+
+		if (!TransactionIdIsValid(MyPgXact->xmin))
+			MyPgXact->xmin = TransactionXmin = globalSnapshot.gxmin;
+
+		RecentXmin = globalSnapshot.gxmin;
+		RecentGlobalXmin = global_xmin;
+
+		/*
+		 * XXX Is it ok to set RecentGlobalDataXmin same as RecentGlobalXmin ?
+		 */
+		RecentGlobalDataXmin = RecentGlobalXmin;
+
+		if (!TransactionIdIsValid(MyPgXact->xmin))
+			MyPgXact->xmin = snapshot->xmin;
+
+		LWLockRelease(ProcArrayLock);
+		/* End handling of local analyze XID in snapshots */
+	}
+	else
+		elog(ERROR, "Cannot set snapshot from global snapshot");
+}
+#endif /* PGXC */
 
 /* ----------------------------------------------
  *		KnownAssignedTransactions sub-module
@@ -3940,6 +4462,120 @@ KnownAssignedXidsDisplay(int trace_level)
 	pfree(buf.data);
 }
 
+
+#ifdef XCP
+/*
+ * GetGlobalSessionInfo
+ *
+ * Determine the global session id of the specified backend process
+ * Returns coordinator node_id and pid of the initiating coordinator session.
+ * If no such backend or global session id is not defined for the backend
+ * return zero values.
+ */
+void
+GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid)
+{
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+
+	*coordId = InvalidOid;
+	*coordPid = 0;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	/*
+	 * Scan processes and get from it info about the parent session
+	 */
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		volatile PGPROC *proc = &allProcs[arrayP->pgprocnos[index]];
+
+		if (proc->pid == pid)
+		{
+			*coordId = proc->coordId;
+			*coordPid = proc->coordPid;
+			break;
+		}
+	}
+
+	LWLockRelease(ProcArrayLock);
+}
+
+
+/*
+ * GetFirstBackendId
+ *
+ * Determine BackendId of the current process.
+ * The caller must hold the ProcArrayLock and the global session id should
+ * be defined.
+ */
+int
+GetFirstBackendId(int *numBackends, int *backends)
+{
+	ProcArrayStruct *arrayP = procArray;
+	Oid				coordId = MyProc->coordId;
+	int				coordPid = MyProc->coordPid;
+	int				bCount = 0;
+	int				bPids[MaxBackends];
+	int				index;
+
+	Assert(OidIsValid(coordId));
+
+	/* Scan processes */
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		volatile PGPROC *proc = &allProcs[arrayP->pgprocnos[index]];
+
+		/* Skip MyProc */
+		if (proc == MyProc)
+			continue;
+
+		if (proc->coordId == coordId && proc->coordPid == coordPid)
+		{
+			/* BackendId is the same for all backends of the session */
+			if (proc->firstBackendId != InvalidBackendId)
+				return proc->firstBackendId;
+
+			bPids[bCount++] = proc->pid;
+		}
+	}
+
+	if (*numBackends > 0)
+	{
+		int i, j;
+		/*
+		 * This is not the first invocation, to prevent endless loop in case
+		 * if first backend failed to complete initialization check if all the
+		 * processes which were intially found are still here, throw error if
+		 * not.
+		 */
+		for (i = 0; i < *numBackends; i++)
+		{
+			bool found = false;
+
+			for (j = 0; j < bCount; j++)
+			{
+				if (bPids[j] == backends[i])
+				{
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+				elog(ERROR, "Failed to determine BackendId for distributed session");
+		}
+	}
+	else
+	{
+		*numBackends = bCount;
+		if (bCount)
+			memcpy(backends, bPids, bCount * sizeof(int));
+	}
+	return InvalidBackendId;
+}
+#endif
+
 /*
  * KnownAssignedXidsReset
  *		Resets KnownAssignedXids to be empty
@@ -3956,5 +4592,70 @@ KnownAssignedXidsReset(void)
 	pArray->tailKnownAssignedXids = 0;
 	pArray->headKnownAssignedXids = 0;
 
+	LWLockRelease(ProcArrayLock);
+}
+
+/*
+ * Do a consistency check on the running processes. Cluster Monitor uses this
+ * API to check if some transaction has started with an xid or xmin lower than
+ * the GlobalXmin reported by the GTM. This can only happen under extreme
+ * conditions and we must take necessary steps to safe-guard against such
+ * anomalies.
+ */
+void
+ProcArrayCheckXminConsistency(TransactionId global_xmin)
+{
+	volatile ProcArrayStruct *arrayP = procArray;
+	int			index;
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		int			pgprocno = arrayP->pgprocnos[index];
+		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		TransactionId xid;
+
+		xid = pgxact->xid;		/* fetch just once */
+		if (!TransactionIdIsNormal(xid))
+			continue;
+
+		if (!TransactionIdFollowsOrEquals(xid, global_xmin))
+			elog(PANIC, "xmin consistency check failed - found %d xid in "
+					"PGPROC %d ahead of GlobalXmin %d", xid, pgprocno,
+					global_xmin);
+
+		xid = pgxact->xmin;		/* fetch just once */
+		if (!TransactionIdIsNormal(xid))
+			continue;
+
+		if (!TransactionIdFollowsOrEquals(xid, global_xmin))
+			elog(PANIC, "xmin consistency check failed - found %d xmin in "
+					"PGPROC %d ahead of GlobalXmin %d", xid, pgprocno,
+					global_xmin);
+	}
+}
+
+void
+SetLatestCompletedXid(TransactionId latestCompletedXid)
+{
+	if (!TransactionIdIsValid(latestCompletedXid))
+		return;
+	/*
+	 * First extend the commit logs. Even though we may not have actually
+	 * started any transactions in the new range, we must still extend the logs
+	 * so that later operations which may try to query them based on the new
+	 * value of latestCompletedXid do not throw errors
+	 */
+	ExtendLogs(latestCompletedXid);
+
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+
+	if (TransactionIdPrecedes(latestCompletedXid,
+				ShmemVariableCache->latestCompletedXid))
+	{
+		LWLockRelease(ProcArrayLock);
+		return;
+	}
+
+	ShmemVariableCache->latestCompletedXid = latestCompletedXid;
 	LWLockRelease(ProcArrayLock);
 }

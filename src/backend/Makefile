@@ -17,6 +17,10 @@ subdir = src/backend
 top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 
+ifneq ($(PORTNAME), win32)
+override CFLAGS += $(PTHREAD_CFLAGS)
+endif
+
 SUBDIRS = access bootstrap catalog parser commands executor foreign lib libpq \
 	pgxc main nodes optimizer port postmaster regex replication rewrite \
 	statistics storage tcop tsearch utils $(top_builddir)/src/timezone $(top_builddir)/src/interfaces/libpq
@@ -35,7 +39,8 @@ LOCALOBJS += utils/probes.o
 endif
 endif
 
-OBJS = $(SUBDIROBJS) $(LOCALOBJS) $(top_builddir)/src/port/libpgport_srv.a \
+OBJS = $(SUBDIROBJS) $(LOCALOBJS) \
+	$(top_builddir)/src/port/libpgport_srv.a \
        $(top_builddir)/src/common/libpgcommon_srv.a \
 	$(top_builddir)/src/interfaces/libpq/fe-connect.o \
 	$(top_builddir)/src/interfaces/libpq/fe-secure.o \
@@ -55,8 +60,8 @@ OBJS += $(top_builddir)/src/interfaces/libpq/fe-secure-openssl.o
 endif
 
 # We put libpgport and libpgcommon into OBJS, so remove it from LIBS; also add
-# libldap and ICU
-LIBS := $(filter-out -lpgport -lpgcommon, $(LIBS)) $(LDAP_LIBS_BE) $(ICU_LIBS)
+# libldap
+LIBS := $(filter-out -lpgport -lpgcommon, $(LIBS)) $(LDAP_LIBS_BE)
 
 # The backend doesn't need everything that's in LIBS, however
 LIBS := $(filter-out -lz -lreadline -ledit -ltermcap -lncurses -lcurses, $(LIBS))
@@ -74,7 +79,7 @@ ifneq ($(PORTNAME), win32)
 ifneq ($(PORTNAME), aix)
 
 postgres: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LDFLAGS_EX) -L$(top_builddir)/src/gtm/libpg $(export_dynamic) $(call expand_subsys,$^) $(LIBS) -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LDFLAGS_EX) -L$(top_builddir)/src/gtm/libpg $(export_dynamic) $(call expand_subsys,$^) $(LIBS) $(ICU_LIBS) -o $@
 
 endif
 endif

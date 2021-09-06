@@ -88,4 +88,13 @@ extern void ResourceOwnerRememberDSM(ResourceOwner owner,
 extern void ResourceOwnerForgetDSM(ResourceOwner owner,
 					   dsm_segment *);
 
+#ifdef XCP
+/* support for prepared statement management */
+extern void ResourceOwnerEnlargePreparedStmts(ResourceOwner owner);
+extern void ResourceOwnerRememberPreparedStmt(ResourceOwner owner,
+						  char *stmt);
+extern void ResourceOwnerForgetPreparedStmt(ResourceOwner owner,
+						char *stmt);
+#endif
+
 #endif							/* RESOWNER_PRIVATE_H */

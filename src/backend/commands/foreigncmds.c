@@ -1623,8 +1623,11 @@ ImportForeignSchema(ImportForeignSchemaStmt *stmt)
 			/* Execute statement */
 			ProcessUtility(pstmt,
 						   cmd,
-						   PROCESS_UTILITY_SUBCOMMAND, NULL, NULL,
-						   None_Receiver, NULL);
+						   PROCESS_UTILITY_SUBCOMMAND, NULL,
+						   NULL,
+						   None_Receiver,
+						   false,
+						   NULL);
 
 			/* Be sure to advance the command counter between subcommands */
 			CommandCounterIncrement();

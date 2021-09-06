@@ -19,6 +19,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#ifdef PGXC
+#include "access/reloptions.h"
+#endif /* PGXC */
+
 #include "ag_const.h"
 #include "access/amapi.h"
 #include "access/htup_details.h"
@@ -29,6 +33,9 @@
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_authid.h"
+#ifdef PGXC
+#include "catalog/pg_aggregate.h"
+#endif /* PGXC */
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
@@ -45,6 +52,9 @@
 #include "common/keywords.h"
 #include "executor/spi.h"
 #include "funcapi.h"
+#ifdef PGXC
+#include "nodes/execnodes.h"
+#endif
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -54,8 +64,13 @@
 #include "parser/parse_agg.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
+#include "parser/parse_type.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#endif
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "rewrite/rewriteSupport.h"
@@ -121,6 +136,12 @@ typedef struct
 	bool		varprefix;		/* TRUE to print prefixes on Vars */
 	ParseExprKind special_exprkind; /* set only for exprkinds needing special
 									 * handling */
+#ifdef PGXC
+	bool		finalise_aggs;	/* should Datanode finalise the aggregates? */
+	bool		sortgroup_colno;/* instead of expression use resno for
+								 * sortgrouprefs.
+								 */
+#endif /* PGXC */
 
 	bool		cypherexpr;		/* true if deparsing is for Cypher expr */
 } deparse_context;
@@ -362,6 +383,9 @@ static void flatten_join_using_qual(Node *qual,
 						List **leftvars, List **rightvars);
 static char *get_rtable_name(int rtindex, deparse_context *context);
 static void set_deparse_planstate(deparse_namespace *dpns, PlanState *ps);
+#ifdef PGXC
+static void set_deparse_plan(deparse_namespace *dpns, Plan *plan);
+#endif
 static void push_child_plan(deparse_namespace *dpns, PlanState *ps,
 				deparse_namespace *save_dpns);
 static void pop_child_plan(deparse_namespace *dpns,
@@ -376,7 +400,11 @@ static void make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 			 int prettyFlags, int wrapColumn);
 static void get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 			  TupleDesc resultDesc,
-			  int prettyFlags, int wrapColumn, int startIndent);
+			  int prettyFlags, int wrapColumn, int startIndent
+#ifdef PGXC
+			  , bool finalise_aggregates, bool sortgroup_colno
+#endif /* PGXC */
+				);
 static void get_values_def(List *values_lists, deparse_context *context);
 static void get_with_clause(Query *query, deparse_context *context);
 static void get_select_query_def(Query *query, deparse_context *context,
@@ -3210,6 +3238,101 @@ select_rtable_names_for_explain(List *rtable, Bitmapset *rels_used)
 	return dpns.rtable_names;
 }
 
+#ifdef PGXC
+/*
+ * This is a special case deparse context to be used at the planning time to
+ * generate query strings and expressions for remote shipping.
+ *
+ * XXX We should be careful while using this since the support is quite
+ * limited. The only supported use case at this point is for remote join
+ * reduction and some simple plan trees rooted by Agg node having a single
+ * RemoteQuery node as leftree.
+ */
+List *
+deparse_context_for_plan(Node *plan, List *ancestors,
+							  List *rtable)
+{
+	deparse_namespace *dpns;
+
+	dpns = (deparse_namespace *) palloc0(sizeof(deparse_namespace));
+
+	/* Initialize fields that stay the same across the whole plan tree */
+	dpns->rtable = rtable;
+	dpns->ctes = NIL;
+
+	/* Set our attention on the specific plan node passed in */
+	set_deparse_plan(dpns, (Plan *) plan);
+	dpns->ancestors = ancestors;
+
+	/* Return a one-deep namespace stack */
+	return list_make1(dpns);
+}
+
+/*
+ * Set deparse context for Plan. Only those plan nodes which are immediate (or
+ * through simple nodes) parents of RemoteQuery nodes are supported right now.
+ *
+ * This is a kind of work-around since the new deparse interface (since 9.1)
+ * expects a PlanState node. But planstates are instantiated only at execution
+ * time when InitPlan is called. But we are required to deparse the query
+ * during planning time, so we hand-cook these dummy PlanState nodes instead of
+ * init-ing the plan. Another approach could have been to delay the query
+ * generation to the execution time, but we are not yet sure if this can be
+ * safely done, especially for remote join reduction.
+ */
+static void
+set_deparse_plan(deparse_namespace *dpns, Plan *plan)
+{
+
+	if (IsA(plan, NestLoop))
+	{
+		NestLoop *nestloop = (NestLoop *) plan;
+
+		dpns->planstate = (PlanState *) makeNode(NestLoopState);
+		dpns->planstate->plan = plan;
+
+		dpns->outer_planstate = (PlanState *) makeNode(PlanState);
+		dpns->outer_planstate->plan = nestloop->join.plan.lefttree;
+
+		dpns->inner_planstate = (PlanState *) makeNode(PlanState);
+		dpns->inner_planstate->plan = nestloop->join.plan.righttree;
+	}
+	else if (IsA(plan, RemoteQuery))
+	{
+		dpns->planstate = (PlanState *) makeNode(PlanState);
+		dpns->planstate->plan = plan;
+	}
+	else if (IsA(plan, Agg) || IsA(plan, Group))
+	{
+		/*
+		 * We expect plan tree as Group/Agg->Sort->Result->Material->RemoteQuery,
+		 * Result, Material nodes are optional. Sort is compulsory for Group but not
+		 * for Agg.
+		 * anything else is not handled right now.
+		 */
+		Plan *temp_plan = plan->lefttree;
+		Plan *remote_scan = NULL;
+
+		if (temp_plan && IsA(temp_plan, Sort))
+			temp_plan = temp_plan->lefttree;
+		if (temp_plan && IsA(temp_plan, Result))
+			temp_plan = temp_plan->lefttree;
+		if (temp_plan && IsA(temp_plan, Material))
+			temp_plan = temp_plan->lefttree;
+		if (temp_plan && IsA(temp_plan, RemoteQuery))
+			remote_scan = temp_plan;
+
+		if (!remote_scan)
+			elog(ERROR, "Deparse of this query at planning is not supported yet");
+
+		dpns->planstate = (PlanState *) makeNode(PlanState);
+		dpns->planstate->plan = plan;
+	}
+	else
+		elog(ERROR, "Deparse of this query at planning not supported yet");
+}
+
+#endif
 /*
  * set_rtable_names: select RTE aliases to be used in printing a query
  *
@@ -4781,7 +4904,11 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		{
 			query = (Query *) lfirst(action);
 			get_query_def(query, buf, NIL, viewResultDesc,
-						  prettyFlags, WRAP_COLUMN_DEFAULT, 0);
+						  prettyFlags, WRAP_COLUMN_DEFAULT, 0
+#ifdef PGXC
+						  , false, false
+#endif /* PGXC */
+				);
 			if (prettyFlags)
 				appendStringInfoString(buf, ";\n");
 			else
@@ -4799,8 +4926,12 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 
 		query = (Query *) linitial(actions);
 		get_query_def(query, buf, NIL, viewResultDesc,
-					  prettyFlags, WRAP_COLUMN_DEFAULT, 0);
-		appendStringInfoChar(buf, ';');
+					  prettyFlags, WRAP_COLUMN_DEFAULT, 0
+#ifdef PGXC
+						, false, false
+#endif /* PGXC */
+		);
+		appendStringInfo(buf, ";");
 	}
 
 	heap_close(ev_relation, AccessShareLock);
@@ -4873,13 +5004,188 @@ make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 	ev_relation = heap_open(ev_class, AccessShareLock);
 
 	get_query_def(query, buf, NIL, RelationGetDescr(ev_relation),
-				  prettyFlags, wrapColumn, 0);
+				  prettyFlags, wrapColumn, 0
+#ifdef PGXC
+				  , false, false
+#endif /* PGXC */
+				  );
 	appendStringInfoChar(buf, ';');
 
 	heap_close(ev_relation, AccessShareLock);
 }
 
+#ifdef PGXC
+/* ----------
+ * deparse_query			- Parse back one query parsetree
+ *
+ * Purpose of this function is to build up statement for a RemoteQuery
+ * It just calls get_query_def without pretty print flags
+ * ----------
+ */
+void
+deparse_query(Query *query, StringInfo buf, List *parentnamespace,
+				bool finalise_aggs, bool sortgroup_colno)
+{
+	get_query_def(query, buf, parentnamespace, NULL, 0, 0, 0, finalise_aggs,
+			sortgroup_colno);
+}
 
+/* code borrowed from get_insert_query_def */
+void
+get_query_def_from_valuesList(Query *query, StringInfo buf)
+{
+
+	RangeTblEntry *select_rte = NULL;
+	RangeTblEntry *values_rte = NULL;
+	RangeTblEntry *rte;
+	char	   *sep;
+	ListCell   *values_cell;
+	ListCell   *l;
+	List	   *strippedexprs;
+	deparse_context context;
+	deparse_namespace dpns;
+
+	/*
+	 * Before we begin to examine the query, acquire locks on referenced
+	 * relations, and fix up deleted columns in JOIN RTEs.	This ensures
+	 * consistent results.	Note we assume it's OK to scribble on the passed
+	 * querytree!
+	 */
+	AcquireRewriteLocks(query, false, false);
+
+	context.buf = buf;
+	context.namespaces = NIL;
+	context.windowClause = NIL;
+	context.windowTList = NIL;
+	context.varprefix = (list_length(query->rtable) != 1);
+	context.prettyFlags = 0;
+	context.indentLevel = 0;
+	context.wrapColumn = 0;
+
+	dpns.rtable = query->rtable;
+	dpns.ctes = query->cteList;
+	dpns.planstate = NULL;
+	dpns.ancestors = NIL;
+	dpns.outer_planstate = dpns.inner_planstate = NULL;
+
+	/*
+	 * If it's an INSERT ... SELECT or VALUES (...), (...), ... there will be
+	 * a single RTE for the SELECT or VALUES.
+	 */
+	foreach(l, query->rtable)
+	{
+		rte = (RangeTblEntry *) lfirst(l);
+
+		if (rte->rtekind == RTE_SUBQUERY)
+		{
+			if (select_rte)
+				elog(ERROR, "too many subquery RTEs in INSERT");
+			select_rte = rte;
+		}
+
+		if (rte->rtekind == RTE_VALUES)
+		{
+			if (values_rte)
+				elog(ERROR, "too many values RTEs in INSERT");
+			values_rte = rte;
+		}
+	}
+	if (select_rte && values_rte)
+		elog(ERROR, "both subquery and values RTEs in INSERT");
+
+	/*
+	 * Start the query with INSERT INTO relname
+	 */
+	rte = rt_fetch(query->resultRelation, query->rtable);
+	Assert(rte->rtekind == RTE_RELATION);
+
+	appendStringInfo(buf, "INSERT INTO %s (",
+					 generate_relation_name(rte->relid, NIL));
+
+	/*
+	 * Add the insert-column-names list.  To handle indirection properly, we
+	 * need to look for indirection nodes in the top targetlist (if it's
+	 * INSERT ... SELECT or INSERT ... single VALUES), or in the first
+	 * expression list of the VALUES RTE (if it's INSERT ... multi VALUES). We
+	 * assume that all the expression lists will have similar indirection in
+	 * the latter case.
+	 */
+	if (values_rte)
+		values_cell = list_head((List *) linitial(values_rte->values_lists));
+	else
+		values_cell = NULL;
+	strippedexprs = NIL;
+	sep = "";
+	foreach(l, query->targetList)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(l);
+
+		elog(DEBUG1, "targetEntry type is %d\n)", tle->expr->type);
+		if (tle->resjunk || !IsA(tle->expr, Var))
+			continue;			/* ignore junk entries */
+
+		appendStringInfoString(buf, sep);
+		sep = ", ";
+
+		/*
+		 * Put out name of target column; look in the catalogs, not at
+		 * tle->resname, since resname will fail to track RENAME.
+		 */
+		appendStringInfoString(buf,quote_identifier(get_relid_attribute_name(rte->relid, tle->resno)));
+
+		/*
+		 * Print any indirection needed (subfields or subscripts), and strip
+		 * off the top-level nodes representing the indirection assignments.
+		 */
+		if (values_cell)
+		{
+			/* we discard the stripped expression in this case */
+			processIndirection((Node *) lfirst(values_cell), &context);
+			values_cell = lnext(values_cell);
+		}
+		else
+		{
+			/* we keep a list of the stripped expressions in this case */
+			strippedexprs = lappend(strippedexprs, processIndirection((Node *) tle->expr, &context));
+		}
+	}
+	appendStringInfo(buf, ") ");
+
+	if (select_rte)
+	{
+		/* Add the SELECT */
+		get_query_def(select_rte->subquery, buf, NIL, NULL,
+					  context.prettyFlags, context.wrapColumn,
+					  context.indentLevel,
+					  context.finalise_aggs, context.sortgroup_colno);
+	}
+	else if (values_rte)
+	{
+		/* A WITH clause is possible here */
+		get_with_clause(query, &context);
+		/* Add the multi-VALUES expression lists */
+		get_values_def(values_rte->values_lists, &context);
+	}
+	else
+	{
+		/* A WITH clause is possible here */
+		get_with_clause(query, &context);
+		/* Add the single-VALUES expression list */
+		appendContextKeyword(&context, "VALUES (",
+							 -PRETTYINDENT_STD, PRETTYINDENT_STD, 2);
+		get_rule_expr((Node *) strippedexprs, &context, false);
+		appendStringInfoChar(buf, ')');
+	}
+
+	/* Add RETURNING if present */
+	if (query->returningList)
+	{
+		appendContextKeyword(&context, " RETURNING",
+							 -PRETTYINDENT_STD, PRETTYINDENT_STD, 1);
+		get_target_list(query->returningList, &context, NULL);
+	}
+}
+#endif
 /* ----------
  * get_query_def			- Parse back one query parsetree
  *
@@ -4890,7 +5196,8 @@ make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 static void
 get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 			  TupleDesc resultDesc,
-			  int prettyFlags, int wrapColumn, int startIndent)
+			  int prettyFlags, int wrapColumn, int startIndent,
+			  bool finalise_aggs, bool sortgroup_colno)
 {
 	deparse_context context;
 	deparse_namespace dpns;
@@ -4920,6 +5227,8 @@ get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 	context.wrapColumn = wrapColumn;
 	context.indentLevel = startIndent;
 	context.special_exprkind = EXPR_KIND_NONE;
+	context.finalise_aggs = finalise_aggs;
+	context.sortgroup_colno = sortgroup_colno;
 	context.cypherexpr = false;
 
 	set_deparse_for_query(&dpns, query, parentnamespace);
@@ -5052,7 +5361,9 @@ get_with_clause(Query *query, deparse_context *context)
 			appendContextKeyword(context, "", 0, 0, 0);
 		get_query_def((Query *) cte->ctequery, buf, context->namespaces, NULL,
 					  context->prettyFlags, context->wrapColumn,
-					  context->indentLevel);
+					  context->indentLevel,
+					  context->finalise_aggs,
+					  context->sortgroup_colno);
 		if (PRETTY_INDENT(context))
 			appendContextKeyword(context, "", 0, 0, 0);
 		appendStringInfoChar(buf, ')');
@@ -5382,6 +5693,9 @@ get_target_list(List *targetList, deparse_context *context,
 	char	   *sep;
 	int			colno;
 	ListCell   *l;
+#ifdef PGXC
+	bool no_targetlist = true;
+#endif
 
 	/* we use targetbuf to hold each TLE's text temporarily */
 	initStringInfo(&targetbuf);
@@ -5396,6 +5710,12 @@ get_target_list(List *targetList, deparse_context *context,
 
 		if (tle->resjunk)
 			continue;			/* ignore junk entries */
+
+#ifdef PGXC
+		/* Found at least one element in the target list */
+		if (no_targetlist)
+			no_targetlist = false;
+#endif
 
 		appendStringInfoString(buf, sep);
 		sep = ", ";
@@ -5499,6 +5819,16 @@ get_target_list(List *targetList, deparse_context *context,
 		appendStringInfoString(buf, targetbuf.data);
 	}
 
+#ifdef PGXC
+	/*
+	 * Because the empty target list can generate invalid SQL
+	 * clause. Here, just fill a '*' to process a table without
+	 * any columns, this statement will be sent to Datanodes
+	 * and treated correctly on remote nodes.
+	 */
+	if (no_targetlist)
+		appendStringInfo(buf, " *");
+#endif
 	/* clean up */
 	pfree(targetbuf.data);
 }
@@ -5532,7 +5862,9 @@ get_setop_query(Node *setOp, Query *query, deparse_context *context,
 			appendStringInfoChar(buf, '(');
 		get_query_def(subquery, buf, context->namespaces, resultDesc,
 					  context->prettyFlags, context->wrapColumn,
-					  context->indentLevel);
+					  context->indentLevel,
+					  context->finalise_aggs,
+					  context->sortgroup_colno);
 		if (need_paren)
 			appendStringInfoChar(buf, ')');
 	}
@@ -6054,7 +6386,9 @@ get_insert_query_def(Query *query, deparse_context *context)
 		/* Add the SELECT */
 		get_query_def(select_rte->subquery, buf, NIL, NULL,
 					  context->prettyFlags, context->wrapColumn,
-					  context->indentLevel);
+					  context->indentLevel,
+					  context->finalise_aggs,
+					  context->sortgroup_colno);
 	}
 	else if (values_rte)
 	{
@@ -6431,6 +6765,180 @@ get_utility_query_def(Query *query, deparse_context *context)
 			simple_quote_literal(buf, stmt->payload);
 		}
 	}
+#ifdef PGXC
+	else if (query->utilityStmt && IsA(query->utilityStmt, CreateStmt))
+	{
+		CreateStmt *stmt = (CreateStmt *) query->utilityStmt;
+		ListCell   *column;
+		const char *delimiter = "";
+		RangeVar   *relation = stmt->relation;
+		bool		istemp = (relation->relpersistence == RELPERSISTENCE_TEMP);
+		bool		isunlogged = (relation->relpersistence == RELPERSISTENCE_UNLOGGED);
+
+		appendStringInfo(buf, "CREATE %s %s %s TABLE %s ",
+				stmt->islocal ? "LOCAL" : "",
+				istemp ? "TEMP" : "",
+				isunlogged ? "UNLOGGED" : "",
+				stmt->if_not_exists ? "IF NOT EXISTS " : "");
+
+		if (!istemp && relation->schemaname && relation->schemaname[0])
+			appendStringInfo(buf, "%s.", quote_identifier(relation->schemaname));
+		appendStringInfo(buf, "%s", quote_identifier(relation->relname));
+
+		appendStringInfo(buf, "(");
+		foreach(column, stmt->tableElts)
+		{
+			Node *node = (Node *) lfirst(column);
+
+			appendStringInfo(buf, "%s", delimiter);
+			delimiter = ", ";
+
+			if (IsA(node, ColumnDef))
+			{
+				ColumnDef *coldef = (ColumnDef *) node;
+				TypeName *typename = coldef->typeName;
+#ifdef XCP
+				appendStringInfo(buf, "%s %s",
+								 quote_identifier(coldef->colname),
+								 format_type_with_typemod(typename->typeOid,
+														  typename->typemod));
+#else
+
+				/* error out if we have no recourse at all */
+				if (!OidIsValid(typename->typeOid))
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("improper type oid: \"%u\"", typename->typeOid)));
+
+				/* get typename from the oid */
+				type = typeidType(typename->typeOid);
+
+				if (!HeapTupleIsValid(type))
+					ereport(ERROR,
+							(errcode(ERRCODE_UNDEFINED_OBJECT),
+							 errmsg("type \"%u\" does not exist",
+								 typename->typeOid)));
+				appendStringInfo(buf, "%s %s", quote_identifier(coldef->colname),
+						typeTypeName(type));
+				ReleaseSysCache(type);
+#endif
+			}
+			else
+				elog(ERROR, "Invalid table column definition.");
+		}
+		appendStringInfo(buf, ")");
+
+		/* Append storage parameters, like for instance WITH (OIDS) */
+		if (list_length(stmt->options) > 0)
+		{
+			Datum        reloptions;
+			static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
+
+			reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
+										 false, false);
+
+			if (reloptions)
+			{
+				Datum   sep, txt;
+				/* Below is inspired from flatten_reloptions() */
+				sep = CStringGetTextDatum(", ");
+				txt = OidFunctionCall2(F_ARRAY_TO_TEXT, reloptions, sep);
+				appendStringInfo(buf, " WITH (%s)", TextDatumGetCString(txt));
+			}
+		}
+
+		/* add the on commit clauses for temporary tables */
+		switch (stmt->oncommit)
+		{
+			case ONCOMMIT_NOOP:
+				/* do nothing */
+				break;
+
+			case ONCOMMIT_PRESERVE_ROWS:
+				appendStringInfo(buf, " ON COMMIT PRESERVE ROWS");
+				break;
+
+			case ONCOMMIT_DELETE_ROWS:
+				appendStringInfo(buf, " ON COMMIT DELETE ROWS");
+				break;
+
+			case ONCOMMIT_DROP:
+				appendStringInfo(buf, " ON COMMIT DROP");
+				break;
+		}
+
+		if (stmt->distributeby)
+		{
+			/* add the on commit clauses for temporary tables */
+			switch (stmt->distributeby->disttype)
+			{
+				case DISTTYPE_REPLICATION:
+					appendStringInfo(buf, " DISTRIBUTE BY REPLICATION");
+					break;
+
+				case DISTTYPE_HASH:
+					appendStringInfo(buf, " DISTRIBUTE BY HASH(%s)", stmt->distributeby->colname);
+					break;
+
+				case DISTTYPE_ROUNDROBIN:
+					appendStringInfo(buf, " DISTRIBUTE BY ROUNDROBIN");
+					break;
+
+				case DISTTYPE_MODULO:
+					appendStringInfo(buf, " DISTRIBUTE BY MODULO(%s)",
+							quote_identifier(stmt->distributeby->colname));
+					break;
+
+				default:
+					ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR),
+								errmsg("Invalid distribution type")));
+
+			}
+		}
+
+		if (stmt->subcluster)
+		{
+			ListCell   *cell;
+
+			switch (stmt->subcluster->clustertype)
+			{
+				case SUBCLUSTER_NODE:
+					appendStringInfo(buf, " TO NODE (");
+
+					/* Add node members */
+					Assert(stmt->subcluster->members);
+					foreach(cell, stmt->subcluster->members)
+					{
+						appendStringInfo(buf, " %s",
+								quote_identifier(strVal(lfirst(cell))));
+						if (cell->next)
+							appendStringInfo(buf, ",");
+					}
+					appendStringInfo(buf, ")");
+					break;
+
+				case SUBCLUSTER_GROUP:
+					appendStringInfo(buf, " TO GROUP");
+
+					/* Add group members */
+					Assert(stmt->subcluster->members);
+					foreach(cell, stmt->subcluster->members)
+					{
+						appendStringInfo(buf, " %s",
+								quote_identifier(strVal(lfirst(cell))));
+						if (cell->next)
+							appendStringInfo(buf, ",");
+					}
+					break;
+
+				case SUBCLUSTER_NONE:
+				default:
+					/* Nothing to do */
+					break;
+			}
+		}
+	}
+#endif
 	else
 	{
 		/* Currently only NOTIFY utility commands can appear in rules */
@@ -6536,6 +7044,39 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 		pop_child_plan(dpns, &save_dpns);
 		return NULL;
 	}
+
+#ifdef PGXC
+	if (rte->rtekind == RTE_REMOTE_DUMMY &&
+		attnum > list_length(rte->eref->colnames) &&
+		dpns->planstate)
+	{
+		TargetEntry *tle;
+		RemoteQuery *rqplan;
+		Assert(IsA(dpns->planstate, RemoteQueryState));
+		Assert(netlevelsup == 0);
+
+		/*
+		 * Get the expression representing the given Var from base_tlist of the
+		 * RemoteQuery
+		 */
+		rqplan = (RemoteQuery *)dpns->planstate->plan;
+		Assert(IsA(rqplan, RemoteQuery));
+		tle = get_tle_by_resno(rqplan->base_tlist, var->varattno);
+		if (!tle)
+			elog(ERROR, "bogus varattno for remotequery var: %d", var->varattno);
+		/*
+		 * Force parentheses because our caller probably assumed a Var is a
+		 * simple expression.
+		 */
+		if (!IsA(tle->expr, Var))
+			appendStringInfoChar(buf, '(');
+		get_rule_expr((Node *) tle->expr, context, true);
+		if (!IsA(tle->expr, Var))
+			appendStringInfoChar(buf, ')');
+
+		return NULL;
+	}
+#endif /* PGXC */
 
 	/*
 	 * If it's an unnamed join, look at the expansion of the alias variable.
@@ -7082,6 +7623,11 @@ get_name_for_var_field(Var *var, int fieldno,
 				}
 			}
 			break;
+#ifdef PGXC
+		case RTE_REMOTE_DUMMY:
+			elog(ERROR, "Invalid RTE found");
+			break;
+#endif /* PGXC */
 	}
 
 	/*
@@ -8400,6 +8946,22 @@ get_rule_expr(Node *node, deparse_context *context,
 			}
 			break;
 
+		case T_NextValueExpr:
+			{
+				/*
+				 * This gets invoked by Fast Query Shipping code to deparse a
+				 * query. It seems enough to just generate a "DEFAULT" clause
+				 * and let the remote datanode handle finding the correct
+				 * sequence for replica identity.
+				 *
+				 * XXX PG10MERGE: If we do see issues with this, it might be
+				 * worthwhile to consider generating an expression such as,
+				 * nextval('sequence_name'::regclass)
+				 */
+				appendStringInfoString(buf, "DEFAULT");
+			}
+			break;
+
 		case T_XmlExpr:
 			{
 				XmlExpr    *xexpr = (XmlExpr *) node;
@@ -8680,22 +9242,6 @@ get_rule_expr(Node *node, deparse_context *context,
 				else
 					appendStringInfo(buf, "CURRENT OF $%d",
 									 cexpr->cursor_param);
-			}
-			break;
-
-		case T_NextValueExpr:
-			{
-				NextValueExpr *nvexpr = (NextValueExpr *) node;
-
-				/*
-				 * This isn't exactly nextval(), but that seems close enough
-				 * for EXPLAIN's purposes.
-				 */
-				appendStringInfoString(buf, "nextval(");
-				simple_quote_literal(buf,
-									 generate_relation_name(nvexpr->seqid,
-															NIL));
-				appendStringInfoChar(buf, ')');
 			}
 			break;
 
@@ -9301,6 +9847,10 @@ get_agg_expr(Aggref *aggref, deparse_context *context,
 	StringInfo	buf = context->buf;
 	Oid			argtypes[FUNC_MAX_ARGS];
 	int			nargs;
+#ifdef PGXC
+	bool		added_finalfn = false;
+#endif /* PGXC */
+
 	bool		use_variadic;
 
 	/*
@@ -9393,6 +9943,11 @@ get_agg_expr(Aggref *aggref, deparse_context *context,
 	}
 
 	appendStringInfoChar(buf, ')');
+
+#ifdef PGXC
+	if (added_finalfn)
+		appendStringInfoChar(buf, ')');
+#endif /* PGXC */
 }
 
 /*
@@ -9965,7 +10520,9 @@ get_sublink_expr(SubLink *sublink, deparse_context *context)
 
 	get_query_def(query, buf, context->namespaces, NULL,
 				  context->prettyFlags, context->wrapColumn,
-				  context->indentLevel);
+				  context->indentLevel,
+				  context->finalise_aggs,
+				  context->sortgroup_colno);
 
 	if (need_paren)
 		appendStringInfoString(buf, "))");
@@ -10223,7 +10780,9 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				appendStringInfoChar(buf, '(');
 				get_query_def(rte->subquery, buf, context->namespaces, NULL,
 							  context->prettyFlags, context->wrapColumn,
-							  context->indentLevel);
+							  context->indentLevel,
+							  context->finalise_aggs,
+							  context->sortgroup_colno);
 				appendStringInfoChar(buf, ')');
 				break;
 			case RTE_FUNCTION:
@@ -10360,6 +10919,22 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 			if (strcmp(refname, get_relation_name(rte->relid)) != 0)
 				printalias = true;
 		}
+#ifdef PGXC
+		else if (rte->rtekind == RTE_SUBQUERY && rte->eref->aliasname)
+		{
+			/*
+			 *
+			 * This condition arises when the from clause is a view. The
+			 * corresponding subquery RTE has its eref set to view name.
+			 * The remote query generated has this subquery of which the
+			 * columns can be referred to as view_name.col1, so it should
+			 * be possible to refer to this subquery object.
+			 */
+			appendStringInfo(buf, " %s",
+							 quote_identifier(rte->eref->aliasname));
+			printalias = true;
+		}
+#endif
 		else if (rte->rtekind == RTE_FUNCTION)
 		{
 			/*

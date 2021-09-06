@@ -22,8 +22,13 @@
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/xact.h"
+#ifdef PGXC
+#include "access/transam.h"
+#include "pgxc/pgxc.h"
+#endif
 #include "access/xlog.h"
 #include "catalog/dependency.h"
+#include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_collation.h"
@@ -48,6 +53,9 @@
 #include "parser/parse_func.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#ifdef XCP
+#include "storage/proc.h"
+#endif
 #include "storage/sinval.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -199,6 +207,9 @@ static void RemoveTempRelationsCallback(int code, Datum arg);
 static void NamespaceCallback(Datum arg, int cacheid, uint32 hashvalue);
 static bool MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 			   int **argnumbers);
+#ifdef XCP
+static void FindTemporaryNamespace(void);
+#endif
 
 
 /*
@@ -4048,7 +4059,44 @@ ResetTempTableNamespace(void)
 {
 	if (OidIsValid(myTempNamespace))
 		RemoveTempRelations(myTempNamespace);
+#ifdef XCP
+	else if (OidIsValid(MyCoordId))
+	{
+		char		namespaceName[NAMEDATALEN];
+		Oid			namespaceId;
+
+		snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d",
+				 MyFirstBackendId);
+
+		namespaceId = get_namespace_oid(namespaceName, true);
+		if (OidIsValid(namespaceId))
+			RemoveTempRelations(namespaceId);
+	}
+#endif
 }
+
+
+#ifdef XCP
+/*
+ * Reset myTempNamespace so it will be reinitialized after backend is assigned
+ * to a different session.
+ */
+void
+ForgetTempTableNamespace(void)
+{
+	/* If the namespace exists and need to be cleaned up do that */
+	if (OidIsValid(myTempNamespace) &&
+			myTempNamespaceSubID != InvalidSubTransactionId)
+	{
+		elog(WARNING, "leaked temp namespace clean up callback");
+		RemoveTempRelations(myTempNamespace);
+	}
+	myTempNamespace = InvalidOid;
+	myTempToastNamespace = InvalidOid;
+	baseSearchPathValid = false;		/* need to rebuild list */
+	myTempNamespaceSubID = InvalidSubTransactionId;
+}
+#endif
 
 
 /*
@@ -4397,3 +4445,43 @@ pg_is_other_temp_schema(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(isOtherTempNamespace(oid));
 }
+
+
+#ifdef XCP
+/*
+ * FindTemporaryNamespace
+ * 	If this is secondary backend of distributed session check if primary backend
+ * 	of the same session created temporary namespace and wire it up if it is the
+ * 	case, instead of creating new.
+ */
+static void
+FindTemporaryNamespace(void)
+{
+	char		namespaceName[NAMEDATALEN];
+
+	Assert(!OidIsValid(myTempNamespace));
+
+	/*
+	 * We need distribution session identifier to find the namespace.
+	 */
+	if (!OidIsValid(MyCoordId))
+		return;
+
+	/*
+	 * Look up namespace by name. This code should be in synch with
+	 * InitTempTableNamespace.
+	 */
+	snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d",
+			 MyFirstBackendId);
+	myTempNamespace = get_namespace_oid(namespaceName, true);
+	/* Same for the toast namespace */
+	if (OidIsValid(myTempNamespace))
+	{
+		snprintf(namespaceName, sizeof(namespaceName), "pg_toast_temp_%d",
+				 MyFirstBackendId);
+		myTempToastNamespace = get_namespace_oid(namespaceName, true);
+		baseSearchPathValid = false;	/* need to rebuild list */
+	}
+}
+#endif
+

@@ -38,6 +38,17 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+#ifdef PGXC
+#include "pgxc/locator.h"
+#include "pgxc/nodemgr.h"
+#include "pgxc/pgxc.h"
+#include "nodes/nodes.h"
+#include "optimizer/planner.h"
+#include "optimizer/var.h"
+#include "tcop/tcopprot.h"
+#include "tcop/utility.h"
+#endif
+
 
 /* We use a list of these to detect recursion in RewriteQuery */
 typedef struct rewrite_event
@@ -3651,3 +3662,194 @@ QueryRewrite(Query *parsetree)
 
 	return results;
 }
+
+#ifdef PGXC
+/*
+ * Rewrite the CREATE TABLE AS and SELECT INTO queries as a
+ * INSERT INTO .. SELECT query. The target table must be created first using
+ * utility command processing. This takes care of creating the target table on
+ * all the Coordinators and the Datanodes.
+ */
+List *
+QueryRewriteCTAS(Query *parsetree)
+{
+	RangeVar *relation;
+	CreateStmt *create_stmt;
+	PlannedStmt *wrapper;
+	List *tableElts = NIL;
+	StringInfoData cquery;
+	ListCell *col;
+	Query *cparsetree;
+	List *raw_parsetree_list, *tlist;
+	char *selectstr;
+	CreateTableAsStmt *stmt;
+	IntoClause *into;
+	ListCell *lc;
+
+	if (parsetree->commandType != CMD_UTILITY ||
+		!IsA(parsetree->utilityStmt, CreateTableAsStmt))
+		elog(ERROR, "Unexpected commandType or intoClause is not set properly");
+
+	/* Get the target table */
+	stmt = (CreateTableAsStmt *) parsetree->utilityStmt;
+
+	if (stmt->relkind == OBJECT_MATVIEW)
+		return list_make1(parsetree);
+
+	relation = stmt->into->rel;
+
+	if (stmt->if_not_exists)
+	{
+		Oid			nspid;
+
+		nspid = RangeVarGetCreationNamespace(stmt->into->rel);
+
+		if (get_relname_relid(stmt->into->rel->relname, nspid))
+		{
+			ereport(NOTICE,
+					(errcode(ERRCODE_DUPLICATE_TABLE),
+					 errmsg("relation \"%s\" already exists, skipping",
+							stmt->into->rel->relname)));
+			return NIL;
+		}
+	}
+
+	/* Start building a CreateStmt for creating the target table */
+	create_stmt = makeNode(CreateStmt);
+	create_stmt->relation = relation;
+	create_stmt->islocal = stmt->islocal;
+	create_stmt->if_not_exists = stmt->if_not_exists;
+	into = stmt->into;
+
+	/* Obtain the target list of new table */
+	Assert(IsA(stmt->query, Query));
+	cparsetree = (Query *) stmt->query;
+	tlist = cparsetree->targetList;
+
+	/*
+	 * Based on the targetList, populate the column information for the target
+	 * table. If a column name list was specified in CREATE TABLE AS, override
+	 * the column names derived from the query. (Too few column names are OK, too
+	 * many are not.).
+	 */
+	lc = list_head(into->colNames);
+	foreach(col, tlist)
+	{
+		TargetEntry *tle = (TargetEntry *)lfirst(col);
+		ColumnDef   *coldef;
+		TypeName    *typename;
+
+		/* Ignore junk columns from the targetlist */
+		if (tle->resjunk)
+			continue;
+
+		coldef = makeNode(ColumnDef);
+		typename = makeNode(TypeName);
+
+		/* Take the column name specified if any */
+		if (lc)
+		{
+			coldef->colname = strVal(lfirst(lc));
+			lc = lnext(lc);
+		}
+		else
+			coldef->colname = pstrdup(tle->resname);
+
+		coldef->inhcount = 0;
+		coldef->is_local = true;
+		coldef->is_not_null = false;
+		coldef->raw_default = NULL;
+		coldef->cooked_default = NULL;
+		coldef->constraints = NIL;
+
+		/*
+		 * Set typeOid and typemod. The name of the type is derived while
+		 * generating query
+		 */
+		typename->typeOid = exprType((Node *)tle->expr);
+		typename->typemod = exprTypmod((Node *)tle->expr);
+
+		coldef->typeName = typename;
+
+		tableElts = lappend(tableElts, coldef);
+	}
+
+	if (lc != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("CREATE TABLE AS specifies too many column names")));
+
+	/*
+	 * Set column information and the distribution mechanism (which will be
+	 * NULL for SELECT INTO and the default mechanism will be picked)
+	 */
+	create_stmt->tableElts = tableElts;
+	create_stmt->distributeby = stmt->into->distributeby;
+	create_stmt->subcluster = stmt->into->subcluster;
+
+	create_stmt->tablespacename = stmt->into->tableSpaceName;
+	create_stmt->oncommit = stmt->into->onCommit;
+	create_stmt->options = stmt->into->options;
+
+	/*
+	 * Check consistency of arguments
+	 */
+	if (create_stmt->oncommit != ONCOMMIT_NOOP
+			&& create_stmt->relation->relpersistence != RELPERSISTENCE_TEMP)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				 errmsg("ON COMMIT can only be used on temporary tables")));
+
+	/* Get a copy of the parsetree which we can freely modify  */
+	cparsetree = copyObject(parsetree);
+
+	/*
+	 * Now build a utility statement in order to run the CREATE TABLE DDL on
+	 * the local and remote nodes. We keep others fields as it is since they
+	 * are ignored anyways by deparse_query.
+	 */
+	cparsetree->commandType = CMD_UTILITY;
+	cparsetree->utilityStmt = (Node *) create_stmt;
+
+	initStringInfo(&cquery);
+	deparse_query(cparsetree, &cquery, NIL, false, false);
+
+
+	/* finally, wrap it in a dummy PlannedStmt */
+	wrapper = makeNode(PlannedStmt);
+	wrapper->commandType = CMD_UTILITY;
+	wrapper->canSetTag = false;
+	wrapper->utilityStmt = (Node *) create_stmt;
+	wrapper->stmt_location = -1;
+	wrapper->stmt_len = -1;
+
+	/* Finally, fire off the query to run the DDL */
+	ProcessUtility(wrapper, cquery.data, PROCESS_UTILITY_QUERY,
+			NULL, NULL, NULL, false, NULL);
+
+	/*
+	 * Now fold the CTAS statement into an INSERT INTO statement. The
+	 * utility is no more required.
+	 */
+	parsetree->utilityStmt = NULL;
+
+	/* Get the SELECT query string */
+	initStringInfo(&cquery);
+	deparse_query((Query *)stmt->query, &cquery, NIL, false, false);
+	selectstr = pstrdup(cquery.data);
+
+	/* Now, finally build the INSERT INTO statement */
+	initStringInfo(&cquery);
+
+	appendStringInfo(&cquery, "INSERT INTO %s.%s",
+				quote_identifier(get_namespace_name(RangeVarGetCreationNamespace(relation))),
+				quote_identifier(relation->relname));
+
+	appendStringInfo(&cquery, " %s %s", selectstr,
+			into->skipData ? "LIMIT 0" : "");
+
+	raw_parsetree_list = pg_parse_query(cquery.data);
+	return pg_analyze_and_rewrite(linitial(raw_parsetree_list), cquery.data,
+			NULL, 0, NULL);
+}
+#endif

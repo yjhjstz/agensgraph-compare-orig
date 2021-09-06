@@ -34,7 +34,38 @@
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/readfuncs.h"
+#ifdef PGXC
+#include "access/htup.h"
+#endif
+#ifdef XCP
+#include "fmgr.h"
+#include "catalog/namespace.h"
+#include "catalog/pg_class.h"
+#include "nodes/plannodes.h"
+#include "pgxc/execRemote.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
 
+
+/*
+ * When we sending query plans between nodes we need to send OIDs of various
+ * objects - relations, data types, functions, etc.
+ * On different nodes OIDs of these objects may differ, so we need to send an
+ * identifier, depending on object type, allowing to lookup OID on target node.
+ * On the other hand we want to save space when storing rules, or in other cases
+ * when we need to encode and decode nodes on the same node.
+ * For now default format is not portable, as it is in original Postgres code.
+ * Later we may want to add extra parameter in stringToNode() function
+ */
+static bool portable_input = false;
+bool
+set_portable_input(bool value)
+{
+	bool old_portable_input = portable_input;
+	portable_input = value;
+	return old_portable_input;
+}
+#endif /* XCP */
 
 /*
  * Macros to simplify reading of different kinds of fields.  Use these

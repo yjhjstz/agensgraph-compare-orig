@@ -67,7 +67,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
-
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 
 /*
  * GUC parameters
@@ -344,7 +346,7 @@ GetTransactionSnapshot(void)
 			if (IsolationIsSerializable())
 				CurrentSnapshot = GetSerializableTransactionSnapshot(&CurrentSnapshotData);
 			else
-				CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+				CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, false);
 			/* Make a saved copy */
 			CurrentSnapshot = CopySnapshot(CurrentSnapshot);
 			FirstXactSnapshot = CurrentSnapshot;
@@ -353,19 +355,45 @@ GetTransactionSnapshot(void)
 			pairingheap_add(&RegisteredSnapshots, &FirstXactSnapshot->ph_node);
 		}
 		else
-			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, false);
 
 		FirstSnapshotSet = true;
 		return CurrentSnapshot;
 	}
 
 	if (IsolationUsesXactSnapshot())
+	{
+#ifdef PGXC
+		/*
+		 * Consider this test case taken from portals.sql
+		 *
+		 * CREATE TABLE cursor (a int, b int) distribute by replication;
+		 * INSERT INTO cursor VALUES (10);
+		 * BEGIN;
+		 * SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+		 * DECLARE c1 NO SCROLL CURSOR FOR SELECT * FROM cursor FOR UPDATE;
+		 * INSERT INTO cursor VALUES (2);
+		 * FETCH ALL FROM c1;
+		 * would result in
+		 * ERROR:  attempted to lock invisible tuple
+		 * because FETCH would be sent as a select to the remote nodes
+		 * with command id 0, whereas the command id would be 2
+		 * in the current snapshot.
+		 * (1 sent by Coordinator due to declare cursor &
+		 *  2 because of the insert inside the transaction)
+		 * The command id should therefore be updated in the
+		 * current snapshot.
+		 */
+		if (IsConnFromCoord() || IsConnFromDatanode())
+			SnapshotSetCommandId(GetCurrentCommandId(false));
+#endif
 		return CurrentSnapshot;
+	}
 
 	/* Don't allow catalog snapshot to be older than xact snapshot. */
 	InvalidateCatalogSnapshot();
 
-	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, false);
 
 	return CurrentSnapshot;
 }
@@ -396,7 +424,7 @@ GetLatestSnapshot(void)
 	if (!FirstSnapshotSet)
 		return GetTransactionSnapshot();
 
-	SecondarySnapshot = GetSnapshotData(&SecondarySnapshotData);
+	SecondarySnapshot = GetSnapshotData(&SecondarySnapshotData, true);
 
 	return SecondarySnapshot;
 }
@@ -476,7 +504,7 @@ GetNonHistoricCatalogSnapshot(Oid relid)
 	if (CatalogSnapshot == NULL)
 	{
 		/* Get new snapshot. */
-		CatalogSnapshot = GetSnapshotData(&CatalogSnapshotData);
+		CatalogSnapshot = GetSnapshotData(&CatalogSnapshotData, true);
 
 		/*
 		 * Make sure the catalog snapshot will be accounted for in decisions
@@ -583,7 +611,7 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	 * two variables in exported snapshot files, but it seems better to have
 	 * snapshot importers compute reasonably up-to-date values for them.)
 	 */
-	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, false);
 
 	/*
 	 * Now copy appropriate fields from the source snapshot.
@@ -625,7 +653,7 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("could not import the requested snapshot"),
-				 errdetail("The source process with PID %d is not running anymore.",
+				 errdetail("The source process with pid %d is not running anymore.",
 						   sourcepid)));
 
 	/*
@@ -800,6 +828,15 @@ UpdateActiveSnapshotCommandId(void)
 	if (IsInParallelMode() && save_curcid != curcid)
 		elog(ERROR, "cannot modify commandid in active snapshot during a parallel operation");
 	ActiveSnapshot->as_snap->curcid = curcid;
+
+#ifdef XCP	
+	/*
+	 * Set flag so that updated command ID is sent to the datanodes before the
+	 * next query. This ensures that the effects of previous statements are
+	 * visible to the subsequent statements
+	 */
+	SetSendCommandId(true);
+#endif	
 }
 
 /*
@@ -838,6 +875,14 @@ PopActiveSnapshot(void)
 Snapshot
 GetActiveSnapshot(void)
 {
+#ifdef PGXC
+	/*
+	 * Check if topmost snapshot is null or not,
+	 * if it is, a new one will be taken from GTM.
+	 */
+	if (!ActiveSnapshot && IS_PGXC_LOCAL_COORDINATOR)
+		return NULL;
+#endif
 	Assert(ActiveSnapshot != NULL);
 
 	return ActiveSnapshot->as_snap;

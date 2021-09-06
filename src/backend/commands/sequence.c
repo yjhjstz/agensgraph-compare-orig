@@ -43,6 +43,17 @@
 #include "utils/lsyscache.h"
 #include "utils/resowner.h"
 #include "utils/syscache.h"
+#include "commands/dbcommands.h"
+
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+/* PGXC_COORD */
+#include "access/gtm.h"
+#include "utils/memutils.h"
+#ifdef XCP
+#include "utils/timestamp.h"
+#endif
+#endif
 #include "utils/varlena.h"
 
 
@@ -57,6 +68,12 @@
  * The "special area" of a sequence's buffer page looks like this.
  */
 #define SEQ_MAGIC	  0x1717
+
+/* Configuration options */
+#ifdef XCP
+
+int			SequenceRangeVal = 1;
+#endif
 
 typedef struct sequence_magic
 {
@@ -80,11 +97,36 @@ typedef struct SeqTableData
 	/* if last != cached, we have not used up all the cached values */
 	int64		increment;		/* copy of sequence's increment field */
 	/* note that increment is zero until we first do nextval_internal() */
+#ifdef XCP
+	TimestampTz last_call_time; /* the time when the last call as made */
+	int64		range_multiplier; /* multiply this value with 2 next time */
+#endif
 } SeqTableData;
 
 typedef SeqTableData *SeqTable;
 
 static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
+
+#ifdef PGXC
+/*
+ * Arguments for callback of sequence drop on GTM
+ */
+typedef struct drop_sequence_callback_arg
+{
+	char *seqname;
+	GTM_SequenceDropType type;
+	GTM_SequenceKeyType key;
+} drop_sequence_callback_arg;
+
+/*
+ * Arguments for callback of sequence rename on GTM
+ */
+typedef struct rename_sequence_callback_arg
+{
+	char *newseqname;
+	char *oldseqname;
+} rename_sequence_callback_arg;
+#endif
 
 /*
  * last_used_seq is updated by nextval() to point to the last used
@@ -1626,6 +1668,94 @@ init_params(ParseState *pstate, List *options, bool for_identity,
 		seqform->seqcache = 1;
 	}
 }
+
+#ifdef PGXC
+/*
+ * GetGlobalSeqName
+ *
+ * Returns a global sequence name adapted to GTM
+ * Name format is dbname.schemaname.seqname
+ * so as to identify in a unique way in the whole cluster each sequence
+ */
+char *
+GetGlobalSeqName(Relation seqrel, const char *new_seqname, const char *new_schemaname)
+{
+	char *seqname, *dbname, *relname;
+	char namespace[NAMEDATALEN * 2];
+	int charlen;
+	bool is_temp = seqrel->rd_backend == MyBackendId;
+	/* Get all the necessary relation names */
+	dbname = get_database_name(seqrel->rd_node.dbNode);
+
+	if (new_seqname)
+		relname = (char *) new_seqname;
+	else
+		relname = RelationGetRelationName(seqrel);
+
+	if (!is_temp)
+	{
+		/*
+		 * For a permanent sequence, use schema qualified name. That can
+		 * uniquely identify the sequences.
+		 */
+		char *schema = get_namespace_name(RelationGetNamespace(seqrel));
+		sprintf(namespace, "%s", new_schemaname ? new_schemaname : schema);
+		pfree(schema);
+	}
+	else
+	{
+		/*
+		 * For temporary sequences, we use originating coordinator name and
+		 * originating coordinator PID to qualify the sequence name. If we are
+		 * running on the local coordinator, we can readily fetch that
+		 * information from PGXCNodeName and MyProcPid, but when running on
+		 * remote datanode, we must consult MyCoordName and MyProcPid to get
+		 * the correct information.
+		 */
+		if (IS_PGXC_LOCAL_COORDINATOR)
+			sprintf(namespace, "%s.%d", PGXCNodeName, MyProcPid);
+		else
+			sprintf(namespace, "%s.%d", MyCoordName, MyCoordPid);
+	}
+
+	/* Calculate the global name size including the dots and \0 */
+	charlen = strlen(dbname) + strlen(namespace) + strlen(relname) + 3;
+	seqname = (char *) palloc(charlen);
+
+	/* Form a unique sequence name with schema and database name for GTM */
+	snprintf(seqname,
+			 charlen,
+			 "%s.%s.%s",
+			 dbname,
+			 namespace,
+			 relname);
+
+	if (dbname)
+		pfree(dbname);
+
+	return seqname;
+}
+
+/*
+ * IsTempSequence
+ *
+ * Determine if given sequence is temporary or not.
+ */
+bool
+IsTempSequence(Oid relid)
+{
+	Relation seqrel;
+	bool res;
+	SeqTable	elm;
+
+	/* open and AccessShareLock sequence */
+	init_sequence(relid, &elm, &seqrel);
+
+	res = seqrel->rd_backend == MyBackendId;
+	relation_close(seqrel, NoLock);
+	return res;
+}
+#endif
 
 /*
  * Process an OWNED BY option for CREATE/ALTER SEQUENCE

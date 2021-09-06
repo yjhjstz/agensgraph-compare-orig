@@ -133,7 +133,7 @@ GraphCreate(CreateGraphStmt *stmt, const char *queryString,
 	schemaStmt->if_not_exists = stmt->if_not_exists;
 	schemaStmt->schemaElts = NIL;
 
-	schemaoid = CreateSchemaCommand(schemaStmt, queryString,
+	schemaoid = CreateSchemaCommand(schemaStmt, queryString, false,
 									stmt_location, stmt_len);
 
 	/* initialize nulls and values */

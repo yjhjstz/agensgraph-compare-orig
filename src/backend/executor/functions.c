@@ -33,6 +33,10 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "commands/prepare.h"
+#endif
 
 
 /*
@@ -535,6 +539,24 @@ init_execution_state(List *queryTree_list,
 						 errmsg("%s is not allowed in a non-volatile function",
 								CreateCommandTag((Node *) stmt))));
 
+#ifdef PGXC
+			if (IS_PGXC_LOCAL_COORDINATOR)
+			{
+				if (queryTree->commandType != CMD_UTILITY)
+				{
+					/*
+					* The parameterised queries in RemoteQuery nodes will be prepared
+					* on the Datanode, and need parameter types for the same. Set the
+					* parameter types and their number in all RemoteQuery nodes in the
+					* plan
+					*/
+					SetRemoteStatementName(((PlannedStmt *)stmt)->planTree, NULL,
+											fcache->pinfo->nargs,
+											fcache->pinfo->argtypes, 0);
+				}
+			}
+#endif /* PGXC */
+
 			if (IsInParallelMode() && !CommandIsReadOnly(stmt))
 				PreventCommandIfParallelMode(CreateCommandTag((Node *) stmt));
 
@@ -853,6 +875,9 @@ postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache)
 					   es->qd->params,
 					   es->qd->queryEnv,
 					   es->qd->dest,
+#ifdef PGXC
+					   false,
+#endif /* PGXC */
 					   NULL);
 		result = true;			/* never stops early */
 	}

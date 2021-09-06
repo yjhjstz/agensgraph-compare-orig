@@ -55,6 +55,10 @@
 
 #define TimestampTzPlusMilliseconds(tz,ms) ((tz) + ((ms) * (int64) 1000))
 
+#ifdef PGXC
+#define InvalidGlobalTimestamp ((TimestampTz) 0)
+#define GlobalTimestampIsValid(timestamp) ((TimestampTz) (timestamp)) != InvalidGlobalTimestamp
+#endif
 
 /* Set at postmaster start */
 extern TimestampTz PgStartTime;

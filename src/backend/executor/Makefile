@@ -28,7 +28,7 @@ OBJS = execAmi.o execCurrent.o execExpr.o execExprInterp.o \
        nodeValuesscan.o \
        nodeCtescan.o nodeNamedtuplestorescan.o nodeWorktablescan.o \
        nodeGroup.o nodeSubplan.o nodeSubqueryscan.o nodeTidscan.o \
-       nodeForeignscan.o nodeWindowAgg.o tstoreReceiver.o tqueue.o spi.o \
+       nodeForeignscan.o nodeWindowAgg.o producerReceiver.o tstoreReceiver.o tqueue.o spi.o \
        nodeTableFuncscan.o \
        nodeModifyGraph.o nodeNestloopVle.o \
        nodeHash2Side.o nodeShortestpath.o nodeDijkstra.o

@@ -76,6 +76,9 @@ typedef struct SnapshotData
 	 */
 	TransactionId *xip;
 	uint32		xcnt;			/* # of xact ids in xip[] */
+#ifdef PGXC  /* PGXC_COORD */
+	uint32		max_xcnt;		/* Max # of xact in xip[] */
+#endif
 
 	/*
 	 * For non-historic MVCC snapshots, this contains subxact IDs that are in

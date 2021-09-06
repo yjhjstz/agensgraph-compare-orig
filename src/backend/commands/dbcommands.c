@@ -58,11 +58,16 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
-
+#ifdef PGXC
+#include "pgxc/execRemote.h"
+#include "pgxc/pgxc.h"
+#include "access/gtm.h"
+#endif
 
 typedef struct
 {
@@ -90,7 +95,11 @@ static bool have_createdb_privilege(void);
 static void remove_dbtablespaces(Oid db_id);
 static bool check_db_file_conflict(Oid db_id);
 static int	errdetail_busy_db(int notherbackends, int npreparedxacts);
-
+#ifdef PGXC
+static void createdb_xact_callback(bool isCommit, void *arg);
+static void movedb_xact_callback(bool isCommit, void *arg);
+static void movedb_success_callback(Oid db_id, Oid tblspcoid);
+#endif
 
 /*
  * CREATE DATABASE
@@ -1058,6 +1067,28 @@ RenameDatabase(const char *oldname, const char *newname)
 	return address;
 }
 
+
+#ifdef PGXC
+/*
+ * IsSetTableSpace:
+ * Returns true if it is ALTER DATABASE SET TABLESPACE
+ */
+bool
+IsSetTableSpace(AlterDatabaseStmt *stmt)
+{
+	ListCell   *option;
+	/* Handle the SET TABLESPACE option separately */
+	foreach(option, stmt->options)
+	{
+		DefElem    *defel = (DefElem *) lfirst(option);
+		if (strcmp(defel->defname, "tablespace") == 0)
+			return true;
+	}
+	return false;
+}
+
+
+#endif
 
 /*
  * ALTER DATABASE SET TABLESPACE

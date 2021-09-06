@@ -176,7 +176,7 @@ static bool figure_prop_index_colname_walker(Node *node, char **colname);
  *	  - thomas 1997-12-02
  */
 List *
-transformCreateStmt(CreateStmt *stmt, const char *queryString)
+transformCreateStmt(CreateStmt *stmt, const char *queryString, bool autodistribute)
 {
 	ParseState *pstate;
 	CreateStmtContext cxt;

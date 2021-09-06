@@ -30,7 +30,36 @@
 #include "nodes/graphnodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
+#ifdef XCP
+#include "fmgr.h"
+#include "miscadmin.h"
+#include "catalog/namespace.h"
+#include "pgxc/execRemote.h"
+#include "utils/lsyscache.h"
+#endif
 #include "utils/datum.h"
+#ifdef PGXC
+#include "pgxc/planner.h"
+#endif
+
+#ifdef XCP
+/*
+ * When we sending query plans between nodes we need to send OIDs of various
+ * objects - relations, data types, functions, etc.
+ * On different nodes OIDs of these objects may differ, so we need to send an
+ * identifier, depending on object type, allowing to lookup OID on target node.
+ * On the other hand we want to save space when storing rules, or in other cases
+ * when we need to encode and decode nodes on the same node.
+ * For now default format is not portable, as it is in original Postgres code.
+ * Later we may want to add extra parameter in nodeToString() function
+ */
+static bool portable_output = false;
+void
+set_portable_output(bool value)
+{
+	portable_output = value;
+}
+#endif
 #include "utils/rel.h"
 
 static void outChar(StringInfo str, char c);

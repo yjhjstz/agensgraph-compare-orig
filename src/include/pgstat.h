@@ -708,7 +708,9 @@ typedef enum BackendType
 	B_STARTUP,
 	B_WAL_RECEIVER,
 	B_WAL_SENDER,
-	B_WAL_WRITER
+	B_WAL_WRITER,
+	B_PGXL_CLUSTER_MONITOR,
+	B_PGXL_POOLER
 } BackendType;
 
 
@@ -765,7 +767,8 @@ typedef enum
 	WAIT_EVENT_SYSLOGGER_MAIN,
 	WAIT_EVENT_WAL_RECEIVER_MAIN,
 	WAIT_EVENT_WAL_SENDER_MAIN,
-	WAIT_EVENT_WAL_WRITER_MAIN
+	WAIT_EVENT_WAL_WRITER_MAIN,
+	WAIT_EVENT_CLUSTER_MONITOR_MAIN
 } WaitEventActivity;
 
 /* ----------
@@ -1292,6 +1295,11 @@ extern void pgstat_count_heap_update(Relation rel, bool hot);
 extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_count_truncate(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);
+#ifdef XCP
+extern void pgstat_count_remote_insert(Relation rel, int n);
+extern void pgstat_count_remote_update(Relation rel, int n);
+extern void pgstat_count_remote_delete(Relation rel, int n);
+#endif
 
 extern void pgstat_init_function_usage(FunctionCallInfoData *fcinfo,
 						   PgStat_FunctionCallUsage *fcu);

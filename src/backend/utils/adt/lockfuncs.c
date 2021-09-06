@@ -17,6 +17,13 @@
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/pgxcnode.h"
+#include "pgxc/nodemgr.h"
+#include "executor/spi.h"
+#include "tcop/utility.h"
+#endif
 #include "storage/predicate_internals.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -51,6 +58,27 @@ typedef struct
 	PredicateLockData *predLockData;	/* state data for pred locks */
 	int			predLockIdx;	/* current index for pred lock */
 } PG_Lock_Status;
+
+#ifdef PGXC
+/*
+ * These enums are defined to make calls to pgxc_advisory_lock more readable.
+ */
+typedef enum
+{
+	SESSION_LOCK,
+	TRANSACTION_LOCK
+} LockLevel;
+
+typedef enum
+{
+	WAIT,
+	DONT_WAIT
+} TryType;
+
+static bool
+pgxc_advisory_lock(int64 key64, int32 key1, int32 key2, bool iskeybig,
+			LOCKMODE lockmode, LockLevel locklevel, TryType try);
+#endif
 
 /* Number of columns in pg_locks output */
 #define NUM_LOCK_STATUS_COLUMNS		15
@@ -1067,4 +1095,31 @@ pg_advisory_unlock_all(PG_FUNCTION_ARGS)
 	LockReleaseSession(USER_LOCKMETHOD);
 
 	PG_RETURN_VOID();
+}
+/*
+ * pgxc_lock_for_backup
+ *
+ * Lock the cluster for taking backup
+ * To lock the cluster, try to acquire a session level advisory lock exclusivly
+ * By lock we mean to disallow any statements that change
+ * the portions of the catalog which are backed up by pg_dump/pg_dumpall
+ * Returns true or fails with an error message.
+ */
+bool
+pgxc_lock_for_utility_stmt(Node *parsetree)
+{
+	bool lockAcquired;
+
+	lockAcquired = DatumGetBool(DirectFunctionCall2(
+								pg_try_advisory_xact_lock_shared_int4,
+								xc_lockForBackupKey1,
+								xc_lockForBackupKey2));
+
+	if (!lockAcquired)
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				errmsg("cannot execute %s in a locked cluster",
+						CreateCommandTag(parsetree))));
+
+	return lockAcquired;
 }

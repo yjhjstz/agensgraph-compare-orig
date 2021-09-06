@@ -21,6 +21,9 @@
 #include "postgres.h"
 
 #include "access/hash.h"
+#ifdef PGXC
+#include "commands/prepare.h"
+#endif
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "utils/memutils.h"
@@ -124,6 +127,7 @@ typedef struct ResourceOwnerData
 	ResourceArray snapshotarr;	/* snapshot references */
 	ResourceArray filearr;		/* open temporary files */
 	ResourceArray dsmarr;		/* dynamic shmem segments */
+	ResourceArray prepstmts;	/* prepared statements */
 
 	/* We can remember up to MAX_RESOWNER_LOCKS references to local locks. */
 	int			nlocks;			/* number of owned locks */
@@ -168,6 +172,9 @@ static void PrintPlanCacheLeakWarning(CachedPlan *plan);
 static void PrintTupleDescLeakWarning(TupleDesc tupdesc);
 static void PrintSnapshotLeakWarning(Snapshot snapshot);
 static void PrintFileLeakWarning(File file);
+#ifdef XCP
+static void PrintPreparedStmtLeakWarning(char *stmt);
+#endif
 static void PrintDSMLeakWarning(dsm_segment *seg);
 
 
@@ -490,6 +497,10 @@ ResourceOwnerRelease(ResourceOwner owner,
 	CurrentResourceOwner = save;
 }
 
+#ifdef XCP
+#define CNAME_MAXLEN 32
+#endif
+
 static void
 ResourceOwnerReleaseInternal(ResourceOwner owner,
 							 ResourceReleasePhase phase,
@@ -668,6 +679,17 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 				PrintFileLeakWarning(res);
 			FileClose(res);
 		}
+
+		/* Ditto for prepared statements */
+		while (ResourceArrayGetAny(&(owner->prepstmts), &foundres))
+		{
+			char *stmt = (char *) DatumGetPointer(foundres);
+
+			if (isCommit)
+				PrintPreparedStmtLeakWarning(stmt);
+			DropPreparedStatement(stmt, false);
+		}
+
 	}
 
 	/* Let add-on modules get a chance too */
@@ -725,6 +747,7 @@ ResourceOwnerDelete(ResourceOwner owner)
 	ResourceArrayFree(&(owner->snapshotarr));
 	ResourceArrayFree(&(owner->filearr));
 	ResourceArrayFree(&(owner->dsmarr));
+	ResourceArrayFree(&(owner->prepstmts));
 
 	pfree(owner);
 }
@@ -1222,6 +1245,53 @@ PrintFileLeakWarning(File file)
 	elog(WARNING, "temporary file leak: File %d still referenced",
 		 file);
 }
+
+/*
+ * Make sure there is room for at least one more entry in a ResourceOwner's
+ * prepared statements reference array.
+ *
+ * This is separate from actually inserting an entry because if we run out
+ * of memory, it's critical to do so *before* acquiring the resource.
+ */
+void
+ResourceOwnerEnlargePreparedStmts(ResourceOwner owner)
+{
+	ResourceArrayEnlarge(&(owner->prepstmts));
+}
+
+/*
+ * Remember that a prepared statement is owned by a ResourceOwner
+ *
+ * Caller must have previously done ResourceOwnerEnlargePreparedStmts()
+ */
+void
+ResourceOwnerRememberPreparedStmt(ResourceOwner owner, char *stmt)
+{
+	ResourceArrayAdd(&(owner->prepstmts), PointerGetDatum(stmt));
+}
+
+/*
+ * Forget that a temporary file is owned by a ResourceOwner
+ */
+void
+ResourceOwnerForgetPreparedStmt(ResourceOwner owner, char *stmt)
+{
+	if (!ResourceArrayRemove(&(owner->prepstmts), PointerGetDatum(stmt)))
+		elog(ERROR, "prepared statement %p is not owned by resource owner %s",
+			 stmt, owner->name);
+}
+
+/*
+ * Debugging subroutine
+ */
+static void
+PrintPreparedStmtLeakWarning(char *stmt)
+{
+	elog(WARNING,
+		 "prepared statement leak: Statement %s still referenced",
+		 stmt);
+}
+
 
 /*
  * Make sure there is room for at least one more entry in a ResourceOwner's

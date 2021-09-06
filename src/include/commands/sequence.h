@@ -21,6 +21,11 @@
 #include "parser/parse_node.h"
 #include "storage/relfilenode.h"
 
+#ifdef PGXC
+#include "utils/relcache.h"
+#include "gtm/gtm_c.h"
+#include "access/xact.h"
+#endif
 
 typedef struct FormData_pg_sequence_data
 {
@@ -65,5 +70,26 @@ extern void seq_redo(XLogReaderState *rptr);
 extern void seq_desc(StringInfo buf, XLogReaderState *rptr);
 extern const char *seq_identify(uint8 info);
 extern void seq_mask(char *pagedata, BlockNumber blkno);
+
+#ifdef XCP
+#define DEFAULT_CACHEVAL	1
+extern int SequenceRangeVal;
+#endif
+#ifdef PGXC
+/*
+ * List of actions that registered the callback.
+ * This is listed here and not in sequence.c because callback can also
+ * be registered in dependency.c and tablecmds.c as sequences can be dropped
+ * or renamed in cascade.
+ */
+typedef enum
+{
+	GTM_CREATE_SEQ,
+	GTM_DROP_SEQ
+} GTM_SequenceDropType;
+
+extern bool IsTempSequence(Oid relid);
+extern char *GetGlobalSeqName(Relation rel, const char *new_seqname, const char *new_schemaname);
+#endif
 
 #endif							/* SEQUENCE_H */

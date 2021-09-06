@@ -56,6 +56,10 @@ static void MemoryContextStatsInternal(MemoryContext context, int level,
 						   bool print, int max_children,
 						   MemoryContextCounters *totals);
 
+#ifdef PGXC
+void *allocTopCxt(size_t s);
+#endif
+
 /*
  * You should not do memory allocations within a critical section, because
  * an out-of-memory error will be escalated to a PANIC. To enforce that
@@ -1093,6 +1097,30 @@ pnstrdup(const char *in, Size len)
 	out[len] = '\0';
 	return out;
 }
+
+#ifdef PGXC
+#include "gen_alloc.h"
+
+void *current_memcontext(void);
+
+void *current_memcontext()
+{
+	return((void *)CurrentMemoryContext);
+}
+
+void *allocTopCxt(size_t s)
+{
+	return MemoryContextAlloc(TopMemoryContext, (Size)s);
+}
+
+Gen_Alloc genAlloc_class = {(void *)MemoryContextAlloc,
+							(void *)MemoryContextAllocZero,
+							(void *)repalloc,
+							(void *)pfree,
+							(void *)current_memcontext,
+							(void *)allocTopCxt};
+
+#endif
 
 /*
  * Make copy of string with all trailing newline characters removed.

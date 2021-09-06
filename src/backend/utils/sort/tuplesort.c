@@ -134,6 +134,10 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
+#ifdef PGXC
+#include "pgxc/execRemote.h"
+#include "catalog/pgxc_node.h"
+#endif
 #include "utils/datum.h"
 #include "utils/logtape.h"
 #include "utils/lsyscache.h"
@@ -149,6 +153,9 @@
 #define INDEX_SORT		1
 #define DATUM_SORT		2
 #define CLUSTER_SORT	3
+#ifdef PGXC
+#define MERGE_SORT 4
+#endif
 
 /* GUC variables */
 #ifdef TRACE_SORT
@@ -285,6 +292,9 @@ struct Tuplesortstate
 	MemoryContext sortcontext;	/* memory context holding most sort data */
 	MemoryContext tuplecontext; /* sub-context of sortcontext for tuple data */
 	LogicalTapeSet *tapeset;	/* logtape.c object for tapes in a temp file */
+#ifdef PGXC
+	ResponseCombiner *combiner; /* tuple source, alternate to tapeset */
+#endif /* PGXC */
 
 	/*
 	 * These function pointers decouple the routines that must know what kind
@@ -323,6 +333,14 @@ struct Tuplesortstate
 	 */
 	void		(*readtup) (Tuplesortstate *state, SortTuple *stup,
 							int tapenum, unsigned int len);
+
+#ifdef PGXC
+	/*
+	 * Function to read length of next stored tuple.
+	 * Used as 'len' parameter for readtup function.
+	 */
+	unsigned int (*getlen) (Tuplesortstate *state, int tapenum, bool eofOK);
+#endif
 
 	/*
 	 * This array holds the tuples now in sort memory.  If we are in state
@@ -521,6 +539,9 @@ struct Tuplesortstate
 #define COPYTUP(state,stup,tup) ((*(state)->copytup) (state, stup, tup))
 #define WRITETUP(state,tape,stup)	((*(state)->writetup) (state, tape, stup))
 #define READTUP(state,stup,tape,len) ((*(state)->readtup) (state, stup, tape, len))
+#ifdef PGXC
+#define GETLEN(state,tape,eofOK) ((*(state)->getlen) (state, tape, eofOK))
+#endif
 #define LACKMEM(state)		((state)->availMem < 0 && !(state)->slabAllocatorUsed)
 #define USEMEM(state,amt)	((state)->availMem -= (amt))
 #define FREEMEM(state,amt)	((state)->availMem += (amt))
@@ -612,6 +633,12 @@ static void writetup_heap(Tuplesortstate *state, int tapenum,
 			  SortTuple *stup);
 static void readtup_heap(Tuplesortstate *state, SortTuple *stup,
 			 int tapenum, unsigned int len);
+#ifdef PGXC
+static unsigned int getlen_datanode(Tuplesortstate *state, int tapenum,
+				bool eofOK);
+static void readtup_datanode(Tuplesortstate *state, SortTuple *stup,
+				 int tapenum, unsigned int len);
+#endif
 static int comparetup_cluster(const SortTuple *a, const SortTuple *b,
 				   Tuplesortstate *state);
 static void copytup_cluster(Tuplesortstate *state, SortTuple *stup, void *tup);
@@ -786,6 +813,9 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 	state->copytup = copytup_heap;
 	state->writetup = writetup_heap;
 	state->readtup = readtup_heap;
+#ifdef PGXC
+	state->getlen = getlen;
+#endif
 
 	state->tupDesc = tupDesc;	/* assume we need not copy tupDesc */
 	state->abbrevNext = 10;
@@ -858,6 +888,9 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 	state->copytup = copytup_cluster;
 	state->writetup = writetup_cluster;
 	state->readtup = readtup_cluster;
+#ifdef PGXC
+	state->getlen = getlen;
+#endif
 	state->abbrevNext = 10;
 
 	state->indexInfo = BuildIndexInfo(indexRel);
@@ -949,6 +982,9 @@ tuplesort_begin_index_btree(Relation heapRel,
 	state->copytup = copytup_index;
 	state->writetup = writetup_index;
 	state->readtup = readtup_index;
+#ifdef PGXC
+	state->getlen = getlen;
+#endif
 	state->abbrevNext = 10;
 
 	state->heapRel = heapRel;
@@ -1021,6 +1057,9 @@ tuplesort_begin_index_hash(Relation heapRel,
 	state->copytup = copytup_index;
 	state->writetup = writetup_index;
 	state->readtup = readtup_index;
+#ifdef PGXC
+	state->getlen = getlen;
+#endif
 
 	state->heapRel = heapRel;
 	state->indexRel = indexRel;
@@ -1065,6 +1104,9 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 	state->copytup = copytup_datum;
 	state->writetup = writetup_datum;
 	state->readtup = readtup_datum;
+#ifdef PGXC
+	state->getlen = getlen;
+#endif
 	state->abbrevNext = 10;
 
 	state->datumType = datumType;
@@ -1106,6 +1148,105 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 
 	return state;
 }
+
+#ifdef PGXC
+/*
+ * Tuples are coming from source where they are already sorted.
+ * It is pretty much like sorting heap tuples but no need to load sorter.
+ * Sorter initial status is final merge, and correct readtup and getlen
+ * callbacks should be passed in.
+ * Usage pattern of the merge sorter
+ * tuplesort_begin_merge
+ * while (tuple = tuplesort_gettuple())
+ * {
+ *     // process
+ * }
+ * tuplesort_end_merge
+ */
+Tuplesortstate *
+tuplesort_begin_merge(TupleDesc tupDesc,
+					 int nkeys, AttrNumber *attNums,
+					 Oid *sortOperators, Oid *sortCollations, bool *nullsFirstFlags,
+					 ResponseCombiner *combiner,
+					 int workMem)
+{
+	Tuplesortstate *state = tuplesort_begin_common(workMem, false);
+	MemoryContext oldcontext;
+	int			i;
+
+	oldcontext = MemoryContextSwitchTo(state->sortcontext);
+
+	AssertArg(nkeys > 0);
+	AssertArg(combiner);
+
+#ifdef TRACE_SORT
+	if (trace_sort)
+		elog(LOG,
+			 "begin merge sort: nkeys = %d, workMem = %d", nkeys, workMem);
+#endif
+
+	state->nKeys = nkeys;
+
+	TRACE_POSTGRESQL_SORT_START(MERGE_SORT,
+								false,	/* no unique check */
+								nkeys,
+								workMem,
+								false);
+
+	state->combiner = combiner;
+	state->comparetup = comparetup_heap;
+	state->copytup = NULL;
+	state->writetup = NULL;
+	state->readtup = readtup_datanode;
+	state->getlen = getlen_datanode;
+
+	state->tuples = false;
+
+	state->tupDesc = tupDesc;	/* assume we need not copy tupDesc */
+	state->sortKeys = (SortSupport) palloc0(nkeys * sizeof(SortSupportData));
+
+	for (i = 0; i < nkeys; i++)
+	{
+		SortSupport sortKey = state->sortKeys + i;
+
+		AssertArg(attNums[i] != 0);
+		AssertArg(sortOperators[i] != 0);
+
+		sortKey->ssup_cxt = CurrentMemoryContext;
+		sortKey->ssup_collation = sortCollations[i];
+		sortKey->ssup_nulls_first = nullsFirstFlags[i];
+		sortKey->ssup_attno = attNums[i];
+
+		PrepareSortSupportFromOrderingOp(sortOperators[i], sortKey);
+	}
+
+	/*
+	 * logical tape in this case is a sorted stream
+	 */
+	state->maxTapes = combiner->conn_count;
+	state->tapeRange = combiner->conn_count;
+
+	state->mergeactive = (bool *) palloc0(combiner->conn_count * sizeof(bool));
+	state->tp_runs = (int *) palloc0(combiner->conn_count * sizeof(int));
+	state->tp_dummy = (int *) palloc0(combiner->conn_count * sizeof(int));
+	state->tp_tapenum = (int *) palloc0(combiner->conn_count * sizeof(int));
+	/* mark each stream (tape) has one run */
+	for (i = 0; i < combiner->conn_count; i++)
+	{
+		state->tp_runs[i] = 1;
+		state->tp_tapenum[i] = i;
+	}
+
+	init_slab_allocator(state, 0);
+
+	beginmerge(state);
+	state->status = TSS_FINALMERGE;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return state;
+}
+#endif
 
 /*
  * tuplesort_set_bound
@@ -2074,8 +2215,14 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 					 * Rewind to free the read buffer.  It'd go away at the
 					 * end of the sort anyway, but better to release the
 					 * memory early.
+					 *
+					 * XXX PG10MERGE: In XL, we use tuplesort_begin_merge() to
+					 * merge tuples from datanode connections. We don't use
+					 * tapeset in that code path. The following fix helps that
+					 * case.
 					 */
-					LogicalTapeRewindForWrite(state->tapeset, srcTape);
+					if (state->tapeset)
+						LogicalTapeRewindForWrite(state->tapeset, srcTape);
 					return true;
 				}
 				newtup.tupindex = srcTape;
@@ -2913,7 +3060,11 @@ mergereadnext(Tuplesortstate *state, int srcTape, SortTuple *stup)
 		return false;			/* tape's run is already exhausted */
 
 	/* read next tuple, if any */
+#ifdef PGXC
+		if ((tuplen = GETLEN(state, srcTape, true)) == 0)
+#else
 	if ((tuplen = getlen(state, srcTape, true)) == 0)
+#endif
 	{
 		state->mergeactive[srcTape] = false;
 		return false;
@@ -3796,6 +3947,54 @@ readtup_heap(Tuplesortstate *state, SortTuple *stup,
 								&stup->isnull1);
 }
 
+#ifdef PGXC
+static unsigned int
+getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
+{
+	ResponseCombiner *combiner = state->combiner;
+	TupleTableSlot   *dstslot = combiner->ss.ps.ps_ResultTupleSlot;
+	TupleTableSlot   *slot;
+
+	combiner->current_conn = tapenum;
+	slot = FetchTuple(combiner);
+	if (TupIsNull(slot))
+	{
+		if (eofOK)
+			return 0;
+		else
+			elog(ERROR, "unexpected end of data");
+	}
+
+	if (slot != dstslot)
+		ExecCopySlot(dstslot, slot);
+
+	return 1;
+}
+
+static void
+readtup_datanode(Tuplesortstate *state, SortTuple *stup,
+				 int tapenum, unsigned int len)
+{
+	TupleTableSlot *slot = state->combiner->ss.ps.ps_ResultTupleSlot;
+	MinimalTuple tuple;
+	HeapTupleData htup;
+
+	Assert(!TupIsNull(slot));
+
+	/* copy the tuple into sort storage */
+	tuple = ExecCopySlotMinimalTuple(slot);
+	stup->tuple = (void *) tuple;
+	USEMEM(state, GetMemoryChunkSpace(tuple));
+	/* set up first-column key value */
+	htup.t_len = tuple->t_len + MINIMAL_TUPLE_OFFSET;
+	htup.t_data = (HeapTupleHeader) ((char *) tuple - MINIMAL_TUPLE_OFFSET);
+	stup->datum1 = heap_getattr(&htup,
+								state->sortKeys[0].ssup_attno,
+								state->tupDesc,
+								&stup->isnull1);
+}
+#endif /* PGXC */
+
 /*
  * Routines specialized for the CLUSTER case (HeapTuple data, with
  * comparisons per a btree index definition)
@@ -4024,6 +4223,10 @@ readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 						 &tuple->t_self, sizeof(ItemPointerData));
 	/* We don't currently bother to reconstruct t_tableOid */
 	tuple->t_tableOid = InvalidOid;
+#ifdef PGXC
+	tuple->t_xc_node_id = 0;
+#endif
+
 	/* Read in the tuple body */
 	LogicalTapeReadExact(state->tapeset, tapenum,
 						 tuple->t_data, tuple->t_len);

@@ -32,6 +32,10 @@
 #include "storage/standbydefs.h"
 #include "utils/relmapper.h"
 
+#ifdef XCP
+#include "pgxc/barrier.h"
+#endif
+
 #define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask) \
 	{ name, desc, identify},
 

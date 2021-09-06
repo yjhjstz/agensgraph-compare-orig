@@ -16,7 +16,7 @@ OBJS = catalog.o dependency.o heap.o index.o indexing.o namespace.o aclchk.o \
        pg_depend.o pg_enum.o pg_inherits.o pg_largeobject.o pg_namespace.o \
        pg_operator.o pg_proc.o pg_publication.o pg_range.o \
 	   pg_db_role_setting.o pg_shdepend.o pg_subscription.o pg_type.o \
-	   storage.o toasting.o ag_graph.o ag_label.o
+	   pgxc_class.o storage.o toasting.o ag_graph.o ag_label.o
 
 BKIFILES = postgres.bki postgres.description postgres.shdescription
 
@@ -41,6 +41,7 @@ POSTGRES_BKI_SRCS = $(addprefix $(top_srcdir)/src/include/catalog/,\
 	pg_ts_config.h pg_ts_config_map.h pg_ts_dict.h \
 	pg_ts_parser.h pg_ts_template.h pg_extension.h \
 	pg_foreign_data_wrapper.h pg_foreign_server.h pg_user_mapping.h \
+	pgxc_class.h pgxc_node.h pgxc_group.h \
 	pg_foreign_table.h pg_policy.h pg_replication_origin.h \
 	pg_default_acl.h pg_init_privs.h pg_seclabel.h pg_shseclabel.h \
 	pg_collation.h pg_partitioned_table.h pg_range.h pg_transform.h \

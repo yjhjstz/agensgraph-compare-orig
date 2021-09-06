@@ -102,7 +102,7 @@ extern void ExpireOldKnownAssignedTransactionIds(TransactionId xid);
 extern int	GetMaxSnapshotXidCount(void);
 extern int	GetMaxSnapshotSubxidCount(void);
 
-extern Snapshot GetSnapshotData(Snapshot snapshot);
+extern Snapshot GetSnapshotData(Snapshot snapshot, bool latest);
 
 extern bool ProcArrayInstallImportedXmin(TransactionId xmin,
 							 VirtualTransactionId *sourcevxid);

@@ -4556,6 +4556,30 @@ AfterTriggerBeginQuery(void)
 	afterTriggers.query_depth++;
 }
 
+#ifdef PGXC
+
+/* ----------
+ * IsAnyAfterTriggerDeferred()
+ *
+ * Check if there is any deferred trigger to fire.
+ * This is used to preserve snapshot data in case an
+ * error occurred in a transaction block.
+ * ----------
+ */
+bool
+IsAnyAfterTriggerDeferred(void)
+{
+	AfterTriggerEventList *events;
+
+	/* Is there are any deferred trigger to fire */
+	events = &afterTriggers.events;
+	if (events->head != NULL)
+		return true;
+
+	return false;
+}
+#endif
+
 
 /* ----------
  * AfterTriggerEndQuery()

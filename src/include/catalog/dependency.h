@@ -155,9 +155,14 @@ typedef enum ObjectClass
 	OCLASS_ROLE,				/* pg_authid */
 	OCLASS_DATABASE,			/* pg_database */
 	OCLASS_TBLSPACE,			/* pg_tablespace */
-	OCLASS_FDW,					/* pg_foreign_data_wrapper */
-	OCLASS_FOREIGN_SERVER,		/* pg_foreign_server */
-	OCLASS_USER_MAPPING,		/* pg_user_mapping */
+	OCLASS_FDW,				/* pg_foreign_data_wrapper */
+	OCLASS_FOREIGN_SERVER,			/* pg_foreign_server */
+	OCLASS_USER_MAPPING,			/* pg_user_mapping */
+#ifdef PGXC
+	OCLASS_PGXC_CLASS,			/* pgxc_class */
+	OCLASS_PGXC_NODE,			/* pgxc_node */
+	OCLASS_PGXC_GROUP,			/* pgxc_group */
+#endif
 	OCLASS_DEFACL,				/* pg_default_acl */
 	OCLASS_EXTENSION,			/* pg_extension */
 	OCLASS_EVENT_TRIGGER,		/* pg_event_trigger */
@@ -188,6 +193,11 @@ extern void performDeletion(const ObjectAddress *object,
 extern void performMultipleDeletions(const ObjectAddresses *objects,
 						 DropBehavior behavior, int flags);
 
+#ifdef PGXC
+extern void performRename(const ObjectAddress *object,
+						  const char *oldname,
+						  const char *newname);
+#endif
 extern void recordDependencyOnExpr(const ObjectAddress *depender,
 					   Node *expr, List *rtable,
 					   DependencyType behavior);

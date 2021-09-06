@@ -15,6 +15,10 @@
 #define BUILTINS_H
 
 #include "fmgr.h"
+#include "nodes/parsenodes.h"
+#ifdef PGXC
+#include "lib/stringinfo.h"
+#endif
 #include "nodes/nodes.h"
 #include "utils/fmgrprotos.h"
 
@@ -67,6 +71,10 @@ extern int	float8_cmp_internal(float8 a, float8 b);
 /* oid.c */
 extern oidvector *buildoidvector(const Oid *oids, int n);
 extern Oid	oidparse(Node *node);
+#ifdef PGXC
+extern Datum pgxc_node_str (PG_FUNCTION_ARGS);
+extern Datum pgxc_lock_for_backup (PG_FUNCTION_ARGS);
+#endif
 extern int	oid_cmp(const void *p1, const void *p2);
 
 /* regexp.c */
@@ -75,6 +83,15 @@ extern char *regexp_fixed_prefix(text *text_re, bool case_insensitive,
 
 /* ruleutils.c */
 extern bool quote_all_identifiers;
+#ifdef PGXC
+extern void get_query_def_from_valuesList(Query *query, StringInfo buf);
+extern void deparse_query(Query *query, StringInfo buf, List *parentnamespace,
+		bool finalise_aggs, bool sortgroup_colno);
+#endif
+#ifdef PGXC
+extern List *deparse_context_for_plan(Node *plan, List *ancestors,
+							  List *rtable);
+#endif
 extern const char *quote_identifier(const char *ident);
 extern char *quote_qualified_identifier(const char *qualifier,
 						   const char *ident);
@@ -127,4 +144,19 @@ extern int32 type_maximum_size(Oid type_oid, int32 typemod);
 /* quote.c */
 extern char *quote_literal_cstr(const char *rawstr);
 
+#ifdef PGXC
+/* backend/pgxc/pool/poolutils.c */
+extern Datum pgxc_pool_check(PG_FUNCTION_ARGS);
+extern Datum pgxc_pool_reload(PG_FUNCTION_ARGS);
+
+/* backend/access/transam/transam.c */
+extern Datum pgxc_is_committed(PG_FUNCTION_ARGS);
+extern Datum pgxc_is_inprogress(PG_FUNCTION_ARGS);
+#endif
+extern Datum pg_msgmodule_set(PG_FUNCTION_ARGS);
+extern Datum pg_msgmodule_change(PG_FUNCTION_ARGS);
+extern Datum pg_msgmodule_enable(PG_FUNCTION_ARGS);
+extern Datum pg_msgmodule_disable(PG_FUNCTION_ARGS);
+extern Datum pg_msgmodule_enable_all(PG_FUNCTION_ARGS);
+extern Datum pg_msgmodule_disable_all(PG_FUNCTION_ARGS);
 #endif							/* BUILTINS_H */

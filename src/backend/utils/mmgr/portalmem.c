@@ -27,6 +27,14 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "access/hash.h"
+#include "catalog/pg_collation.h"
+#include "utils/formatting.h"
+#include "utils/lsyscache.h"
+#endif
+
 /*
  * Estimate of the maximum number of open portals a user would have,
  * used in initially sizing the PortalHashTable in EnablePortalManager().
@@ -130,6 +138,10 @@ GetPortalByName(const char *name)
 {
 	Portal		portal;
 
+#ifdef XCP
+	elog(DEBUG3, "Looking up portal %s in the hash table", name);
+#endif
+
 	if (PointerIsValid(name))
 		PortalHashTableLookup(name, portal);
 	else
@@ -189,6 +201,11 @@ CreatePortal(const char *name, bool allowDup, bool dupSilent)
 					(errcode(ERRCODE_DUPLICATE_CURSOR),
 					 errmsg("closing existing cursor \"%s\"",
 							name)));
+#ifdef XCP
+		elog(DEBUG3, "cursor \"%s\" already exists, closing existing cursor",
+				name);
+#endif
+
 		PortalDrop(portal, false);
 	}
 
@@ -218,6 +235,19 @@ CreatePortal(const char *name, bool allowDup, bool dupSilent)
 
 	/* put portal in table (sets portal->name) */
 	PortalHashTableInsert(portal, name);
+
+#ifdef PGXC
+	elog(DEBUG3, "Created portal %s and inserted an entry in the has table",
+			name);
+
+	if (PGXCNodeIdentifier == 0)
+	{
+		char *node_name;
+		node_name = str_tolower(PGXCNodeName, strlen(PGXCNodeName), DEFAULT_COLLATION_OID);
+		PGXCNodeIdentifier = get_pgxc_node_id(get_pgxc_nodeoid(node_name));
+		pfree(node_name);
+	}
+#endif
 
 	return portal;
 }
@@ -352,6 +382,52 @@ PortalCreateHoldStore(Portal portal)
 
 	MemoryContextSwitchTo(oldcxt);
 }
+
+#ifdef XCP
+void
+PortalCreateProducerStore(Portal portal)
+{
+	MemoryContext oldcxt;
+
+	Assert(portal->holdContext == NULL);
+	Assert(portal->holdStore == NULL);
+
+	/*
+	 * Create the memory context that is used for storage of the tuple set.
+	 * Note this is NOT a child of the portal's heap memory.
+	 */
+	portal->holdContext =
+		AllocSetContextCreate(PortalMemory,
+							  "PortalHoldContext",
+							  ALLOCSET_DEFAULT_MINSIZE,
+							  ALLOCSET_DEFAULT_INITSIZE,
+							  ALLOCSET_DEFAULT_MAXSIZE);
+
+	/*
+	 * Create the tuple store, selecting cross-transaction temp files, and
+	 * enabling random access only if cursor requires scrolling.
+	 *
+	 * XXX: Should maintenance_work_mem be used for the portal size?
+	 */
+	oldcxt = MemoryContextSwitchTo(portal->holdContext);
+
+	portal->tmpContext = AllocSetContextCreate(portal->holdContext,
+											   "TuplestoreTempContext",
+											   ALLOCSET_DEFAULT_MINSIZE,
+											   ALLOCSET_DEFAULT_INITSIZE,
+											   ALLOCSET_DEFAULT_MAXSIZE);
+	/*
+	 * We really do not need interXact set to true for the producer store,
+	 * but we have to set it as long as we store it in holdStore variable -
+	 * portal destroys it after the resource owner invalidating internal
+	 * temporary file if tuplestore has been ever spilled to disk
+	 */
+	portal->holdStore = tuplestore_begin_datarow(true, work_mem,
+												 portal->tmpContext);
+
+	MemoryContextSwitchTo(oldcxt);
+}
+#endif
 
 /*
  * PinPortal
@@ -595,6 +671,10 @@ PortalHashTableDeleteAll(void)
 
 	if (PortalHashTable == NULL)
 		return;
+
+#ifdef XCP
+	elog(DEBUG3, "Deleting all entries from the PortalHashTable");
+#endif
 
 	hash_seq_init(&status, PortalHashTable);
 	while ((hentry = hash_seq_search(&status)) != NULL)
@@ -1047,6 +1127,45 @@ AtSubCleanup_Portals(SubTransactionId mySubid)
 		PortalDrop(portal, false);
 	}
 }
+
+
+#ifdef XCP
+static List *producingPortals = NIL;
+
+List *
+getProducingPortals(void)
+{
+	return producingPortals;
+}
+
+
+void
+addProducingPortal(Portal portal)
+{
+	MemoryContext save_context;
+
+	save_context = MemoryContextSwitchTo(PortalMemory);
+
+	producingPortals = lappend(producingPortals, portal);
+
+	MemoryContextSwitchTo(save_context);
+}
+
+
+void
+removeProducingPortal(Portal portal)
+{
+	producingPortals = list_delete_ptr(producingPortals, portal);
+}
+
+
+bool
+portalIsProducing(Portal portal)
+{
+	return list_member_ptr(producingPortals, portal);
+}
+#endif
+
 
 /* Find all available cursors */
 Datum
