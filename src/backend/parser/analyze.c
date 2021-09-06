@@ -25,6 +25,17 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
+#ifdef XCP
+#include "catalog/pg_namespace.h"
+#include "catalog/namespace.h"
+#include "utils/builtins.h"
+#endif
+#ifdef PGXC
+#include "catalog/pg_inherits.h"
+#include "catalog/pg_inherits_fn.h"
+#include "catalog/indexing.h"
+#include "utils/tqual.h"
+#endif
 #include "catalog/ag_graph_fn.h"
 #include "catalog/pg_type.h"
 #include "catalog/objectaddress.h"
@@ -47,6 +58,20 @@
 #include "parser/parse_target.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
+#ifdef PGXC
+#include "miscadmin.h"
+#include "pgxc/pgxc.h"
+#include "pgxc/pgxcnode.h"
+#include "access/gtm.h"
+#include "utils/lsyscache.h"
+#include "pgxc/planner.h"
+#include "tcop/tcopprot.h"
+#include "nodes/nodes.h"
+#include "pgxc/poolmgr.h"
+#include "catalog/pgxc_node.h"
+#include "pgxc/xc_maintenance_mode.h"
+#include "access/xact.h"
+#endif
 #include "utils/rel.h"
 
 
@@ -79,6 +104,10 @@ static Query *transformExplainStmt(ParseState *pstate,
 					 ExplainStmt *stmt);
 static Query *transformCreateTableAsStmt(ParseState *pstate,
 						   CreateTableAsStmt *stmt);
+#ifdef PGXC
+static Query *transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt);
+#endif
+
 static void transformLockingClause(ParseState *pstate, Query *qry,
 					   LockingClause *lc, bool pushedDown);
 static Query *transformCypherStmt(ParseState *pstate, CypherStmt *stmt);
@@ -332,6 +361,13 @@ transformStmt(ParseState *pstate, Node *parseTree)
 										  (ExplainStmt *) parseTree);
 			break;
 
+#ifdef PGXC
+		case T_ExecDirectStmt:
+			result = transformExecDirectStmt(pstate,
+											 (ExecDirectStmt *) parseTree);
+			break;
+#endif
+
 		case T_CreateTableAsStmt:
 			result = transformCreateTableAsStmt(pstate,
 												(CreateTableAsStmt *) parseTree);
@@ -393,6 +429,17 @@ analyze_requires_snapshot(RawStmt *parseTree)
 			/* yes, because we must analyze the contained statement */
 			result = true;
 			break;
+
+#ifdef PGXC
+		case T_ExecDirectStmt:
+
+			/*
+			 * We will parse/analyze/plan inner query, which probably will
+			 * need a snapshot. Ensure it is set.
+			 */
+			result = true;
+			break;
+#endif
 
 		default:
 			/* other utility statements don't have any real parse analysis */
@@ -2608,6 +2655,172 @@ transformCreateTableAsStmt(ParseState *pstate, CreateTableAsStmt *stmt)
 	return result;
 }
 
+#ifdef PGXC
+/*
+ * transformExecDirectStmt -
+ *	transform an EXECUTE DIRECT Statement
+ *
+ * Handling is depends if we should execute on nodes or on Coordinator.
+ * To execute on nodes we return CMD_UTILITY query having one T_RemoteQuery node
+ * with the inner statement as a sql_command.
+ * If statement is to run on Coordinator we should parse inner statement and
+ * analyze resulting query tree.
+ */
+static Query *
+transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
+{
+	Query		*result = makeNode(Query);
+	char		*query = stmt->query;
+	List		*nodelist = stmt->node_names;
+	RemoteQuery	*step = makeNode(RemoteQuery);
+	bool		is_local = false;
+	List		*raw_parsetree_list;
+	ListCell	*raw_parsetree_item;
+	char		*nodename;
+	int			nodeIndex;
+	char		nodetype;
+
+	/* Support not available on Datanodes */
+	if (IS_PGXC_DATANODE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("EXECUTE DIRECT cannot be executed on a Datanode")));
+
+	if (list_length(nodelist) > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("Support for EXECUTE DIRECT on multiple nodes is not available yet")));
+
+	Assert(list_length(nodelist) == 1);
+	Assert(IS_PGXC_COORDINATOR);
+
+	/* There is a single element here */
+	nodename = strVal(linitial(nodelist));
+#ifdef XCP
+	nodetype = PGXC_NODE_NONE;
+	nodeIndex = PGXCNodeGetNodeIdFromName(nodename, &nodetype);
+	if (nodetype == PGXC_NODE_NONE)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("PGXC Node %s: object not defined",
+						nodename)));
+#else
+	nodeoid = get_pgxc_nodeoid(nodename);
+
+	if (!OidIsValid(nodeoid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("PGXC Node %s: object not defined",
+						nodename)));
+
+	/* Get node type and index */
+	nodetype = get_pgxc_nodetype(nodeoid);
+	nodeIndex = PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid));
+#endif
+
+	/* Check if node is requested is the self-node or not */
+	if (nodetype == PGXC_NODE_COORDINATOR && nodeIndex == PGXCNodeId - 1)
+		is_local = true;
+
+	/* Transform the query into a raw parse list */
+	raw_parsetree_list = pg_parse_query(query);
+
+	/* EXECUTE DIRECT can just be executed with a single query */
+	if (list_length(raw_parsetree_list) > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("EXECUTE DIRECT cannot execute multiple queries")));
+
+	/*
+	 * Analyze the Raw parse tree
+	 * EXECUTE DIRECT is restricted to one-step usage
+	 */
+	foreach(raw_parsetree_item, raw_parsetree_list)
+	{
+		RawStmt   *parsetree = lfirst_node(RawStmt, raw_parsetree_item);
+		List *result_list = pg_analyze_and_rewrite(parsetree, query, NULL, 0, NULL);
+		result = linitial_node(Query, result_list);
+	}
+
+	/* Default list of parameters to set */
+	step->sql_statement = NULL;
+	step->exec_nodes = makeNode(ExecNodes);
+	step->combine_type = COMBINE_TYPE_NONE;
+	step->sort = NULL;
+	step->read_only = true;
+	step->cursor = NULL;
+
+	/* This is needed by executor */
+	step->sql_statement = pstrdup(query);
+	if (nodetype == PGXC_NODE_COORDINATOR)
+		step->exec_type = EXEC_ON_COORDS;
+	else
+		step->exec_type = EXEC_ON_DATANODES;
+
+	step->reduce_level = 0;
+	step->base_tlist = NIL;
+	step->outer_alias = NULL;
+	step->inner_alias = NULL;
+	step->outer_reduce_level = 0;
+	step->inner_reduce_level = 0;
+	step->outer_relids = NULL;
+	step->inner_relids = NULL;
+	step->inner_statement = NULL;
+	step->outer_statement = NULL;
+	step->join_condition = NULL;
+
+	/* Change the list of nodes that will be executed for the query and others */
+	step->combine_type = COMBINE_TYPE_SAME;
+	step->read_only = true;
+	step->exec_direct_type = EXEC_DIRECT_NONE;
+
+	/* Set up EXECUTE DIRECT flag */
+	if (is_local)
+	{
+		if (result->commandType == CMD_UTILITY)
+			step->exec_direct_type = EXEC_DIRECT_LOCAL_UTILITY;
+		else
+			step->exec_direct_type = EXEC_DIRECT_LOCAL;
+	}
+	else
+	{
+		switch(result->commandType)
+		{
+			case CMD_UTILITY:
+				step->exec_direct_type = EXEC_DIRECT_UTILITY;
+				break;
+			case CMD_SELECT:
+				step->exec_direct_type = EXEC_DIRECT_SELECT;
+				break;
+			case CMD_INSERT:
+				step->exec_direct_type = EXEC_DIRECT_INSERT;
+				break;
+			case CMD_UPDATE:
+				step->exec_direct_type = EXEC_DIRECT_UPDATE;
+				break;
+			case CMD_DELETE:
+				step->exec_direct_type = EXEC_DIRECT_DELETE;
+				break;
+			default:
+				Assert(0);
+		}
+	}
+
+	/* Build Execute Node list, there is a unique node for the time being */
+	step->exec_nodes->nodeList = lappend_int(step->exec_nodes->nodeList, nodeIndex);
+
+	if (!is_local)
+		result->utilityStmt = (Node *) step;
+
+	/*
+	 * Reset the queryId since the caller would do that anyways.
+	 */
+	result->queryId = 0;
+
+	return result;
+}
+
+#endif
 
 /*
  * Produce a string representation of a LockClauseStrength value.

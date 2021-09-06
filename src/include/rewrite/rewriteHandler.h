@@ -33,4 +33,8 @@ extern int relation_is_updatable(Oid reloid,
 					  bool include_triggers,
 					  Bitmapset *include_cols);
 
+#ifdef PGXC
+extern List *QueryRewriteCTAS(Query *parsetree);
+#endif
+
 #endif							/* REWRITEHANDLER_H */

@@ -155,6 +155,11 @@ TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
 	Assert(status == TRANSACTION_STATUS_COMMITTED ||
 		   status == TRANSACTION_STATUS_ABORTED);
 
+	if (status == TRANSACTION_STATUS_COMMITTED)
+		elog(DEBUG1, "Record transaction commit %u", xid);
+	else
+		elog(DEBUG1, "Record transaction abort %u", xid);
+
 	/*
 	 * See how many subxids, if any, are on the same page as the parent, if
 	 * any.
@@ -625,22 +630,76 @@ void
 ExtendCLOG(TransactionId newestXact)
 {
 	int			pageno;
+	TransactionId latestXid;
 
 	/*
 	 * No work except at first XID of a page.  But beware: just after
 	 * wraparound, the first XID of page zero is FirstNormalTransactionId.
 	 */
+#ifdef PGXC  /* PGXC_COORD || PGXC_DATANODE */
+	/* 
+	 * In PGXC, it may be that a node is not involved in a transaction,
+	 * and therefore will be skipped, so we need to detect this by using
+	 * the latest_page_number instead of the pg index.
+	 *
+	 * latest_page_number always points to the last page of CLOG. We don't need
+	 * to do anything for an XID that maps to a page that precedes or equals
+	 * the latest_page_number. To handle wrap-around correctly, we just compute
+	 * the last XID mapped to latest_page_number and compare that against the
+	 * passed in XID.
+	 */
+	pageno = TransactionIdToPage(newestXact);
+
+	/* 
+	 * Note that this value can change and we are not holding a lock, 
+	 * so we repeat the check below. We do it this way instead of 
+	 * grabbing the lock to avoid lock contention.
+	 */
+	latestXid = (ClogCtl->shared->latest_page_number * CLOG_XACTS_PER_PAGE)
+					+ CLOG_XACTS_PER_PAGE - 1;
+	if (TransactionIdPrecedesOrEquals(newestXact, latestXid))
+		return;
+#else
 	if (TransactionIdToPgIndex(newestXact) != 0 &&
 		!TransactionIdEquals(newestXact, FirstNormalTransactionId))
 		return;
 
 	pageno = TransactionIdToPage(newestXact);
+#endif
 
 	LWLockAcquire(CLogControlLock, LW_EXCLUSIVE);
 
-	/* Zero the page and make an XLOG entry about it */
-	ZeroCLOGPage(pageno, true);
+#ifdef PGXC
+	/*
+	 * We repeat the check.  Another process may have written 
+	 * out the page already and advanced the latest_page_number
+	 * while we were waiting for the lock.
+	 */
+	latestXid = (ClogCtl->shared->latest_page_number * CLOG_XACTS_PER_PAGE)
+					+ CLOG_XACTS_PER_PAGE - 1;
+	if (TransactionIdPrecedesOrEquals(newestXact, latestXid))
+	{
+		LWLockRelease(CLogControlLock);
+		return;
+	}
 
+	/*
+	 * We must initialise all pages between latest_page_number and pageno,
+	 * taking into consideration XID wraparound
+	 */
+	for (;;)
+	{
+		/* Zero the page and make an XLOG entry about it */
+		int target_pageno = ClogCtl->shared->latest_page_number + 1;
+		if (target_pageno > TransactionIdToPage(MaxTransactionId))
+			target_pageno = 0;
+		ZeroCLOGPage(target_pageno, true);
+		if (target_pageno == pageno)
+			break;
+	}
+#else
+	ZeroCLOGPage(pageno, true);
+#endif
 	LWLockRelease(CLogControlLock);
 }
 

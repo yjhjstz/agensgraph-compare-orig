@@ -15,6 +15,7 @@
 #define RELFILENODE_H
 
 #include "common/relpath.h"
+#include "pgxc/pgxc.h"
 #include "storage/backendid.h"
 
 /*
@@ -75,8 +76,13 @@ typedef struct RelFileNodeBackend
 	BackendId	backend;
 } RelFileNodeBackend;
 
+#ifdef XCP
+#define RelFileNodeBackendIsTemp(rnode) \
+	(!IS_PGXC_DATANODE && ((rnode).backend != InvalidBackendId))
+#else
 #define RelFileNodeBackendIsTemp(rnode) \
 	((rnode).backend != InvalidBackendId)
+#endif
 
 /*
  * Note: RelFileNodeEquals and RelFileNodeBackendEquals compare relNode first

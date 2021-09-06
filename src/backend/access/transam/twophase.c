@@ -106,6 +106,10 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#ifdef PGXC
+#include "pgxc/xc_maintenance_mode.h"
+#include "pgxc/nodemgr.h"
+#endif
 
 
 /*
@@ -114,7 +118,11 @@
 #define TWOPHASE_DIR "pg_twophase"
 
 /* GUC variable, can't be changed after startup */
+#ifdef PGXC
+int			max_prepared_xacts = 10;  /* We require 2PC */
+#else
 int			max_prepared_xacts = 0;
+#endif
 
 /*
  * This struct describes one global transaction that is in prepared state
@@ -148,7 +156,7 @@ int			max_prepared_xacts = 0;
  * Note that the max value of GIDSIZE must fit in the uint16 gidlen,
  * specified in TwoPhaseFileHeader.
  */
-#define GIDSIZE 200
+#define GIDSIZE (200 + (MAX_COORDINATORS + MAX_DATANODES) * 15)
 
 typedef struct GlobalTransactionData
 {
@@ -616,10 +624,21 @@ LockGXact(const char *gid, Oid user)
 
 	LWLockRelease(TwoPhaseStateLock);
 
+#ifdef PGXC
+	/*
+	 * In PGXC, if xc_maintenance_mode is on, COMMIT/ROLLBACK PREPARED may be issued to the
+	 * node where the given xid does not exist.
+	 */
+	if (!xc_maintenance_mode)
+	{
+#endif
 	ereport(ERROR,
 			(errcode(ERRCODE_UNDEFINED_OBJECT),
 			 errmsg("prepared transaction with identifier \"%s\" does not exist",
 					gid)));
+#ifdef PGXC
+	}
+#endif
 
 	/* NOTREACHED */
 	return NULL;
@@ -1387,6 +1406,20 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 * try to commit the same GID at once.
 	 */
 	gxact = LockGXact(gid, GetUserId());
+#ifdef PGXC
+	/*
+	 * LockGXact returns NULL if this node does not contain given two-phase
+	 * TXN.  This can happen when COMMIT/ROLLBACK PREPARED is issued at
+	 * the originating Coordinator for cleanup.
+	 * In this case, no local handling is needed.   Only report to GTM
+	 * is needed and this has already been handled in
+	 * FinishRemotePreparedTransaction().
+	 *
+	 * Second predicate may not be necessary.   It is just in case.
+	 */
+	if (gxact == NULL && xc_maintenance_mode)
+		return;
+#endif
 	proc = &ProcGlobal->allProcs[gxact->pgprocno];
 	pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
 	xid = pgxact->xid;

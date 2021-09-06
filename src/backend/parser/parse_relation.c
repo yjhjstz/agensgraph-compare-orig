@@ -32,6 +32,13 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#ifdef XCP
+#include "utils/guc.h"
+#include "catalog/pg_statistic.h"
+#include "catalog/pg_namespace.h"
+#include "pgxc/pgxc.h"
+#include "miscadmin.h"
+#endif
 #include "utils/varlena.h"
 
 
@@ -52,7 +59,9 @@ static void expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 				int rtindex, int sublevels_up,
 				int location, bool include_dropped,
 				List **colnames, List **colvars);
+#ifndef PGXC
 static int	specialAttNum(const char *attname);
+#endif
 static bool isQueryUsingTempRelation_walker(Node *node, void *context);
 
 
@@ -912,6 +921,25 @@ markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 
 	if (rte->rtekind == RTE_RELATION)
 	{
+#ifdef XCP
+		/*
+		 * Ugly workaround against permission check error when non-privileged
+		 * user executes ANALYZE command.
+		 * To update local statistics coordinator queries pg_statistic tables on
+		 * datanodes, but these are not selectable by PUBLIC. It would be better
+		 * to define view, but pg_statistic contains fields of anyarray pseudotype
+		 * which is not allowed in view.
+		 * So we just disable check for SELECT permission if query referring the
+		 * pg_statistic table is parsed on datanodes. That might be a security hole,
+		 * but fortunately any user query against pg_statistic would be parsed on
+		 * coordinator, and permission check would take place; the only way to
+		 * have arbitrary query parsed on datanode is EXECUTE DIRECT, it is only
+		 * available for superuser.
+		 */
+		if (IS_PGXC_DATANODE && rte->relid == StatisticRelationId)
+			rte->requiredPerms = 0;
+		else
+#endif
 		/* Make sure the rel as a whole is marked for SELECT access */
 		rte->requiredPerms |= ACL_SELECT;
 		/* Must offset the attnum to fit in a bitmapset */
@@ -1240,6 +1268,25 @@ addRangeTableEntry(ParseState *pstate,
 	rte->inh = inh;
 	rte->inFromCl = inFromCl;
 
+#ifdef XCP
+	/*
+	 * Ugly workaround against permission check error when non-privileged
+	 * user executes ANALYZE command.
+	 * To update local statistics coordinator queries pg_statistic tables on
+	 * datanodes, but these are not selectable by PUBLIC. It would be better
+	 * to define view, but pg_statistic contains fields of anyarray pseudotype
+	 * which is not allowed in view.
+	 * So we just disable check for SELECT permission if query referring the
+	 * pg_statistic table is parsed on datanodes. That might be a security hole,
+	 * but fortunately any user query against pg_statistic would be parsed on
+	 * coordinator, and permission check would take place; the only way to
+	 * have arbitrary query parsed on datanode is EXECUTE DIRECT, it is only
+	 * available for superuser.
+	 */
+	if (IS_PGXC_DATANODE && rte->relid == StatisticRelationId)
+		rte->requiredPerms = 0;
+	else
+#endif
 	rte->requiredPerms = ACL_SELECT;
 	rte->checkAsUser = InvalidOid;	/* not set-uid by default, either */
 	rte->selectedCols = NULL;
@@ -3106,8 +3153,13 @@ attnameAttNum(Relation rd, const char *attname, bool sysColOK)
  * Caller needs to verify that it really is an attribute of the rel,
  * at least in the case of "oid", which is now optional.
  */
+#ifdef PGXC
+int
+specialAttNum(const char *attname)
+#else
 static int
 specialAttNum(const char *attname)
+#endif
 {
 	Form_pg_attribute sysatt;
 

@@ -28,6 +28,12 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "access/htup.h"
+#include "catalog/pg_aggregate.h"
+#include "utils/syscache.h"
+#endif
 #include "utils/lsyscache.h"
 
 

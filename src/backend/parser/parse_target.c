@@ -1,4 +1,4 @@
-/*-------------------------------------------------------------------------
+ /*-------------------------------------------------------------------------
  *
  * parse_target.c
  *	  handle target lists
@@ -425,6 +425,11 @@ markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
 				tle->resorigcol = ste->resorigcol;
 			}
 			break;
+#ifdef PGXC
+		case RTE_REMOTE_DUMMY:
+			elog(ERROR, "Invalid RTE found");
+			break;
+#endif /* PGXC */
 	}
 }
 
@@ -1624,6 +1629,11 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 				/* else fall through to inspect the expression */
 			}
 			break;
+#ifdef PGXC
+		case RTE_REMOTE_DUMMY:
+			elog(ERROR, "Invalid RTE found");
+			break;
+#endif /* PGXC */
 	}
 
 	/*

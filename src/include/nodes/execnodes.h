@@ -29,7 +29,9 @@
 #include "utils/reltrigger.h"
 #include "utils/sortsupport.h"
 #include "utils/tuplestore.h"
+#ifdef XCP
 #include "pgxc/squeue.h"
+#endif
 #include "utils/tuplesort.h"
 #include "nodes/tidbitmap.h"
 #include "storage/condition_variable.h"

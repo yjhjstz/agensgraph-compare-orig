@@ -160,4 +160,8 @@ extern int	SPI_register_trigger_data(TriggerData *tdata);
 extern void AtEOXact_SPI(bool isCommit);
 extern void AtEOSubXact_SPI(bool isCommit, SubTransactionId mySubid);
 
+#ifdef PGXC
+extern int SPI_execute_direct(const char *src, char *nodename);
+#endif
+
 #endif							/* SPI_H */

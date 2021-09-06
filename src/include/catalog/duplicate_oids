@@ -5,7 +5,7 @@ use warnings;
 
 BEGIN
 {
-	@ARGV = (glob("pg_*.h"), qw(indexing.h toasting.h), glob("ag_*.h"));
+	@ARGV = (glob("pg_*.h"), qw(indexing.h toasting.h), glob("pgxc_*.h"), glob("ag_*.h"));
 }
 
 my %oidcounts;

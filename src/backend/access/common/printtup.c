@@ -20,6 +20,9 @@
 #include "libpq/pqformat.h"
 #include "tcop/pquery.h"
 #include "utils/lsyscache.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
@@ -203,6 +206,28 @@ SendRowDescriptionMessage(TupleDesc typeinfo, List *targetlist, int16 *formats)
 		int32		atttypmod = attrs[i]->atttypmod;
 
 		pq_sendstring(&buf, NameStr(attrs[i]->attname));
+
+#ifdef PGXC
+		/*
+		 * Send the type name from a Postgres-XC backend node.
+		 * This preserves from OID inconsistencies as architecture is shared nothing.
+		 */
+		if (IsConnFromCoord())
+		{
+			char	   *typename, *typeschema_name;
+			Oid			typeschema_oid;
+
+			typename = get_typename(atttypid);
+			typeschema_oid = get_typ_namespace(atttypid);
+			typeschema_name = isTempNamespace(typeschema_oid) ?
+								"pg_temp" :
+								get_namespace_name(typeschema_oid);
+
+			pq_sendstring(&buf, typeschema_name);
+			pq_sendstring(&buf, typename);
+		}
+#endif
+
 		/* column ID info appears in protocol 3.0 and up */
 		if (proto >= 3)
 		{
@@ -304,10 +329,37 @@ printtup(TupleTableSlot *slot, DestReceiver *self)
 	StringInfoData buf;
 	int			natts = typeinfo->natts;
 	int			i;
+	bool		binary = false;
 
 	/* Set or update my derived attribute info, if needed */
 	if (myState->attrinfo != typeinfo || myState->nattrs != natts)
 		printtup_prepare_info(myState, typeinfo, natts);
+
+#ifdef PGXC
+	/*
+	 * The datanodes would have sent all attributes in TEXT form. But
+	 * if the client has asked for any attribute to be sent in a binary format,
+	 * then we must decode the datarow and send every attribute in the format
+	 * that the client has asked for. Otherwise its ok to just forward the
+	 * datarow as it is
+	 */
+	for (i = 0; i < natts; ++i)
+	{
+		PrinttupAttrInfo *thisState = myState->myinfo + i;
+		if (thisState->format != 0)
+			binary = true;
+	}
+	/*
+	 * If we are having DataRow-based tuple we do not have to encode attribute
+	 * values, just send over the DataRow message as we received it from the
+	 * Datanode
+	 */
+	if (slot->tts_datarow && !binary)
+	{
+		pq_putmessage('D', slot->tts_datarow->msg, slot->tts_datarow->msglen);
+		return true;
+	}
+#endif
 
 	/* Make sure the tuple is fully deconstructed */
 	slot_getallattrs(slot);

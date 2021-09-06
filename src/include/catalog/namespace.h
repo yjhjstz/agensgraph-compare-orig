@@ -133,6 +133,9 @@ extern void GetTempNamespaceState(Oid *tempNamespaceId,
 extern void SetTempNamespaceState(Oid tempNamespaceId,
 					  Oid tempToastNamespaceId);
 extern void ResetTempTableNamespace(void);
+#ifdef XCP
+extern void ForgetTempTableNamespace(void);
+#endif
 
 extern OverrideSearchPath *GetOverrideSearchPath(MemoryContext context);
 extern OverrideSearchPath *CopyOverrideSearchPath(OverrideSearchPath *path);
