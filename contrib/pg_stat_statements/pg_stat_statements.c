@@ -300,7 +300,11 @@ static void pgss_ExecutorEnd(QueryDesc *queryDesc);
 static void pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 					ProcessUtilityContext context, ParamListInfo params,
 					QueryEnvironment *queryEnv,
-					DestReceiver *dest, char *completionTag);
+					DestReceiver *dest,
+#ifdef PGXC
+					bool sentToRemote,
+#endif /* PGXC */
+					char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static uint32 pgss_hash_string(const char *str, int len);
@@ -957,9 +961,13 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
  */
 static void
 pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
-					ProcessUtilityContext context,
-					ParamListInfo params, QueryEnvironment *queryEnv,
-					DestReceiver *dest, char *completionTag)
+					ProcessUtilityContext context, ParamListInfo params,
+					QueryEnvironment *queryEnv,
+					DestReceiver *dest,
+#ifdef PGXC
+					bool sentToRemote,
+#endif /* PGXC */
+					char *completionTag)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
 
@@ -997,11 +1005,15 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 			if (prev_ProcessUtility)
 				prev_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
-									dest, completionTag);
+									dest,
+									sentToRemote,
+									completionTag);
 			else
 				standard_ProcessUtility(pstmt, queryString,
 										context, params, queryEnv,
-										dest, completionTag);
+										dest,
+										sentToRemote,
+										completionTag);
 			nested_level--;
 		}
 		PG_CATCH();
@@ -1061,11 +1073,15 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		if (prev_ProcessUtility)
 			prev_ProcessUtility(pstmt, queryString,
 								context, params, queryEnv,
-								dest, completionTag);
+								dest,
+								sentToRemote,
+								completionTag);
 		else
 			standard_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
-									dest, completionTag);
+									dest,
+									sentToRemote,
+									completionTag);
 	}
 }
 

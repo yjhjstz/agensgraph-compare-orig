@@ -19,11 +19,11 @@ all: pg_config.h pg_config_ext.h pg_config_os.h
 # Subdirectories containing installable headers
 SUBDIRS = access bootstrap catalog commands common datatype \
 	executor fe_utils foreign \
-	lib libpq mb nodes optimizer parser postmaster regex replication \
+	lib libpq mb nodes optimizer parser pgxc postmaster regex replication \
 	rewrite statistics storage tcop snowball snowball/libstemmer tsearch \
 	tsearch/dicts utils port port/atomics port/win32 port/win32_msvc \
 	port/win32_msvc/sys port/win32/arpa port/win32/netinet \
-	port/win32/sys portability
+	port/win32/sys portability gtm
 
 # Install all headers
 install: all installdirs

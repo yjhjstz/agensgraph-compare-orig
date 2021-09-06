@@ -582,10 +582,10 @@ MAKEFLAGS=
 # Identity of this package.
 PACKAGE_NAME='PostgreSQL'
 PACKAGE_TARNAME='postgresql'
+PACKAGE_VERSION='10beta3 (Postgres-XL 10alpha2)'
 PACKAGE_XC_VERSION='10alpha2'
-PACKAGE_VERSION='10.4'
-PACKAGE_STRING='PostgreSQL 10.4'
-PACKAGE_BUGREPORT='pgsql-bugs@postgresql.org'
+PACKAGE_STRING='PostgreSQL 10beta3 (Postgres-XL 10alpha2)'
+PACKAGE_BUGREPORT='bugs@postgres-xl.org'
 PACKAGE_URL=''
 
 ac_unique_file="src/backend/access/common/heaptuple.c"
@@ -2789,6 +2789,9 @@ AG_VERSION=1.2.0
 
 cat >>confdefs.h <<_ACEOF
 #define AG_VERSION "$AG_VERSION"
+_ACEOF
+
+cat >>confdefs.h <<_ACEOF
 #define PGXC_VERSION "$PACKAGE_XC_VERSION"
 _ACEOF
 

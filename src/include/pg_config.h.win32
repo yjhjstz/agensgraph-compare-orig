@@ -576,6 +576,12 @@
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "postgresql"
 
+/* Postgres-XC version as a string */
+#define PGXC_VERSION "1.1devel"
+
+/* Postgres-XC version as a number */
+#define PGXC_VERSION_NUM 10100
+
 /* Define to the name of the default PostgreSQL service principal in Kerberos.
    (--with-krb-srvnam=NAME) */
 #define PG_KRB_SRVNAM "postgres"
@@ -585,6 +591,9 @@
 
 /* AgensGraph version as a string */
 #define AG_VERSION "1.2.0"
+
+/* A string containing the version number, platform, and C compiler */
+#define PGXC_VERSION_STR "Uninitialized version string (win32)"
 
 /* The size of `long', as computed by sizeof. */
 #define SIZEOF_LONG 4
