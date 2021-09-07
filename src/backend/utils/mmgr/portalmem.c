@@ -574,8 +574,33 @@ PortalDrop(Portal portal, bool isTopCommit)
 	 */
 	PortalHashTableDelete(portal);
 
+#ifdef XCP
+	elog(DEBUG3, "Dropped portal %s (prepared statement %s) and removed entry from the hash table",
+			portal->name, portal->prepStmtName ? portal->prepStmtName : "(null)");
+#endif
+
 	/* drop cached plan reference, if any */
 	PortalReleaseCachedPlan(portal);
+
+#ifdef XCP
+	/*
+	 * Skip memory release if portal is still producining, means has tuples in
+	 * local memory, and has to push them to consumers. It would loose the
+	 * tuples if free the memory now.
+	 * The cleanup should be completed if the portal finished producing.
+	 */
+	if (portalIsProducing(portal))
+		return;
+
+	if (portal->queryDesc)
+	{
+		ResourceOwner saveResourceOwner = CurrentResourceOwner;
+		CurrentResourceOwner = portal->resowner;
+		FreeQueryDesc(portal->queryDesc);
+		CurrentResourceOwner = saveResourceOwner;
+		portal->queryDesc = NULL;
+	}
+#endif
 
 	/*
 	 * If portal has a snapshot protecting its data, release that.  This needs

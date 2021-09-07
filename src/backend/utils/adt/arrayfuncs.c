@@ -194,6 +194,40 @@ array_in(PG_FUNCTION_ARGS)
 				lBound[MAXDIM];
 	ArrayMetaState *my_extra;
 
+#ifdef XCP
+	/* Make a modifiable copy of the input */
+	string_save = pstrdup(string);
+	if (*string_save == '(')
+	{
+		/*
+		 * String representation contains prefix defining data type of array
+		 * elements, if array has been output as anyarray.
+		 */
+		char *typnspname;
+		char *typname;
+
+		/* Type namespace is started after '(' and terminated by a '.' */
+		typnspname = string_save + 1;
+		for (p = typnspname; *p != '.'; p++)
+			if (*p == ')' || *p == '\0') /* dot not found */
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid element type definition")));
+		/* it is OK to modify the copy */
+		*p = '\0';
+		typname = p + 1;
+		for (p = typname; *p != ')'; p++)
+			if (*p == '\0') /* closing paren not found */
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid element type definition")));
+		*p = '\0';
+		p++;
+		element_type = get_typname_typid(typname, get_namespaceid(typnspname));
+	}
+	else
+		p = string_save;
+#endif
 	/*
 	 * We arrange to look up info about element type, including its input
 	 * conversion proc, only once per series of calls, assuming the element
@@ -227,18 +261,6 @@ array_in(PG_FUNCTION_ARGS)
 	typdelim = my_extra->typdelim;
 	typioparam = my_extra->typioparam;
 
-	/* Make a modifiable copy of the input */
-	string_save = pstrdup(string);
-
-	/*
-	 * If the input string starts with dimension info, read and use that.
-	 * Otherwise, we require the input to be in curly-brace style, and we
-	 * prescan the input to determine dimensions.
-	 *
-	 * Dimension info takes the form of one or more [n] or [m:n] items. The
-	 * outer loop iterates once per dimension item.
-	 */
-	p = string_save;
 	ndim = 0;
 	for (;;)
 	{

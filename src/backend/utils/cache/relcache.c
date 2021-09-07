@@ -70,6 +70,10 @@
 #include "optimizer/clauses.h"
 #include "optimizer/prep.h"
 #include "optimizer/var.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "postmaster/autovacuum.h"
+#endif
 #include "rewrite/rewriteDefine.h"
 #include "rewrite/rowsecurity.h"
 #include "storage/lmgr.h"
@@ -1246,7 +1250,13 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		case RELPERSISTENCE_TEMP:
 			if (isTempOrTempToastNamespace(relation->rd_rel->relnamespace))
 			{
+#ifdef XCP
+				relation->rd_backend = OidIsValid(MyCoordId) ?
+												MyFirstBackendId : MyBackendId;
+#else
+				
 				relation->rd_backend = BackendIdForTempRelations();
+#endif
 				relation->rd_islocaltemp = true;
 			}
 			else
@@ -1285,7 +1295,20 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	 * Fetch rules and triggers that affect this relation
 	 */
 	if (relation->rd_rel->relhasrules)
+	{
+		/*
+		 * We could be in the middle of reading a portable input string and get
+		 * called to build the relation descriptor. This might require
+		 * recursive calls to stringToNode (e.g. while reading rules) and those
+		 * must not be done with portable input turned on (because the
+		 * stringified versions are not created with portable output turned
+		 * on). So temporarily reset portable input to false and restore once
+		 * we are done with reading rules.
+		 */
+		bool saved_portable_input = set_portable_input(false);
 		RelationBuildRuleLock(relation);
+		set_portable_input(saved_portable_input);
+	}
 	else
 	{
 		relation->rd_rules = NULL;
@@ -1297,8 +1320,24 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	else
 		relation->trigdesc = NULL;
 
+#ifdef PGXC
+	/*
+	 * We need the locator info while restoring from a dump while adding a new
+	 * node to the cluster and when there are partition tables. Distribution
+	 * information for partition tables is derived from the parent table and we
+	 * need the locator info for that.
+	 */
+	if ((IS_PGXC_COORDINATOR || isRestoreMode) &&
+		 relation->rd_id >= FirstNormalObjectId)
+		RelationBuildLocator(relation);
+#endif
 	if (relation->rd_rel->relrowsecurity)
+	{
+		/* See comments near RelationBuildRuleLocok for details */
+		bool saved_portable_input = set_portable_input(false);
 		RelationBuildRowSecurity(relation);
+		set_portable_input(saved_portable_input);
+	}
 	else
 		relation->rd_rsdesc = NULL;
 
@@ -3268,6 +3307,11 @@ RelationBuildLocalRelation(const char *relname,
 			break;
 		case RELPERSISTENCE_TEMP:
 			Assert(isTempOrTempToastNamespace(relnamespace));
+#ifdef XCP
+			if (OidIsValid(MyCoordId))
+				rel->rd_backend = MyFirstBackendId;
+			else
+#endif
 			rel->rd_backend = BackendIdForTempRelations();
 			rel->rd_islocaltemp = true;
 			break;

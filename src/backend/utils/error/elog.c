@@ -73,10 +73,16 @@
 #include "postmaster/syslogger.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "tcop/tcopprot.h"
+#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/execRemote.h"
+#endif
 
 
 /* In this module, access gettext() via err_gettext() */
@@ -2612,6 +2618,54 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 				else
 					appendStringInfoString(buf, unpack_sql_state(edata->sqlerrcode));
 				break;
+#ifdef XCP
+			case 'R':
+				if (padding != 0)
+				{
+					char		strfbuf[128];
+
+					snprintf(strfbuf, sizeof(strfbuf) - 1, "(%c/%s/%d)",
+							remoteConnType == REMOTE_CONN_APP ? 'A' : 
+							remoteConnType == REMOTE_CONN_DATANODE ? 'D' :
+							remoteConnType == REMOTE_CONN_COORD ? 'C' : 'U',
+							parentPGXCNode, parentPGXCPid);
+					appendStringInfo(buf, "%*s", padding, strfbuf);
+				}
+				else
+					appendStringInfo(buf, "(%c/%s/%d)",
+							remoteConnType == REMOTE_CONN_APP ? 'A' : 
+							remoteConnType == REMOTE_CONN_DATANODE ? 'D' :
+							remoteConnType == REMOTE_CONN_COORD ? 'C' : 'U',
+							parentPGXCNode, parentPGXCPid);
+				break;
+
+			case 'C':
+				if (MyProc != NULL)
+				{
+					if (padding != 0)
+					{
+						char		strfbuf[128];
+
+						snprintf(strfbuf, sizeof(strfbuf) - 1, "(%s/%u)",
+								 MyCoordName, MyProc->coordPid);
+						appendStringInfo(buf, "%*s", padding, strfbuf);
+					}
+					else
+						appendStringInfo(buf, "(%s/%u)", MyCoordName, MyProc->coordPid);
+				}
+				else if (padding != 0)
+					appendStringInfoSpaces(buf,
+										   padding > 0 ? padding : -padding);
+				break;
+
+			case 'S':
+				if (padding != 0)
+					appendStringInfo(buf, "%*s", padding, global_session_string);
+				else
+					appendStringInfo(buf, "%s", global_session_string);
+
+				break;
+#endif				
 			default:
 				/* format error - ignore it */
 				break;

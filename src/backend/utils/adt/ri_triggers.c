@@ -57,6 +57,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 
 
 /* ----------
@@ -261,6 +264,15 @@ RI_FKey_check(TriggerData *trigdata)
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 	int			i;
+
+#ifdef PGXC
+	/*
+	 * Referential integrity is not supported on Coordinator as it has no data, so
+	 * we just come out of the function without actually performing any integrity checks.
+	 */
+	if (IS_PGXC_COORDINATOR)
+		return PointerGetDatum(NULL);
+#endif
 
 	/*
 	 * Get arguments.

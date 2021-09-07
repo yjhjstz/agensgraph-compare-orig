@@ -41,6 +41,10 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/poolmgr.h"
+#endif
 #include "replication/slot.h"
 #include "replication/syncrep.h"
 #include "storage/condition_variable.h"
@@ -370,9 +374,16 @@ InitProcess(void)
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+#ifdef XCP
+	MyProc->coordId = InvalidOid;
+	MyProc->coordPid = 0;
+#endif
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyPgXact->delayChkpt = false;
 	MyPgXact->vacuumFlags = 0;
+#ifdef PGXC
+	MyProc->isPooler = false;
+#endif
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
 	if (IsAutoVacuumWorkerProcess())
 		MyPgXact->vacuumFlags |= PROC_IS_AUTOVACUUM;
@@ -543,6 +554,15 @@ InitAuxiliaryProcess(void)
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+#ifdef XCP
+	MyProc->coordId = InvalidOid;
+	MyProc->coordPid = 0;
+#endif
+#ifdef PGXC
+	MyProc->isPooler = false;
+	if (IsPGXCPoolerProcess())
+		MyProc->isPooler = true;
+#endif
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyPgXact->delayChkpt = false;
 	MyPgXact->vacuumFlags = 0;
@@ -1118,7 +1138,8 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 					LockCheckConflicts(lockMethodTable,
 									   lockmode,
 									   lock,
-									   proclock) == STATUS_OK)
+									   proclock,
+									   MyProc) == STATUS_OK)
 				{
 					/* Skip the wait and just grant myself the lock. */
 					GrantLock(lock, proclock, lockmode);
@@ -1618,7 +1639,8 @@ ProcLockWakeup(LockMethod lockMethodTable, LOCK *lock)
 			LockCheckConflicts(lockMethodTable,
 							   lockmode,
 							   lock,
-							   proc->waitProcLock) == STATUS_OK)
+							   proc->waitProcLock,
+							   proc) == STATUS_OK)
 		{
 			/* OK to waken */
 			GrantLock(lock, proc->waitProcLock, lockmode);

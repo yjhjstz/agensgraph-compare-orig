@@ -260,6 +260,10 @@ static LOCALLOCK *StrongLockInProgress;
 static LOCALLOCK *awaitedLock;
 static ResourceOwner awaitedOwner;
 
+static LockAcquireResult LockAcquireExtendedXC(const LOCKTAG *locktag,
+LOCKMODE lockmode, bool sessionLock, bool dontWait, bool reportMemoryError,
+bool only_increment);
+
 
 #ifdef LOCK_DEBUG
 
@@ -688,6 +692,28 @@ LockAcquire(const LOCKTAG *locktag,
 	return LockAcquireExtended(locktag, lockmode, sessionLock, dontWait, true);
 }
 
+#ifdef PGXC
+/*
+ * LockIncrementIfExists - Special purpose case of LockAcquire().
+ * This checks if there is already a reference to the lock. If yes,
+ * increments it, and returns true. If not, just returns back false.
+ * Effectively, it never creates a new lock.
+ */
+bool
+LockIncrementIfExists(const LOCKTAG *locktag,
+			LOCKMODE lockmode, bool sessionLock)
+{
+	int ret;
+
+	ret = LockAcquireExtendedXC(locktag, lockmode,
+	                            sessionLock,
+	                            true, /* never wait */
+								true, true);
+
+	return (ret == LOCKACQUIRE_ALREADY_HELD);
+}
+#endif
+
 /*
  * LockAcquireExtended - allows us to specify additional options
  *
@@ -703,6 +729,22 @@ LockAcquireExtended(const LOCKTAG *locktag,
 					bool sessionLock,
 					bool dontWait,
 					bool reportMemoryError)
+{
+	return LockAcquireExtendedXC(locktag, lockmode, sessionLock, dontWait,
+	                             reportMemoryError, false);
+}
+
+/*
+ * LockAcquireExtendedXC - additional parameter only_increment. This is XC
+ * specific. Check comments for the function LockIncrementIfExists()
+ */
+static LockAcquireResult
+LockAcquireExtendedXC(const LOCKTAG *locktag,
+					LOCKMODE lockmode,
+					bool sessionLock,
+					bool dontWait,
+					bool reportMemoryError,
+					bool only_increment)
 {
 	LOCKMETHODID lockmethodid = locktag->locktag_lockmethodid;
 	LockMethod	lockMethodTable;
@@ -797,7 +839,13 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		GrantLockLocal(locallock, owner);
 		return LOCKACQUIRE_ALREADY_HELD;
 	}
-
+#ifdef PGXC
+	else if (only_increment)
+	{
+		/* User does not want to create new lock if it does not already exist */
+		return LOCKACQUIRE_NOT_AVAIL;
+	}
+#endif
 	/*
 	 * Prepare to emit a WAL record if acquisition of this lock needs to be
 	 * replayed in a standby server.
@@ -932,7 +980,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		status = STATUS_FOUND;
 	else
 		status = LockCheckConflicts(lockMethodTable, lockmode,
-									lock, proclock);
+									lock, proclock, MyProc);
 
 	if (status == STATUS_OK)
 	{
@@ -1292,10 +1340,12 @@ int
 LockCheckConflicts(LockMethod lockMethodTable,
 				   LOCKMODE lockmode,
 				   LOCK *lock,
-				   PROCLOCK *proclock)
+				   PROCLOCK *proclock,
+				   PGPROC *proc)
 {
 	int			numLockModes = lockMethodTable->numLockModes;
 	LOCKMASK	myLocks;
+	LOCKMASK	otherLocks;
 	int			conflictMask = lockMethodTable->conflictTab[lockmode];
 	int			conflictsRemaining[MAX_LOCKMODES];
 	int			totalConflictsRemaining = 0;
@@ -1343,6 +1393,78 @@ LockCheckConflicts(LockMethod lockMethodTable,
 		PROCLOCK_PRINT("LockCheckConflicts: resolved (simple)", proclock);
 		return STATUS_OK;
 	}
+
+#ifdef XCP
+	/*
+	 * So the lock is conflicting with locks held by some other backend.
+	 * But the backend may belong to the same distributed session. We need to
+	 * detect such cases and either allow the lock or throw error, because
+	 * waiting for the lock most probably would cause deadlock.
+	 */
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	if (proc->coordPid > 0)
+	{
+		/* Count locks held by this process and friends */
+		int myHolding[numLockModes + 1];
+		SHM_QUEUE  *procLocks;
+		PROCLOCK   *nextplock;
+
+		/* Initialize the counters */
+		for (i = 1; i <= numLockModes; i++)
+			myHolding[i] = 0;
+		otherLocks = 0;
+
+		/* Iterate over processes associated with the lock */
+		procLocks = &(lock->procLocks);
+
+		nextplock = (PROCLOCK *) SHMQueueNext(procLocks, procLocks,
+											  offsetof(PROCLOCK, lockLink));
+		while (nextplock)
+		{
+			PGPROC *nextproc = nextplock->tag.myProc;
+
+			if (nextproc->coordPid == proc->coordPid &&
+					nextproc->coordId == proc->coordId)
+			{
+				/*
+				 * The process belongs to same distributed session, count locks
+				 */
+				myLocks = nextplock->holdMask;
+				for (i = 1; i <= numLockModes; i++)
+					myHolding[i] += ((myLocks & LOCKBIT_ON(i)) ? 1 : 0);
+			}
+			/* get next proclock */
+			nextplock = (PROCLOCK *)
+					SHMQueueNext(procLocks, &nextplock->lockLink,
+								 offsetof(PROCLOCK, lockLink));
+		}
+
+		/* Summarize locks held by other processes */
+		for (i = 1; i <= numLockModes; i++)
+		{
+			if (lock->granted[i] > myHolding[i])
+				otherLocks |= LOCKBIT_ON(i);
+		}
+
+		/*
+		 * Yet another check.
+		 */
+		if (!(lockMethodTable->conflictTab[lockmode] & otherLocks))
+		{
+			LWLockRelease(ProcArrayLock);
+			/* no conflict. OK to get the lock */
+			PROCLOCK_PRINT("LockCheckConflicts: resolved as held by friend",
+						   proclock);
+#ifdef LOCK_DEBUG
+			elog(LOG, "Allow lock as held by the same distributed session [%u,%u] %s",
+				 lock->tag.locktag_field1, lock->tag.locktag_field2,
+				 lockMethodTable->lockModeNames[lockmode]);
+#endif
+			return STATUS_OK;
+		}
+	}
+	LWLockRelease(ProcArrayLock);
+#endif
 
 	/* If no group locking, it's definitely a conflict. */
 	if (proclock->groupLeader == MyProc && MyProc->lockGroupLeader == NULL)

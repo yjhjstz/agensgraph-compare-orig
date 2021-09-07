@@ -388,6 +388,20 @@ static const struct config_enum_entry constraint_exclusion_options[] = {
 	{NULL, 0, false}
 };
 
+#ifdef PGXC
+/*
+ * Define remote connection types for PGXC
+ */
+static const struct config_enum_entry pgxc_conn_types[] = {
+	{"application", REMOTE_CONN_APP, false},
+	{"coordinator", REMOTE_CONN_COORD, false},
+	{"datanode", REMOTE_CONN_DATANODE, false},
+	{"gtm", REMOTE_CONN_GTM, false},
+	{"gtmproxy", REMOTE_CONN_GTM_PROXY, false},
+	{NULL, 0, false}
+};
+#endif
+
 /*
  * Although only "on", "off", "remote_apply", "remote_write", and "local" are
  * documented, we accept all the likely variants of "on" and "off".
@@ -423,6 +437,18 @@ static const struct config_enum_entry huge_pages_options[] = {
 	{"0", HUGE_PAGES_OFF, true},
 	{NULL, 0, false}
 };
+
+#ifdef XCP
+/*
+ * Set global-snapshot source. 'gtm' is default, but user can choose
+ * 'coordinator' for performance improvement at the cost of reduced consistency
+ */
+static const struct config_enum_entry global_snapshot_source_options[] = {
+	{"gtm", GLOBAL_SNAPSHOT_SOURCE_GTM, true},
+	{"coordinator", GLOBAL_SNAPSHOT_SOURCE_COORDINATOR, true},
+	{NULL, 0, false}
+};
+#endif
 
 static const struct config_enum_entry force_parallel_mode_options[] = {
 	{"off", FORCE_PARALLEL_OFF, false},
@@ -705,6 +731,16 @@ const char *const config_group_names[] =
 	gettext_noop("Customized Options"),
 	/* DEVELOPER_OPTIONS */
 	gettext_noop("Developer Options"),
+#ifdef PGXC
+	/* DATA_NODES */
+	gettext_noop("Datanodes and Connection Pooling"),
+	/* GTM */
+	gettext_noop("GTM Connection"),
+	/* COORDINATORS */
+	gettext_noop("Coordinator Options"),
+	/* XC_HOUSEKEEPING_OPTIONS */
+	gettext_noop("XC Housekeeping Options"),
+#endif
 	/* help_config wants this array to be null-terminated */
 	NULL
 };
@@ -944,6 +980,47 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+#ifdef PGXC
+	{
+		{"enable_fast_query_shipping", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of fast query shipping to ship query directly to datanode."),
+			NULL
+		},
+		&enable_fast_query_shipping,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"loose_constraints", PGC_USERSET, COORDINATORS,
+			gettext_noop("Relax enforcing of constraints"),
+			gettext_noop("If enabled then constraints like foreign keys "
+						 "are not enforced. It's the users responsibility "
+						 "to maintain referential integrity at the application "
+						 "level")
+		},
+		&loose_constraints,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"gtm_backup_barrier", PGC_SUSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables coordinator to report barrier id to GTM for backup."),
+			NULL
+		},
+		&gtm_backup_barrier,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_datanode_row_triggers", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables datanode-only ROW triggers"),
+			NULL
+		},
+		&enable_datanode_row_triggers,
+		false,
+		NULL, NULL, NULL
+	},
+#endif
 	{
 		{"enable_gathermerge", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of gather merge plans."),
@@ -1264,6 +1341,26 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		check_log_stats, NULL, NULL
 	},
+#ifdef XCP
+	{
+		{"log_remotesubplan_stats", PGC_SUSET, STATS_MONITORING,
+			gettext_noop("Writes remote subplan performance statistics to the server log."),
+			NULL
+		},
+		&log_remotesubplan_stats,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"log_gtm_stats", PGC_SUSET, STATS_MONITORING,
+			gettext_noop("Writes GTM performance statistics to the server log."),
+			NULL
+		},
+		&log_gtm_stats,
+		false,
+		NULL, NULL, NULL
+	},
+#endif
 #ifdef BTREE_BUILD_STATS
 	{
 		{"log_btree_build_stats", PGC_SUSET, DEVELOPER_OPTIONS,
@@ -1693,6 +1790,27 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
+#ifdef PGXC
+	{
+		{"persistent_datanode_connections", PGC_BACKEND, DEVELOPER_OPTIONS,
+			gettext_noop("Session never releases acquired connections."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&PersistentConnections,
+		false,
+		check_persistent_connections, NULL, NULL
+	},
+	{
+		{"xc_maintenance_mode", PGC_SUSET, XC_HOUSEKEEPING_OPTIONS,
+		    gettext_noop("Turn on XC maintenance mode."),
+		 	gettext_noop("Can set ON by SET command by superuser.")
+		},
+		&xc_maintenance_mode,
+		false,
+		check_pgxc_maintenance_mode, NULL, NULL
+	},
+#endif
 
 	{
 		{"lo_compat_privileges", PGC_SUSET, COMPAT_OPTIONS_PREVIOUS,
@@ -2171,8 +2289,13 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_prepared_xacts,
+#ifdef PGXC
+		10, 0, INT_MAX / 4,
+		NULL, NULL, NULL
+#else
 		0, 0, MAX_BACKENDS,
 		NULL, NULL, NULL
+#endif
 	},
 
 #ifdef LOCK_DEBUG
@@ -2984,6 +3107,147 @@ static struct config_int ConfigureNamesInt[] =
 		1024, 100, 102400,
 		NULL, NULL, NULL
 	},
+#ifdef PGXC
+	{
+		{"sequence_range", PGC_USERSET, COORDINATORS,
+			gettext_noop("The range of values to ask from GTM for sequences. "
+			             "If CACHE parameter is set then that overrides this."),
+			NULL,
+		},
+		&SequenceRangeVal,
+		1000, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pool_conn_keepalive", PGC_SIGHUP, DATA_NODES,
+			gettext_noop("Close connections if they are idle in the pool for that time."),
+			gettext_noop("A value of -1 turns autoclose off."),
+			GUC_UNIT_S
+		},
+		&PoolConnKeepAlive,
+		600, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pool_maintenance_timeout", PGC_SIGHUP, DATA_NODES,
+			gettext_noop("Launch maintenance routine if pooler idle for that time."),
+			gettext_noop("A value of -1 turns feature off."),
+			GUC_UNIT_S
+		},
+		&PoolMaintenanceTimeout,
+		30, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_pool_size", PGC_SIGHUP, DATA_NODES,
+			gettext_noop("Max pool size."),
+			gettext_noop("If number of active connections reaches this value, "
+						 "other connection requests will be refused")
+		},
+		&MaxPoolSize,
+		100, 1, 65535,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pooler_port", PGC_POSTMASTER, DATA_NODES,
+			gettext_noop("Port of the Pool Manager."),
+			NULL
+		},
+		&PoolerPort,
+		6667, 1, 65535,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gtm_port", PGC_POSTMASTER, GTM,
+			gettext_noop("Port of GTM."),
+			NULL
+		},
+		&GtmPort,
+		6666, 1, 65535,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_datanodes", PGC_POSTMASTER, DATA_NODES,
+			gettext_noop("Maximum number of Datanodes in the cluster."),
+			gettext_noop("It is not possible to create more Datanodes in the cluster than "
+						 "this maximum number.")
+		},
+		&MaxDataNodes,
+		16, 2, MAX_DATANODES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_coordinators", PGC_POSTMASTER, DATA_NODES,
+			gettext_noop("Maximum number of Coordinators in the cluster."),
+			gettext_noop("It is not possible to create more Coordinators in the cluster than "
+						 "this maximum number.")
+		},
+		&MaxCoords,
+		16, 2, MAX_COORDINATORS,
+		NULL, NULL, NULL
+	},
+
+#ifdef XCP
+	/*
+	 * Shared queues provide shared memory buffers to stream data from
+	 * "producer" - process which executes subplan to "consumers" - processes
+	 * that are forwarding data to destination data nodes.
+	 */
+	{
+		{"shared_queues", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory queues used by the "
+					"distributed executor, minimum 1/4 of max_connections."),
+			NULL
+		},
+		&NSQueues,
+		64, 16, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"shared_queue_size", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the amount of memory allocated for a shared"
+					" memory queue per datanode."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&SQueueSize,
+		32, 1, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"parentPGXCPid", PGC_USERSET, UNGROUPED,
+			gettext_noop("PID of the remote process attached to this session."),
+			gettext_noop("This GUC only makes sense when a coordinator or a "
+					"datanode has opened the session"),
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_AUTO_FILE | GUC_DISALLOW_IN_FILE | GUC_NO_SHOW_ALL
+		},
+		&parentPGXCPid,
+		-1, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pgxl_remote_fetch_size", PGC_USERSET, UNGROUPED,
+			gettext_noop("Number of maximum tuples to fetch in one remote iteration"),
+			NULL,
+			0
+		},
+		&PGXLRemoteFetchSize,
+		1000, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+#endif
+#endif /* PGXC */
 
 	{
 		{"gin_pending_list_limit", PGC_USERSET, CLIENT_CONN_STATEMENT,
@@ -3086,6 +3350,28 @@ static struct config_real ConfigureNamesReal[] =
 		DEFAULT_CURSOR_TUPLE_FRACTION, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
+
+#ifdef XCP
+	{
+		{"network_byte_cost", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("Sets the planner's estimate of the cost of "
+						 "sending data from remote node."),
+			NULL
+		},
+		&network_byte_cost,
+		DEFAULT_NETWORK_BYTE_COST, 0, DBL_MAX, NULL, NULL
+	},
+
+	{
+		{"remote_query_cost", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("Sets the planner's estimate of the cost of "
+						 "setting up remote subquery."),
+			NULL
+		},
+		&remote_query_cost,
+		DEFAULT_REMOTE_QUERY_COST, 0, DBL_MAX, NULL, NULL
+	},
+#endif
 
 	{
 		{"geqo_selection_bias", PGC_USERSET, QUERY_TUNING_GEQO,
@@ -3444,6 +3730,19 @@ static struct config_string ConfigureNamesString[] =
 		check_session_authorization, assign_session_authorization, NULL
 	},
 
+#ifdef XCP
+	{
+		{"global_session", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the global session identifier."),
+			NULL,
+			GUC_IS_NAME | GUC_REPORT | GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST
+		},
+		&global_session_string,
+		"none",
+		check_global_session, assign_global_session, NULL
+	},
+#endif
+
 	{
 		{"log_destination", PGC_SIGHUP, LOGGING_WHERE,
 			gettext_noop("Sets the destination for server log output."),
@@ -3699,6 +3998,39 @@ static struct config_string ConfigureNamesString[] =
 		check_TSCurrentConfig, assign_TSCurrentConfig, NULL
 	},
 
+#ifdef PGXC
+	{
+		{"gtm_host", PGC_POSTMASTER, GTM,
+			gettext_noop("Host name or address of GTM"),
+			NULL
+		},
+		&GtmHost,
+		"localhost",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pgxc_node_name", PGC_POSTMASTER, GTM,
+			gettext_noop("The Coordinator or Datanode name."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_IS_NAME
+		},
+		&PGXCNodeName,
+		"",
+		NULL, NULL, NULL
+	},
+#endif
+#ifdef XCP
+	{
+		{"parentnode", PGC_BACKEND, CONN_AUTH,
+			gettext_noop("Sets the name of the parent data node"),
+			NULL
+		},
+		&parentPGXCNode,
+		NULL,
+		NULL, NULL, NULL
+	},
+#endif /* XCP */
 	{
 		{"ssl_ciphers", PGC_SIGHUP, CONN_AUTH_SECURITY,
 			gettext_noop("Sets the list of allowed SSL ciphers."),
@@ -4020,6 +4352,17 @@ static struct config_enum ConfigureNamesEnum[] =
 		NULL, NULL, NULL
 	},
 
+#ifdef PGXC
+	{
+		{"remotetype", PGC_BACKEND, CONN_AUTH,
+			gettext_noop("Sets the type of Postgres-XL remote connection"),
+			NULL
+		},
+		&remoteConnType,
+		REMOTE_CONN_APP, pgxc_conn_types,
+		NULL, NULL, NULL
+	},
+#endif
 	{
 		{"huge_pages", PGC_POSTMASTER, RESOURCES_MEM,
 			gettext_noop("Use of huge pages on Linux."),
@@ -4030,6 +4373,19 @@ static struct config_enum ConfigureNamesEnum[] =
 		NULL, NULL, NULL
 	},
 
+#ifdef XCP
+	{
+		{"global_snapshot_source", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Set preferred source of a snapshot."),
+			gettext_noop("When set to 'coordinator', a snapshot is taken at "
+					"the coordinator at the risk of reduced consistency. "
+					"Default is 'gtm'")
+		},
+		&GlobalSnapshotSource,
+		GLOBAL_SNAPSHOT_SOURCE_GTM, global_snapshot_source_options,
+		NULL, NULL, NULL
+	},
+#endif
 	{
 		{"force_parallel_mode", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Forces use of parallel query facilities."),
@@ -6061,6 +6417,23 @@ set_config_option(const char *name, const char *value,
 	bool		prohibitValueChange = false;
 	bool		makeDefault;
 
+#ifdef XCP
+	bool		send_to_nodes = false;
+
+	/* Determine now, because source may be changed below in the function */
+	if (source == PGC_S_SESSION && (IS_PGXC_DATANODE || !IsConnFromCoord()))
+		send_to_nodes = true;
+#endif
+
+#ifdef PGXC
+	/*
+	 * Current GucContest value is needed to check if xc_maintenance_mode parameter
+	 * is specified in valid contests.   It is allowed only by SET command or
+	 * libpq connect parameters so that setting this ON is just temporary.
+	 */
+	currentGucContext = context;
+#endif
+
 	if (elevel == 0)
 	{
 		if (source == PGC_S_DEFAULT || source == PGC_S_FILE)
@@ -6771,6 +7144,63 @@ set_config_option(const char *name, const char *value,
 
 	if (changeVal && (record->flags & GUC_REPORT))
 		ReportGUCOption(record);
+
+#ifdef XCP
+	if (send_to_nodes)
+	{
+		RemoteQuery    *step;
+		StringInfoData 	poolcmd;
+
+		initStringInfo(&poolcmd);
+
+		/*
+		 * Save new parameter value with the node manager.
+		 * XXX here we may check: if value equals to configuration default
+		 * just reset parameter instead. Minus one table entry, shorter SET
+		 * command sent downn... Sounds like optimization.
+		 */
+
+		if (action == GUC_ACTION_LOCAL)
+		{
+			if (IsTransactionBlock())
+				PGXCNodeSetParam(true, name, value, record->flags);
+			value = quote_guc_value(value, record->flags);
+			appendStringInfo(&poolcmd, "SET LOCAL %s TO %s", name,
+					(value ? value : "DEFAULT"));
+		}
+		else
+		{
+			PGXCNodeSetParam(false, name, value, record->flags);
+			value = quote_guc_value(value, record->flags);
+			appendStringInfo(&poolcmd, "SET %s TO %s", name,
+					(value ? value : "DEFAULT"));
+		}
+
+		/*
+		 * Send new value down to remote nodes if any is connected
+		 * XXX here we are creatig a node and invoke a function that is trying
+		 * to send some. That introduces some overhead, which may seem to be
+		 * significant if application sets a bunch of parameters before doing
+		 * anything useful - waste work for for each set statement.
+		 * We may want to avoid that, by resetting the remote parameters and
+		 * flagging that parameters needs to be updated before sending down next
+		 * statement.
+		 * On the other hand if session runs with a number of customized
+		 * parameters and switching one, that would cause all values are resent.
+		 * So let's go with "send immediately" approach: parameters are not set
+		 * too often to care about overhead here.
+		 */
+		step = makeNode(RemoteQuery);
+		step->combine_type = COMBINE_TYPE_SAME;
+		step->exec_nodes = NULL;
+		step->sql_statement = poolcmd.data;
+		/* force_autocommit is actually does not start transaction on nodes */
+		step->exec_type = EXEC_ON_CURRENT;
+		ExecRemoteUtility(step);
+		pfree(step);
+		pfree(poolcmd.data);
+	}
+#endif
 
 	return changeVal ? 1 : -1;
 }
@@ -7489,6 +7919,10 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 			{
 				ListCell   *head;
 
+#ifdef XCP
+				/* SET TRANSACTION assumes "local" */
+				stmt->is_local = true;
+#endif
 				WarnNoTransactionChain(isTopLevel, "SET TRANSACTION");
 
 				foreach(head, stmt->args)
@@ -7512,6 +7946,11 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 			else if (strcmp(stmt->name, "SESSION CHARACTERISTICS") == 0)
 			{
 				ListCell   *head;
+
+#ifdef XCP
+				/* SET SESSION CHARACTERISTICS assumes "session" */
+				stmt->is_local = false;
+#endif
 
 				foreach(head, stmt->args)
 				{
@@ -10358,6 +10797,53 @@ check_log_stats(bool *newval, void **extra, GucSource source)
 	}
 	return true;
 }
+
+#ifdef PGXC
+/*
+ * Only a warning is printed to log.
+ * Returning false will cause FATAL error and it will not be good.
+ */
+static bool
+check_pgxc_maintenance_mode(bool *newval, void **extra, GucSource source)
+{
+
+	switch(source)
+	{
+		case PGC_S_DYNAMIC_DEFAULT:
+		case PGC_S_ENV_VAR:
+		case PGC_S_ARGV:
+			GUC_check_errmsg("pgxc_maintenance_mode is not allowed here.");
+			return false;
+		case PGC_S_FILE:
+			switch (currentGucContext)
+			{
+				case PGC_SIGHUP:
+					elog(WARNING, "pgxc_maintenance_mode is not allowed in  postgresql.conf.  Set to default (false).");
+					*newval = false;
+					return true;
+				default:
+					GUC_check_errmsg("pgxc_maintenance_mode is not allowed in postgresql.conf.");
+					return false;
+			}
+			return false;	/* Should not come here */
+		case PGC_S_DATABASE:
+		case PGC_S_USER:
+		case PGC_S_DATABASE_USER:
+		case PGC_S_INTERACTIVE:
+		case PGC_S_TEST:
+			elog(WARNING, "pgxc_maintenance_mode is not allowed here.  Set to default (false).");
+			*newval = false;
+			return true;
+		case PGC_S_DEFAULT:
+		case PGC_S_CLIENT:
+		case PGC_S_SESSION:
+			return true;
+		default:
+			GUC_check_errmsg("Unknown source");
+			return false;
+	}
+}
+#endif
 
 static bool
 check_canonical_path(char **newval, void **extra, GucSource source)

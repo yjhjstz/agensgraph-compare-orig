@@ -5730,6 +5730,21 @@ DESCR("convert numeric to graphid");
 DATA(insert OID = 7246 (  get_last_graph_write_stats	PGNSP PGUID 12 10 400 0 0 f f f f t t s s 0 0 2249 "" "{20,20,20,20,20}" "{o,o,o,o,o}" "{insertedvertices,insertededges,deletedvertices,deletededges,updatedproperties}" _null_ _null_ get_last_graph_write_stats _null_ _null_ _null_ ));
 DESCR("last graph write statistics");
 
+#ifdef PGXC
+DATA(insert OID = 8007 ( pgxc_pool_check	PGNSP PGUID 12 1 0 0 0 f f f f t f v u 0 0 16 "" _null_ _null_ _null_ _null_ _null_ pgxc_pool_check _null_ _null_ _null_ ));
+DESCR("check connection information consistency in pooler");
+DATA(insert OID = 8008 ( pgxc_pool_reload	PGNSP PGUID 12 1 0 0 0 f f f f t f v u 0 0 16 "" _null_ _null_ _null_ _null_ _null_ pgxc_pool_reload _null_ _null_ _null_ ));
+DESCR("reload connection information in pooler and reload server sessions");
+DATA(insert OID = 8009 ( pgxc_node_str		PGNSP PGUID 12 1 0 0 0 f f f f t f s u 0 0 19 "" _null_ _null_ _null_ _null_ _null_ pgxc_node_str _null_ _null_ _null_ ));
+DESCR("get the name of the node");
+DATA(insert OID = 8010 (  pgxc_is_committed	PGNSP PGUID 12 1 1 0 0 f f f f t t s u 1 0 16 "28" _null_ _null_ _null_ _null_ _null_ pgxc_is_committed _null_ _null_ _null_ ));
+DESCR("is given GXID committed or aborted?");
+DATA(insert OID = 8024 (  pgxc_is_inprogress	PGNSP PGUID 12 1 1 0 0 f f f f t t s u 1 0 16 "28" _null_ _null_ _null_ _null_ _null_ pgxc_is_inprogress _null_ _null_ _null_ ));
+DESCR("is given GXID in progress?");
+DATA(insert OID = 8011 ( pgxc_lock_for_backup PGNSP PGUID 12 1 0 0 0 f f f f t f v u 0 0 16 "" _null_ _null_ _null_ _null_ _null_ pgxc_lock_for_backup _null_ _null_ _null_ ));
+DESCR("lock the cluster for taking backup");
+#endif
+
 /*
  * Symbolic values for provolatile column: these indicate whether the result
  * of a function is dependent *only* on the values of its explicit arguments,

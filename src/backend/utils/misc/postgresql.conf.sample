@@ -171,6 +171,10 @@
 					# (change requires restart)
 #backend_flush_after = 0		# measured in pages, 0 disables
 
+# - Shared queues -
+
+#shared_queues = 64 			# min 16   
+#shared_queue_size = 64KB		# min 16KB
 
 #------------------------------------------------------------------------------
 # WRITE AHEAD LOG
@@ -310,6 +314,8 @@
 #cpu_tuple_cost = 0.01			# same scale as above
 #cpu_index_tuple_cost = 0.005		# same scale as above
 #cpu_operator_cost = 0.0025		# same scale as above
+#network_byte_cost = 0.001		# same scale as above
+#remote_query_cost = 100.0		# same scale as above
 #parallel_tuple_cost = 0.1		# same scale as above
 #parallel_setup_cost = 1000.0	# same scale as above
 #min_parallel_table_scan_size = 8MB
@@ -638,6 +644,42 @@
 
 #exit_on_error = off			# terminate session on any error?
 #restart_after_crash = on		# reinitialize after backend crash?
+
+#------------------------------------------------------------------------------
+# DATA NODES AND CONNECTION POOLING
+#------------------------------------------------------------------------------
+
+#pooler_port = 6667			# Pool Manager TCP port
+					# (change requires restart)
+#max_pool_size = 100			# Maximum pool size
+#pool_conn_keepalive = 600		# Close connections if they are idle
+					# in the pool for that time
+					# A value of -1 turns autoclose off
+#pool_maintenance_timeout = 30		# Launch maintenance routine if pooler
+					# is idle for that time
+					# A value of -1 turns feature off
+#persistent_datanode_connections = off	# Set persistent connection mode for pooler
+					# if set at on, connections taken for session
+					# are not put back to pool
+#max_coordinators = 16			# Maximum number of Coordinators
+					# that can be defined in cluster
+					# (change requires restart)
+#max_datanodes = 16			# Maximum number of Datanodes
+					# that can be defined in cluster
+					# (change requires restart)
+
+#------------------------------------------------------------------------------
+# GTM CONNECTION
+#------------------------------------------------------------------------------
+
+#gtm_host = 'localhost'			# Host name or address of GTM
+					# (change requires restart)
+#gtm_port = 6666			# Port of GTM
+					# (change requires restart)
+#pgxc_node_name = ''			# Coordinator or Datanode name
+					# (change requires restart)
+
+#gtm_backup_barrier = off		# Specify to backup gtm restart point for each barrier.
 
 
 #------------------------------------------------------------------------------

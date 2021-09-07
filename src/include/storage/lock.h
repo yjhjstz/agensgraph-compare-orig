@@ -524,6 +524,7 @@ extern LockAcquireResult LockAcquire(const LOCKTAG *locktag,
 			LOCKMODE lockmode,
 			bool sessionLock,
 			bool dontWait);
+extern bool LockIncrementIfExists(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock);
 extern LockAcquireResult LockAcquireExtended(const LOCKTAG *locktag,
 					LOCKMODE lockmode,
 					bool sessionLock,
@@ -544,7 +545,7 @@ extern void AtPrepare_Locks(void);
 extern void PostPrepare_Locks(TransactionId xid);
 extern int LockCheckConflicts(LockMethod lockMethodTable,
 				   LOCKMODE lockmode,
-				   LOCK *lock, PROCLOCK *proclock);
+				   LOCK *lock, PROCLOCK *proclock, PGPROC *proc);
 extern void GrantLock(LOCK *lock, PROCLOCK *proclock, LOCKMODE lockmode);
 extern void GrantAwaitedLock(void);
 extern void RemoveFromWaitQueue(PGPROC *proc, uint32 hashcode);

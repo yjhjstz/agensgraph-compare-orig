@@ -35,6 +35,10 @@
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
+
 /*
  * gcc's -ffast-math switch breaks routines that expect exact results from
  * expressions like timeval / SECS_PER_HOUR, where timeval is double.

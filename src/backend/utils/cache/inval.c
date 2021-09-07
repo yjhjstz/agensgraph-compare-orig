@@ -101,6 +101,10 @@
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
+#ifdef XCP
+#include "catalog/pgxc_class.h"
+#include "pgxc/pgxc.h"
+#endif
 #include "storage/sinval.h"
 #include "storage/smgr.h"
 #include "utils/catcache.h"
@@ -935,7 +939,18 @@ AtEOXact_Inval(bool isCommit)
 	/* Must be at top of stack */
 	Assert(transInvalInfo->my_level == 1 && transInvalInfo->parent == NULL);
 
+#ifdef XCP
+	/*
+	 * In our code, the distributed session may run on multiple backends, 
+	 * and we need to broadcast invalidation messages so they reach other 
+	 * backends even * in case of rollback. If the session runs on single 
+	 * backend the invalidation messages may be still applied locally. 
+	 * So the criteria may be more complex.
+	 */
+	if (isCommit || IS_PGXC_DATANODE)
+#else
 	if (isCommit)
+#endif
 	{
 		/*
 		 * Relcache init file invalidation requires processing both before and
@@ -1074,6 +1089,20 @@ CommandEndInvalidationMessages(void)
 
 	ProcessInvalidationMessages(&transInvalInfo->CurrentCmdInvalidMsgs,
 								LocalExecuteInvalidationMessage);
+
+	/*
+	 * In Postgres-XL, multiple backends can work for a distributed
+	 * transaction. When catalog changes are made by one backend, the other
+	 * backend participating in the distributed transaction must also see the
+	 * changes immediately. So send the messages using shared invalidation
+	 *
+	 * XXX We could investigate if this can cause performance problems and
+	 * check if the messages can be sent only to participating backends
+	 */
+	if (IS_PGXC_DATANODE)
+		ProcessInvalidationMessagesMulti(&transInvalInfo->CurrentCmdInvalidMsgs,
+			SendSharedInvalidMessages);
+
 	AppendInvalidationMessages(&transInvalInfo->PriorCmdInvalidMsgs,
 							   &transInvalInfo->CurrentCmdInvalidMsgs);
 }
@@ -1185,6 +1214,19 @@ CacheInvalidateHeapTuple(Relation relation,
 		relationId = indextup->indexrelid;
 		databaseId = MyDatabaseId;
 	}
+#ifdef XCP
+	else if (tupleRelId == PgxcClassRelationId)
+	{
+		Form_pgxc_class pgxcclasstup = (Form_pgxc_class) GETSTRUCT(tuple);
+
+		/*
+		 * When distribution key or strategy for a relation is changed, we must
+		 * also send out a relcache inval for the relation.
+		 */
+		relationId = pgxcclasstup->pcrelid;
+		databaseId = MyDatabaseId;
+	}
+#endif
 	else
 		return;
 
