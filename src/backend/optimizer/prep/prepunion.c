@@ -287,6 +287,12 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 												  false,
 												  root->tuple_fraction);
 
+		/* Save subroot and subplan in RelOptInfo for setrefs.c */
+		rel->subroot = subroot;
+
+		if (root->recursiveOk)	
+			root->recursiveOk = subroot->recursiveOk;
+
 		/*
 		 * It should not be possible for the primitive query to contain any
 		 * cross-references to other primitive queries in the setop tree.

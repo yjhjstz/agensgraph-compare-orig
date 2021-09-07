@@ -54,6 +54,11 @@
 #include "rewrite/rewriteManip.h"
 #include "storage/dsm_impl.h"
 #include "utils/rel.h"
+#ifdef PGXC
+#include "commands/prepare.h"
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#endif
 #include "utils/selfuncs.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -195,6 +200,16 @@ static List *make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
 static PathTarget *make_sort_input_target(PlannerInfo *root,
 					   PathTarget *final_target,
 					   bool *have_postponed_srfs);
+static bool equal_distributions(PlannerInfo *root, Distribution *dst1,
+					Distribution *dst2);
+static bool grouping_distribution_match(PlannerInfo *root, Query *parse,
+					  Path *path, List *clauses);
+static bool groupingsets_distribution_match(PlannerInfo *root, Query *parse,
+					  Path *path);
+static Path *adjust_path_distribution(PlannerInfo *root, Query *parse,
+					  Path *path);
+static bool can_push_down_grouping(PlannerInfo *root, Query *parse, Path *path);
+static bool can_push_down_window(PlannerInfo *root, Path *path);
 static void adjust_paths_for_srfs(PlannerInfo *root, RelOptInfo *rel,
 					  List *targets, List *targets_contain_srfs);
 
@@ -220,7 +235,16 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	if (planner_hook)
 		result = (*planner_hook) (parse, cursorOptions, boundParams);
 	else
-		result = standard_planner(parse, cursorOptions, boundParams);
+#ifdef PGXC
+		/*
+		 * A Coordinator receiving a query from another Coordinator
+		 * is not allowed to go into PGXC planner.
+		 */
+		if (IS_PGXC_LOCAL_COORDINATOR)
+			result = pgxc_planner(parse, cursorOptions, boundParams);
+		else
+#endif
+			result = standard_planner(parse, cursorOptions, boundParams);
 	return result;
 }
 
@@ -237,6 +261,11 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	ListCell   *lp,
 			   *lr;
 
+#ifdef XCP
+	if (IS_PGXC_LOCAL_COORDINATOR && parse->utilityStmt &&
+			IsA(parse->utilityStmt, RemoteQuery))
+		return pgxc_direct_planner(parse, cursorOptions, boundParams);
+#endif
 	/*
 	 * Set up global state for this planner invocation.  This data is needed
 	 * across all levels of sub-Query that might exist in the given command,
@@ -351,7 +380,23 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
 	best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
+	if (!root->distribution)
+		root->distribution = best_path->distribution;
+
 	top_plan = create_plan(root, best_path);
+#ifdef XCP
+	if (root->distribution)
+	{
+		/*
+		 * FIXME, this keeps adding RemoteSubplan at a top of queries that
+		 * don't really need it (e.g above a MergeAppend with subplans pushed
+		 * to remote nodes). Not sure why it's happening, though ...
+		 */
+		top_plan = (Plan *) make_remotesubplan(root, top_plan, NULL,
+											   root->distribution,
+											   root->sort_pathkeys);
+	}
+#endif
 
 	/*
 	 * If creating a plan for a scrollable cursor, make sure it can run
@@ -461,6 +506,11 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->rowMarks = glob->finalrowmarks;
 	result->relationOids = glob->relationOids;
 	result->invalItems = glob->invalItems;
+#ifdef XCP
+	result->distributionType = LOCATOR_TYPE_NONE;
+	result->distributionKey = InvalidAttrNumber;
+	result->distributionNodes = NULL;
+#endif
 	result->nParamExec = glob->nParamExec;
 	/* utilityStmt should be null, but we might as well copy it */
 	result->utilityStmt = parse->utilityStmt;
@@ -511,6 +561,16 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	bool		hasOuterJoins;
 	RelOptInfo *final_rel;
 	ListCell   *l;
+	bool recursiveOk = true;
+
+#ifdef XCP
+	/* XL currently does not support DML in subqueries. */
+	if ((parse->commandType != CMD_SELECT) &&
+		((parent_root ? parent_root->query_level + 1 : 1) > 1))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("INSERT/UPDATE/DELETE is not supported in subquery")));
+#endif
 
 	/* Create a PlannerInfo data structure for this subquery */
 	root = makeNode(PlannerInfo);
@@ -532,6 +592,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	memset(root->upper_targets, 0, sizeof(root->upper_targets));
 	root->processed_tlist = NIL;
 	root->grouping_map = NULL;
+	root->recursiveOk = true;
+
 	root->minmax_aggs = NIL;
 	root->qual_security_level = 0;
 	root->hasInheritedTarget = false;
@@ -1450,6 +1512,40 @@ inheritance_planner(PlannerInfo *root)
 		if (IS_DUMMY_PATH(subpath))
 			continue;
 
+#ifdef XCP
+		/*
+		 * All subplans should have the same distribution, except may be
+		 * restriction. At the moment this is always the case but if this
+		 * is changed we should handle inheritance differently.
+		 * Effectively we want to push the modify table down to data nodes, if
+		 * it is running against distributed inherited tables. To achieve this
+		 * we are building up distribution of the query from distributions of
+		 * the subplans.
+		 * If subplans are restricted to different nodes we should union these
+		 * restrictions, if at least one subplan is not restricted we should
+		 * not restrict parent plan.
+		 * After returning a plan from the function valid root->distribution
+		 * value will force proper RemoteSubplan node on top of it.
+		 */
+		if (root->distribution == NULL)
+			root->distribution = subroot->distribution;
+		else if (!bms_is_empty(root->distribution->restrictNodes))
+		{
+			if (bms_is_empty(subroot->distribution->restrictNodes))
+			{
+				bms_free(root->distribution->restrictNodes);
+				root->distribution->restrictNodes = NULL;
+			}
+			else
+			{
+				root->distribution->restrictNodes = bms_join(
+						root->distribution->restrictNodes,
+						subroot->distribution->restrictNodes);
+				subroot->distribution->restrictNodes = NULL;
+			}
+		}
+#endif
+
 		/*
 		 * If this is the first non-excluded child, its post-planning rtable
 		 * becomes the initial contents of final_rtable; otherwise, append
@@ -2149,6 +2245,43 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		 */
 		if (limit_needed(parse))
 		{
+			/* If needed, add a LimitPath on top of a RemoteSubplan. */
+			if (path->distribution)
+			{
+				/*
+				 * Try to push down LIMIT clause to the remote node, in order
+				 * to limit the number of rows that get shipped over network.
+				 * This can be done even if there is an ORDER BY clause, as
+				 * long as we fetch at least (limit + offset) rows from all the
+				 * nodes and then do a local sort and apply the original limit.
+				 *
+				 * We can only push down the LIMIT clause when it's a constant.
+				 * Similarly, if the OFFSET is specified, then it must be constant
+				 * too.
+				 *
+				 * Simple expressions get folded into constants by the time we come
+				 * here. So this works well in case of constant expressions such as
+				 *
+				 *     SELECT .. LIMIT (1024 * 1024);
+				 */
+				if (parse->limitCount && IsA(parse->limitCount, Const) &&
+					((parse->limitOffset == NULL) || IsA(parse->limitOffset, Const)))
+				{
+					Node *limitCount = (Node *) makeConst(INT8OID, -1,
+												   InvalidOid,
+												   sizeof(int64),
+									   Int64GetDatum(offset_est + count_est),
+												   false, FLOAT8PASSBYVAL);
+
+					path = (Path *) create_limit_path(root, final_rel, path,
+											  NULL,
+											  limitCount, /* LIMIT + OFFSET */
+											  0, offset_est + count_est);
+				}
+
+				path = create_remotesubplan_path(root, path, NULL);
+			}
+
 			path = (Path *) create_limit_path(root, final_rel, path,
 											  parse->limitOffset,
 											  parse->limitCount,
@@ -2203,6 +2336,12 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 			else
 				rowMarks = root->rowMarks;
 
+			/*
+			 * Adjust path by injecting a remote subplan, if appropriate, so
+			 * that the ModifyTablePath gets properly distributed data.
+			 */
+			path = adjust_path_distribution(root, parse, path);
+
 			path = (Path *)
 				create_modifytable_path(root, final_rel,
 										parse->commandType,
@@ -2218,6 +2357,9 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										parse->onConflict,
 										SS_assign_special_param(root));
 		}
+		else
+			/* Adjust path by injecting a remote subplan, if appropriate. */
+			path = adjust_path_distribution(root, parse, path);
 
 		/* And shove it into final_rel */
 		add_path(final_rel, path);
@@ -3698,6 +3840,7 @@ create_grouping_paths(PlannerInfo *root,
 	bool		can_hash;
 	bool		can_sort;
 	bool		try_parallel_aggregation;
+	bool		try_distributed_aggregation;
 
 	ListCell   *lc;
 
@@ -3873,6 +4016,49 @@ create_grouping_paths(PlannerInfo *root,
 	}
 
 	/*
+	 * The distributed aggregation however works even if there are no partial
+	 * paths (when the distribution key is included in the grouping keys, we
+	 * may simply push down the whole aggregate).
+	 *
+	 * XXX We currently don't even try to push down grouping sets, although we
+	 * might do that when all grouping sets include the distribution key. But
+	 * that seems like a fairly rare case, as in most cases there will be
+	 * empty grouping set () aggregating all the data. So let's look into this
+	 * optimization later.
+	 */
+	if (!grouped_rel->consider_parallel)
+	{
+		/* Not even parallel-safe. */
+		try_distributed_aggregation = false;
+	}
+	else if (!parse->hasAggs && parse->groupClause == NIL)
+	{
+		/*
+		 * We don't know how to do parallel aggregation unless we have either
+		 * some aggregates or a grouping clause.
+		 */
+		try_distributed_aggregation = false;
+	}
+	else if (parse->groupingSets)
+	{
+		/* We don't know how to do grouping sets in parallel. */
+		try_distributed_aggregation = false;
+	}
+	else if (agg_costs->hasNonPartial || agg_costs->hasNonSerial)
+	{
+		/* Insufficient support for partial mode. */
+		try_distributed_aggregation = false;
+	}
+	else
+	{
+		/* Everything looks good. */
+		try_distributed_aggregation = true;
+	}
+
+	/* Whenever parallel aggregation is allowed, distributed should be too. */
+	Assert(!(try_parallel_aggregation && !try_distributed_aggregation));
+
+	/*
 	 * Before generating paths for grouped_rel, we first generate any possible
 	 * partial paths; that way, later code can easily consider both parallel
 	 * and non-parallel approaches to grouping.  Note that the partial paths
@@ -4026,6 +4212,16 @@ create_grouping_paths(PlannerInfo *root,
 													 root->group_pathkeys,
 													 -1.0);
 
+				/*
+				 * If the grouping can't be fully pushed down, redistribute the
+				 * path on top of the (sorted) path. If if can be pushed down,
+				 * disable construction of complex distributed paths.
+				 */
+				if (! can_push_down_grouping(root, parse, path))
+					path = create_remotesubplan_path(root, path, NULL);
+				else
+					try_distributed_aggregation = false;
+
 				/* Now decide what to stick atop it */
 				if (parse->groupingSets)
 				{
@@ -4102,6 +4298,21 @@ create_grouping_paths(PlannerInfo *root,
 												 root->group_pathkeys,
 												 -1.0);
 
+			/*
+			 * If the grouping can't be fully pushed down, we'll push down the
+			 * first phase of the aggregate, and redistribute only the partial
+			 * results.
+			 *
+			 * If if can be pushed down, disable construction of complex
+			 * distributed paths.
+			 *
+			 * XXX Keep this after the Sort node, to make the path sorted.
+			 */
+			if (! can_push_down_grouping(root, parse, path))
+				path = create_remotesubplan_path(root, path, NULL);
+			else
+				try_distributed_aggregation = false;
+
 			if (parse->hasAggs)
 				add_path(grouped_rel, (Path *)
 						 create_agg_path(root,
@@ -4164,6 +4375,14 @@ create_grouping_paths(PlannerInfo *root,
 												 NULL,
 												 &total_groups);
 
+					/*
+					 * If the grouping can't be fully pushed down, we'll push down the
+					 * first phase of the aggregate, and redistribute only the partial
+					 * results.
+					 */
+					if (! can_push_down_grouping(root, parse, gmpath))
+						gmpath = create_remotesubplan_path(root, gmpath, NULL);
+
 					if (parse->hasAggs)
 						add_path(grouped_rel, (Path *)
 								 create_agg_path(root,
@@ -4216,13 +4435,29 @@ create_grouping_paths(PlannerInfo *root,
 			if (hashaggtablesize < work_mem * 1024L ||
 				grouped_rel->pathlist == NIL)
 			{
+				/* Don't mess with the cheapest path directly. */
+				Path *path = cheapest_path;
+
+				/*
+				 * If the grouping can't be fully pushed down, we'll push down the
+				 * first phase of the aggregate, and redistribute only the partial
+				 * results.
+				 *
+				 * If if can be pushed down, disable construction of complex
+				 * distributed paths.
+				 */
+				if (! can_push_down_grouping(root, parse, path))
+					path = create_remotesubplan_path(root, path, NULL);
+				else
+					try_distributed_aggregation = false;
+
 				/*
 				 * We just need an Agg over the cheapest-total input path,
 				 * since input order won't matter.
 				 */
 				add_path(grouped_rel, (Path *)
 						 create_agg_path(root, grouped_rel,
-										 cheapest_path,
+										 path,
 										 target,
 										 AGG_HASHED,
 										 AGGSPLIT_SIMPLE,
@@ -4257,6 +4492,19 @@ create_grouping_paths(PlannerInfo *root,
 												   NULL,
 												   &total_groups);
 
+				/*
+				* If the grouping can't be fully pushed down, we'll push down the
+				* first phase of the aggregate, and redistribute only the partial
+				* results.
+				*
+				* If if can be pushed down, disable construction of complex
+				* distributed paths.
+				*/
+				if (! can_push_down_grouping(root, parse, path))
+					path = create_remotesubplan_path(root, path, NULL);
+				else
+					try_distributed_aggregation = false;
+
 				add_path(grouped_rel, (Path *)
 						 create_agg_path(root,
 										 grouped_rel,
@@ -4268,6 +4516,279 @@ create_grouping_paths(PlannerInfo *root,
 										 (List *) parse->havingQual,
 										 &agg_final_costs,
 										 dNumGroups));
+			}
+		}
+	}
+
+	/* Generate XL aggregate paths, with distributed 2-phase aggregation. */
+
+	/*
+	 * If there were no partial paths, we did not initialize any of the
+	 * partial paths above. If that's the case, initialize here.
+	 *
+	 * XXX The reason why the initialization block at the beginning is not
+	 * simply performed unconditionally is that we may skip it if we've been
+	 * successful in fully pushing down any of the aggregates, and entirely
+	 * skip generating the XL paths.
+	 *
+	 * XXX Can we simply use the same estimates as regular partial aggregates,
+	 * or do we need to invent something else? It might be a better idea to
+	 * use estimates for the whole result here (e.g. total number of groups)
+	 * instead of the partial ones. Underestimates often have more severe
+	 * consequences (e.g. OOM with HashAggregate) than overestimates, so this
+	 * seems like a more defensive approach.
+	 *
+	 * XXX After thinking a bit more about the estimation, it may depend on
+	 * pushdown - if the aggregate is fully pushed down (as above, we can
+	 * probably use dNumGroups/numberOfNodes as a cardinality estimate, as
+	 * we know the per-node groupings won't overlap. But here we need to be
+	 * more careful.
+	 */
+	if (try_distributed_aggregation)
+	{
+		partial_grouping_target = make_partial_grouping_target(root, target);
+
+		/* Estimate number of partial groups. */
+		dNumPartialGroups = get_number_of_groups(root,
+												 cheapest_path->rows,
+												 gd);
+
+		/*
+		 * Collect statistics about aggregates for estimating costs of
+		 * performing aggregation in parallel.
+		 */
+		MemSet(&agg_partial_costs, 0, sizeof(AggClauseCosts));
+		MemSet(&agg_final_costs, 0, sizeof(AggClauseCosts));
+		if (parse->hasAggs)
+		{
+			/* partial phase */
+			get_agg_clause_costs(root, (Node *) partial_grouping_target->exprs,
+								 AGGSPLIT_INITIAL_SERIAL,
+								 &agg_partial_costs);
+
+			/* final phase */
+			get_agg_clause_costs(root, (Node *) target->exprs,
+								 AGGSPLIT_FINAL_DESERIAL,
+								 &agg_final_costs);
+			get_agg_clause_costs(root, parse->havingQual,
+								 AGGSPLIT_FINAL_DESERIAL,
+								 &agg_final_costs);
+		}
+
+		/* Build final XL grouping paths */
+		if (can_sort)
+		{
+			/*
+			 * Use any available suitably-sorted path as input, and also consider
+			 * sorting the cheapest-total path.
+			 */
+			foreach(lc, input_rel->pathlist)
+			{
+				Path	   *path = (Path *) lfirst(lc);
+				bool		is_sorted;
+
+				is_sorted = pathkeys_contained_in(root->group_pathkeys,
+						path->pathkeys);
+
+				/*
+				 * XL: Can it happen that the cheapest path can't be pushed down,
+				 * while some other path could be? Perhaps we should move the check
+				 * if a path can be pushed down up, and add another OR condition
+				 * to consider all paths that can be pushed down?
+				 *
+				 * if (path == cheapest_path || is_sorted || can_push_down)
+				 */
+				if (path == cheapest_path || is_sorted)
+				{
+					/*
+					 * We can't really beat paths that we managed to fully push
+					 * down above, so we can skip them entirely.
+					 *
+					 * XXX Not constructing any paths, so we can do this before
+					 * adding the Sort path.
+					 */
+					if (can_push_down_grouping(root, parse, path))
+						continue;
+
+					/* Sort the cheapest-total path if it isn't already sorted */
+					if (!is_sorted)
+						path = (Path *) create_sort_path(root,
+														 grouped_rel,
+														 path,
+														 root->group_pathkeys,
+														 -1.0);
+
+					/* Now decide what to stick atop it */
+					if (parse->groupingSets)
+					{
+						/*
+						 * TODO 2-phase aggregation for grouping sets paths not
+						 * supported yet, but this the place where such paths
+						 * should be constructed.
+						 */
+					}
+					else if (parse->hasAggs)
+					{
+						/*
+						 * We have aggregation, possibly with plain GROUP BY. Make
+						 * an AggPath.
+						 */
+
+						path = (Path *) create_agg_path(root,
+														grouped_rel,
+														path,
+														partial_grouping_target,
+										parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+														AGGSPLIT_INITIAL_SERIAL,
+														parse->groupClause,
+														NIL,
+														&agg_partial_costs,
+														dNumPartialGroups);
+
+						path = create_remotesubplan_path(root, path, NULL);
+
+						/*
+						 * We generate two paths, differing in the second phase
+						 * implementation (sort and hash).
+						 */
+
+						add_path(grouped_rel, (Path *)
+								 create_agg_path(root,
+												 grouped_rel,
+												 path,
+												 target,
+										 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+												 AGGSPLIT_FINAL_DESERIAL,
+												 parse->groupClause,
+												 (List *) parse->havingQual,
+												 &agg_final_costs,
+												 dNumGroups));
+
+						if (can_hash)
+							add_path(grouped_rel, (Path *)
+									 create_agg_path(root,
+													 grouped_rel,
+													 path,
+													 target,
+													 AGG_HASHED,
+													 AGGSPLIT_FINAL_DESERIAL,
+													 parse->groupClause,
+													 (List *) parse->havingQual,
+													 &agg_final_costs,
+													 dNumGroups));
+					}
+					else if (parse->groupClause)
+					{
+						/*
+						 * We have GROUP BY without aggregation or grouping sets.
+						 * Make a GroupPath.
+						 */
+						path = (Path *) create_group_path(root,
+														  grouped_rel,
+														  path,
+														  partial_grouping_target,
+														  parse->groupClause,
+														  NIL,
+														  dNumPartialGroups);
+
+						path = create_remotesubplan_path(root, path, NULL);
+
+						add_path(grouped_rel, (Path *)
+								 create_group_path(root,
+												   grouped_rel,
+												   path,
+												   target,
+												   parse->groupClause,
+												   (List *) parse->havingQual,
+												   dNumGroups));
+
+					}
+					else
+					{
+						/* Other cases should have been handled above */
+						Assert(false);
+					}
+				}
+			}
+		}
+
+		if (can_hash)
+		{
+			hashaggtablesize = estimate_hashagg_tablesize(cheapest_path,
+														  agg_costs,
+														  dNumGroups);
+
+			/*
+			 * Provided that the estimated size of the hashtable does not exceed
+			 * work_mem, we'll generate a HashAgg Path, although if we were unable
+			 * to sort above, then we'd better generate a Path, so that we at
+			 * least have one.
+			 */
+			if (hashaggtablesize < work_mem * 1024L ||
+				grouped_rel->pathlist == NIL)
+			{
+				/* If the whole aggregate was pushed down, we're done. */
+				if (! can_push_down_grouping(root, parse, cheapest_path))
+				{
+					Path *path, *agg_path;
+
+					path = (Path *) create_agg_path(root,
+										   grouped_rel,
+										   cheapest_path,
+										   partial_grouping_target,
+										   AGG_HASHED,
+										   AGGSPLIT_INITIAL_SERIAL,
+										   parse->groupClause,
+										   NIL,
+										   &agg_partial_costs,
+										   dNumPartialGroups);
+
+					/* keep partially aggregated path for the can_sort branch */
+					agg_path = path;
+
+					path = create_remotesubplan_path(root, path, NULL);
+
+					/* Generate paths with both hash and sort second phase. */
+
+					add_path(grouped_rel, (Path *)
+							 create_agg_path(root,
+											 grouped_rel,
+											 path,
+											 target,
+											 AGG_HASHED,
+											 AGGSPLIT_FINAL_DESERIAL,
+											 parse->groupClause,
+											 (List *) parse->havingQual,
+											 &agg_final_costs,
+											 dNumGroups));
+
+					if (can_sort)
+					{
+						/*
+						 * AGG_HASHED aggregate paths are always unsorted, so add
+						 * a Sorted node for the final AGG_SORTED step.
+						 */
+						path = (Path *) create_sort_path(root,
+														 grouped_rel,
+														 agg_path,
+														 root->group_pathkeys,
+														 -1.0);
+
+						path = create_remotesubplan_path(root, path, NULL);
+
+						add_path(grouped_rel, (Path *)
+								 create_agg_path(root,
+												 grouped_rel,
+												 path,
+												 target,
+										 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+												 AGGSPLIT_FINAL_DESERIAL,
+												 parse->groupClause,
+												 (List *) parse->havingQual,
+												 &agg_final_costs,
+												 dNumGroups));
+					}
+				}
 			}
 		}
 	}
@@ -4481,6 +5002,14 @@ consider_groupingsets_paths(PlannerInfo *root,
 			strat = AGG_MIXED;
 		}
 
+		/*
+		 * If the grouping can't be fully pushed down, redistribute the
+		 * path on top of the (sorted) path. If if can be pushed down,
+		 * disable construction of complex distributed paths.
+		 */
+		if (! can_push_down_grouping(root, parse, path))
+			path = create_remotesubplan_path(root, path, NULL);
+
 		add_path(grouped_rel, (Path *)
 				 create_groupingsets_path(root,
 										  grouped_rel,
@@ -4639,6 +5168,14 @@ consider_groupingsets_paths(PlannerInfo *root,
 
 		if (rollups)
 		{
+			/*
+			 * If the grouping can't be fully pushed down, redistribute the
+			 * path on top of the (sorted) path. If if can be pushed down,
+			 * disable construction of complex distributed paths.
+			 */
+			if (! can_push_down_grouping(root, parse, path))
+				path = create_remotesubplan_path(root, path, NULL);
+
 			add_path(grouped_rel, (Path *)
 					 create_groupingsets_path(root,
 											  grouped_rel,
@@ -4656,6 +5193,15 @@ consider_groupingsets_paths(PlannerInfo *root,
 	 * Now try the simple sorted case.
 	 */
 	if (!gd->unsortable_sets)
+	{
+		/*
+		 * If the grouping can't be fully pushed down, redistribute the
+		 * path on top of the (sorted) path. If if can be pushed down,
+		 * disable construction of complex distributed paths.
+		 */
+		if (! can_push_down_grouping(root, parse, path))
+			path = create_remotesubplan_path(root, path, NULL);
+
 		add_path(grouped_rel, (Path *)
 				 create_groupingsets_path(root,
 										  grouped_rel,
@@ -4666,6 +5212,7 @@ consider_groupingsets_paths(PlannerInfo *root,
 										  gd->rollups,
 										  agg_costs,
 										  dNumGroups));
+	}
 }
 
 /*
@@ -4843,6 +5390,10 @@ create_one_window_path(PlannerInfo *root,
 			window_target = output_target;
 		}
 
+		/* We can't really push down window functions for now. */
+		if (!can_push_down_window(root, path))
+			path = create_remotesubplan_path(root, path, NULL);
+
 		path = (Path *)
 			create_windowagg_path(root, window_rel, path, window_target,
 								  wflists->windowFuncs[wc->winref],
@@ -4952,6 +5503,16 @@ create_distinct_paths(PlannerInfo *root,
 
 			if (pathkeys_contained_in(needed_pathkeys, path->pathkeys))
 			{
+				/*
+				 * Make sure the distribution matches the distinct clause,
+				 * needed by the UNIQUE path.
+				 *
+				 * FIXME This could probably benefit from pushing a UNIQUE
+				 * to the remote side, and only doing a merge locally.
+				 */
+				if (!grouping_distribution_match(root, parse, path, parse->distinctClause))
+					path = create_remotesubplan_path(root, path, NULL);
+
 				add_path(distinct_rel, (Path *)
 						 create_upper_unique_path(root, distinct_rel,
 												  path,
@@ -4978,6 +5539,10 @@ create_distinct_paths(PlannerInfo *root,
 											 path,
 											 needed_pathkeys,
 											 -1.0);
+
+		/* In case of grouping / distribution mismatch, inject remote scan. */
+		if (!grouping_distribution_match(root, parse, path, parse->distinctClause))
+			path = create_remotesubplan_path(root, path, NULL);
 
 		add_path(distinct_rel, (Path *)
 				 create_upper_unique_path(root, distinct_rel,
@@ -5019,12 +5584,20 @@ create_distinct_paths(PlannerInfo *root,
 
 	if (allow_hash && grouping_is_hashable(parse->distinctClause))
 	{
+		Path *input_path = cheapest_input_path;
+
+		/* If needed, inject RemoteSubplan redistributing the data. */
+		if (!grouping_distribution_match(root, parse, input_path, parse->distinctClause))
+			input_path = create_remotesubplan_path(root, input_path, NULL);
+
+		/* XXX Maybe we can make this a 2-phase aggregate too? */
+
 		/* Generate hashed aggregate path --- no sort needed */
 		add_path(distinct_rel, (Path *)
 				 create_agg_path(root,
 								 distinct_rel,
-								 cheapest_input_path,
-								 cheapest_input_path->pathtarget,
+								 input_path,
+								 input_path->pathtarget,
 								 AGG_HASHED,
 								 AGGSPLIT_SIMPLE,
 								 parse->distinctClause,
@@ -6277,6 +6850,7 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 	root->query_level = 1;
 	root->planner_cxt = CurrentMemoryContext;
 	root->wt_param_id = -1;
+	root->recursiveOk = true;
 
 	/* Build a minimal RTE for the rel */
 	rte = makeNode(RangeTblEntry);
@@ -6347,6 +6921,68 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 }
 
 /*
+ * grouping_distribution_match
+ * 	Check if the path distribution matches grouping distribution.
+ *
+ * Grouping preserves distribution if the distribution key is on of the
+ * grouping keys (arbitrary one). In that case it's guaranteed that groups
+ * on different nodes do not overlap, and we can push the aggregation to
+ * remote nodes as a whole.
+ *
+ * Otherwise we need to either fetch all the data to the coordinator and
+ * perform the aggregation there, or use two-phase aggregation, with the
+ * first phase (partial aggregation) pushed down, and the second phase
+ * (combining and finalizing the results) executed on the coordinator.
+ *
+ * XXX This is used not only for plain aggregation, but also for various
+ * other paths, relying on grouping infrastructure (DISTINCT ON, UNIQUE).
+ */
+static bool
+grouping_distribution_match(PlannerInfo *root, Query *parse, Path *path,
+							List *clauses)
+{
+	int		i;
+	bool	matches_key = false;
+	Distribution *distribution = path->distribution;
+
+	int numGroupCols = list_length(clauses);
+	AttrNumber *groupColIdx = extract_grouping_cols(clauses,
+													parse->targetList);
+
+	/*
+	 * With no explicit data distribution or replicated tables, we can simply
+	 * push down the whole aggregation to the remote node, without any sort
+	 * of redistribution. So consider this to be a match.
+	 */
+	if ((distribution == NULL) ||
+		IsLocatorReplicated(distribution->distributionType))
+		return true;
+
+	/* But no distribution expression means 'no match'. */
+	if (distribution->distributionExpr == NULL)
+		return false;
+
+	/*
+	 * With distributed data and table distributed using an expression, we
+	 * need to check if the distribution expression matches one of the
+	 * grouping keys (arbitrary one).
+	 */
+	for (i = 0; i < numGroupCols; i++)
+	{
+		TargetEntry *te = (TargetEntry *)list_nth(parse->targetList,
+												  groupColIdx[i]-1);
+
+		if (equal(te->expr, distribution->distributionExpr))
+		{
+			matches_key = true;
+			break;
+		}
+	}
+
+	return matches_key;
+}
+
+/*
  * get_partitioned_child_rels
  *		Returns a list of the RT indexes of the partitioned child relations
  *		with rti as the root parent RT index.
@@ -6372,4 +7008,220 @@ get_partitioned_child_rels(PlannerInfo *root, Index rti)
 	}
 
 	return result;
+}
+
+
+static bool
+groupingsets_distribution_match(PlannerInfo *root, Query *parse, Path *path)
+{
+	Distribution *distribution = path->distribution;
+
+	/*
+	 * With no explicit data distribution or replicated tables, we can simply
+	 * push down the whole grouping sets to the remote node, without any sort
+	 * of redistribution. So consider this to be a match.
+	 */
+	if ((distribution == NULL) ||
+		IsLocatorReplicated(distribution->distributionType))
+		return true;
+
+	return false;
+}
+
+/*
+ * equal_distributions
+ * 	Check that two distributions are equal.
+ *
+ * Distributions are considered equal if they are of the same type, on the
+ * same set of nodes, and if the distribution expressions are known to be equal
+ * (either the same expressions or members of the same equivalence class).
+ */
+static bool
+equal_distributions(PlannerInfo *root, Distribution *dst1,
+					Distribution *dst2)
+{
+	/* fast path */
+	if (dst1 == dst2)
+		return true;
+
+	if (dst1 == NULL || dst2 == NULL)
+		return false;
+
+	/* conditions easier to check go first */
+	if (dst1->distributionType != dst2->distributionType)
+		return false;
+
+	if (!bms_equal(dst1->nodes, dst2->nodes))
+		return false;
+
+	if (equal(dst1->distributionExpr, dst2->distributionExpr))
+		return true;
+
+	/*
+	 * For more thorough expression check we need to ensure they both are
+	 * defined
+	 */
+	if (dst1->distributionExpr == NULL || dst2->distributionExpr == NULL)
+		return false;
+
+	/*
+	 * More thorough check, but allows some important cases, like if
+	 * distribution column is not updated (implicit set distcol=distcol) or
+	 * set distcol = CONST, ... WHERE distcol = CONST - pattern used by many
+	 * applications.
+	 */
+	if (exprs_known_equal(root, dst1->distributionExpr, dst2->distributionExpr))
+		return true;
+
+	/* The restrictNodes field does not matter for distribution equality */
+	return false;
+}
+
+/*
+ * adjust_path_distribution
+ *		Adjust distribution of the path to match what's expected by ModifyTable.
+ *
+ * We use root->distribution to communicate distribution expected by a ModifyTable.
+ * Currently it's set either in preprocess_targetlist() for simple target relations,
+ * or in inheritance_planner() for targets that are inheritance trees.
+ *
+ * If root->distribution is NULL, we don't need to do anything and we can leave the
+ * path distribution as it is. This happens when there is no ModifyTable node, for
+ * example.
+ *
+ * If the root->distribution is set, we need to inspect it and redistribute the data
+ * if needed (when it root->distribution does not match path->distribution).
+ *
+ * We also detect DML (e.g. correlated UPDATE/DELETE or updates of distribution key)
+ * that we can't handle at this point.
+ *
+ * XXX We must not update root->distribution here, because we need to do this on all
+ * paths considered by grouping_planner(), and there's no obvious guarantee all the
+ * paths will share the same distribution. Postgres-XL 9.5 was allowed to do that,
+ * because prior to the pathification (in PostgreSQL 9.6) grouping_planner() picked
+ * before the distributions were adjusted.
+ */
+static Path *
+adjust_path_distribution(PlannerInfo *root, Query *parse, Path *path)
+{
+	/* if there is no root distribution, no redistribution is needed */
+	if (!root->distribution)
+		return path;
+
+	/* and also skip dummy paths */
+	if (IS_DUMMY_PATH(path))
+		return path;
+
+	/*
+	 * Both the path and root have distribution. Let's see if they differ,
+	 * and do a redistribution if not.
+	 */
+	if (equal_distributions(root, root->distribution, path->distribution))
+	{
+		if (IsLocatorReplicated(path->distribution->distributionType) &&
+			contain_volatile_functions((Node *) parse->targetList))
+			ereport(ERROR,
+					(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+					errmsg("can not update replicated table with result of volatile function")));
+
+		/*
+		 * Source tuple will be consumed on the same node where it is
+		 * produced, so if it is known that some node does not yield tuples
+		 * we do not want to send subquery for execution on these nodes
+		 * at all. So copy the restriction to the external distribution.
+		 *
+		 * XXX Is that ever possible if external restriction is already
+		 * defined? If yes we probably should use intersection of the sets,
+		 * and if resulting set is empty create dummy plan and set it as
+		 * the result_plan. Need to think this over
+		 */
+		root->distribution->restrictNodes =
+				bms_copy(path->distribution->restrictNodes);
+	}
+	else
+	{
+		/*
+		 * If the planned statement is either UPDATE or DELETE, different
+		 * distributions here mean the ModifyTable node will be placed on
+		 * top of RemoteSubquery.
+		 *
+		 * UPDATE and DELETE versions of ModifyTable use TID of incoming
+		 * tuple to apply the changes, but the RemoteSubquery plan supplies
+		 * RemoteTuples, without such field. Therefore we can't execute
+		 * such plan and error-out.
+		 *
+		 * Most common example is when the UPDATE statement modifies the
+		 * distribution column, or when a complex UPDATE or DELETE statement
+		 * involves a join. It's difficult to determine the exact reason,
+		 * but we assume the first one (correlated UPDATE) is more likely.
+		 *
+		 * There are two ways of fixing the UPDATE ambiguity:
+		 *
+		 * 1. Modify the planner to never consider redistribution of the
+		 * target table. In this case the planner would find there's no way
+		 * to plan the query, and it would throw error somewhere else, and
+		 * we'd only be dealing with updates of distribution columns.
+		 *
+		 * 2. Modify executor to allow distribution column updates. However
+		 * there are a lot of issues behind the scene when implementing that
+		 * approach, and so it's unlikely to happen soon.
+		 *
+		 * DELETE statements may only fail because of complex joins.
+		 */
+
+		if (parse->commandType == CMD_UPDATE)
+			ereport(ERROR,
+					(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+					 errmsg("could not plan this distributed update"),
+					 errdetail("correlated UPDATE or updating distribution column currently not supported in Postgres-XL.")));
+
+		if (parse->commandType == CMD_DELETE)
+			ereport(ERROR,
+					(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+					 errmsg("could not plan this distributed delete"),
+					 errdetail("correlated or complex DELETE is currently not supported in Postgres-XL.")));
+
+		/*
+		 * We already know the distributions are not equal, but let's see if
+		 * the redistribution is actually necessary. We can skip it if we
+		 * already have Result path, and if the distribution is one of
+		 *
+		 * a) 'hash' restricted to a single node
+		 * b) 'replicate' without volatile functions in the target list
+		 *
+		 * In those cases we don't need the RemoteSubplan.
+		 *
+		 * XXX Not sure what the (result_plan->lefttree == NULL) does.
+		 * See planner.c:2730 in 9.5.
+		 */
+		if (!(IsA(path, ResultPath) && /* FIXME missing (result_plan->lefttree == NULL) condition */
+			((root->distribution->distributionType == 'H' && bms_num_members(root->distribution->restrictNodes) == 1) ||
+			 (root->distribution->distributionType == 'R' && !contain_mutable_functions((Node *)parse->targetList)))))
+
+			path = create_remotesubplan_path(root, path, root->distribution);
+	}
+
+	return path;
+}
+
+static bool
+can_push_down_grouping(PlannerInfo *root, Query *parse, Path *path)
+{
+	/* only called when constructing grouping paths */
+	Assert(parse->hasAggs || parse->groupClause);
+
+	if (parse->groupingSets)
+		return groupingsets_distribution_match(root, parse, path);
+
+	return grouping_distribution_match(root, parse, path, parse->groupClause);
+}
+
+static bool
+can_push_down_window(PlannerInfo *root, Path *path)
+{
+	/*  */
+	if (! path->distribution)
+		return true;
+
+	return false;
 }

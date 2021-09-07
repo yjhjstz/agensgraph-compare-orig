@@ -120,7 +120,9 @@
 #include "executor/nodeWorktablescan.h"
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
-
+#ifdef PGXC
+#include "pgxc/execRemote.h"
+#endif
 
 static TupleTableSlot *ExecProcNodeFirst(PlanState *node);
 static TupleTableSlot *ExecProcNodeInstr(PlanState *node);
@@ -379,6 +381,18 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 												 estate, eflags);
 			break;
 
+#ifdef PGXC
+		case T_RemoteQuery:
+			result = (PlanState *) ExecInitRemoteQuery((RemoteQuery *) node,
+													    estate, eflags);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplan:
+			result = (PlanState *) ExecInitRemoteSubplan((RemoteSubplan *) node,
+													     estate, eflags);
+			break;
+#endif /* XCP */
 		case T_Shortestpath:
 			result = (PlanState *) ExecInitShortestpath((Shortestpath *) node,
 														estate, eflags);
@@ -412,6 +426,15 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	 * a separate list for us.
 	 */
 	subps = NIL;
+#ifdef XCP
+	/*
+	 * If plan being initialized during we should skip doing initPlan here.
+	 * In case the plan is actually referenced on this step of the distributed
+	 * plan it will be done in ExecFinishInitProcNode
+	 */
+	if (!(eflags & EXEC_FLAG_SUBPLAN))
+	{
+#endif
 	foreach(l, node->initPlan)
 	{
 		SubPlan    *subplan = (SubPlan *) lfirst(l);
@@ -421,6 +444,9 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		sstate = ExecInitSubPlan(subplan, result);
 		subps = lappend(subps, sstate);
 	}
+#ifdef XCP
+	}
+#endif
 	result->initPlan = subps;
 
 	/* Set up instrumentation for this node if requested */
@@ -430,6 +456,77 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	return result;
 }
 
+
+#ifdef XCP
+/*
+ * The subplan is referenced on local node, finish initialization
+ */
+void
+ExecFinishInitProcNode(PlanState *node)
+{
+	List	   *subps;
+	ListCell   *l;
+
+	/* Exit if we reached leaf of the tree */
+	if (node == NULL)
+		return;
+
+	/* Special cases */
+	switch (nodeTag(node))
+	{
+		case T_RemoteSubplanState:
+			ExecFinishInitRemoteSubplan((RemoteSubplanState *) node);
+			break;
+
+		case T_AppendState:
+		{
+			AppendState    *append = (AppendState *) node;
+			int 			i;
+
+			for (i = 0; i < append->as_nplans; i++)
+				ExecFinishInitProcNode(append->appendplans[i]);
+
+			break;
+		}
+
+		case T_MergeAppendState:
+		{
+			MergeAppendState    *mappend = (MergeAppendState *) node;
+			int 			i;
+
+			for (i = 0; i < mappend->ms_nplans; i++)
+				ExecFinishInitProcNode(mappend->mergeplans[i]);
+
+			break;
+		}
+
+		case T_SubqueryScanState:
+			ExecFinishInitProcNode(((SubqueryScanState *) node)->subplan);
+			break;
+
+		default:
+			break;
+	}
+
+	/*
+	 * Common case, recurse the tree
+	 */
+	ExecFinishInitProcNode(node->lefttree);
+	ExecFinishInitProcNode(node->righttree);
+
+	subps = NIL;
+	foreach(l, node->plan->initPlan)
+	{
+		SubPlan    *subplan = (SubPlan *) lfirst(l);
+		SubPlanState *sstate;
+
+		Assert(IsA(subplan, SubPlan));
+		sstate = ExecInitSubPlan(subplan, node);
+		subps = lappend(subps, sstate);
+	}
+	node->initPlan = subps;
+}
+#endif
 
 /*
  * ExecProcNode wrapper that performs some one-time checks, before calling
@@ -753,6 +850,16 @@ ExecEndNode(PlanState *node)
 			ExecEndLimit((LimitState *) node);
 			break;
 
+#ifdef PGXC
+		case T_RemoteQueryState:
+			ExecEndRemoteQuery((RemoteQueryState *) node);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplanState:
+			ExecEndRemoteSubplan((RemoteSubplanState *) node);
+			break;
+#endif /* XCP */
 		case T_ShortestpathState:
 			ExecEndShortestpath((ShortestpathState *) node);
 			break;

@@ -48,7 +48,9 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 
 /* GUC parameter */
 int			constraint_exclusion = CONSTRAINT_EXCLUSION_PARTITION;
@@ -369,6 +371,16 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 */
 			if (info->indpred == NIL)
 			{
+#ifdef XCP
+				/*
+				 * If parent relation is distributed the local storage manager
+				 * does not have actual information about index size.
+				 * We have to get relation statistics instead.
+				 */
+				if (IS_PGXC_COORDINATOR && relation->rd_locator_info != NULL)
+					info->pages = indexRelation->rd_rel->relpages;
+				else
+#endif
 				info->pages = RelationGetNumberOfBlocks(indexRelation);
 				info->tuples = rel->tuples;
 			}
@@ -920,6 +932,18 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 		case RELKIND_INDEX:
 		case RELKIND_MATVIEW:
 		case RELKIND_TOASTVALUE:
+#ifdef XCP
+			if (IS_PGXC_COORDINATOR && rel->rd_locator_info != NULL)
+			{
+				/*
+				 * Remote table does not store rows locally, so storage manager
+				 * does not know how many pages are there, we rely on relation
+				 * statistics.
+				 */
+				curpages = rel->rd_rel->relpages;
+			}
+			else
+#endif
 			/* it has storage, ok to call the smgr */
 			curpages = RelationGetNumberOfBlocks(rel);
 

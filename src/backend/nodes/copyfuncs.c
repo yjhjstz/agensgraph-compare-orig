@@ -27,6 +27,13 @@
 #include "nodes/graphnodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
+#ifdef PGXC
+#include "pgxc/locator.h"
+#include "pgxc/planner.h"
+#endif
+#ifdef XCP
+#include "pgxc/execRemote.h"
+#endif
 #include "utils/datum.h"
 #include "utils/rel.h"
 
@@ -99,6 +106,16 @@ _copyPlannedStmt(const PlannedStmt *from)
 	COPY_NODE_FIELD(relationOids);
 	COPY_NODE_FIELD(invalItems);
 	COPY_SCALAR_FIELD(nParamExec);
+#ifdef XCP
+	COPY_SCALAR_FIELD(nParamRemote);
+	COPY_POINTER_FIELD(remoteparams,
+					   newnode->nParamRemote * sizeof(RemoteParam));
+	COPY_STRING_FIELD(pname);
+	COPY_SCALAR_FIELD(distributionType);
+	COPY_SCALAR_FIELD(distributionKey);
+	COPY_NODE_FIELD(distributionNodes);
+	COPY_NODE_FIELD(distributionRestrict);
+#endif
 	COPY_NODE_FIELD(utilityStmt);
 	COPY_LOCATION_FIELD(stmt_location);
 	COPY_LOCATION_FIELD(stmt_len);
@@ -1305,6 +1322,158 @@ _copyPlanInvalItem(const PlanInvalItem *from)
 	return newnode;
 }
 
+#ifdef PGXC
+/*
+ * _copyExecDirect
+ */
+static ExecDirectStmt*
+_copyExecDirect(const ExecDirectStmt *from)
+{
+	ExecDirectStmt *newnode = makeNode(ExecDirectStmt);
+
+	COPY_NODE_FIELD(node_names);
+	COPY_STRING_FIELD(query);
+
+	return newnode;
+}
+
+/*
+ * _copyRemoteQuery
+ */
+static RemoteQuery *
+_copyRemoteQuery(const RemoteQuery *from)
+{
+	RemoteQuery *newnode = makeNode(RemoteQuery);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyScanFields((Scan *) from, (Scan *) newnode);
+
+	/*
+	 * copy remainder of node
+	 */
+	COPY_SCALAR_FIELD(exec_direct_type);
+	COPY_STRING_FIELD(sql_statement);
+	COPY_NODE_FIELD(exec_nodes);
+	COPY_SCALAR_FIELD(combine_type);
+	COPY_NODE_FIELD(sort);
+	COPY_SCALAR_FIELD(read_only);
+	COPY_STRING_FIELD(statement);
+	COPY_STRING_FIELD(cursor);
+	COPY_SCALAR_FIELD(rq_num_params);
+	if (from->rq_param_types)
+		COPY_POINTER_FIELD(rq_param_types,
+			sizeof(from->rq_param_types[0]) * from->rq_num_params);
+	else
+		newnode->rq_param_types = NULL;
+	COPY_SCALAR_FIELD(exec_type);
+
+	COPY_SCALAR_FIELD(reduce_level);
+	COPY_NODE_FIELD(base_tlist);
+	COPY_STRING_FIELD(outer_alias);
+	COPY_STRING_FIELD(inner_alias);
+	COPY_SCALAR_FIELD(outer_reduce_level);
+	COPY_SCALAR_FIELD(inner_reduce_level);
+	COPY_BITMAPSET_FIELD(outer_relids);
+	COPY_BITMAPSET_FIELD(inner_relids);
+	COPY_STRING_FIELD(inner_statement);
+	COPY_STRING_FIELD(outer_statement);
+	COPY_STRING_FIELD(join_condition);
+	COPY_SCALAR_FIELD(has_row_marks);
+	COPY_SCALAR_FIELD(has_ins_child_sel_parent);
+
+	return newnode;
+}
+
+/*
+ * _copyExecNodes
+ */
+static ExecNodes *
+_copyExecNodes(const ExecNodes *from)
+{
+	ExecNodes *newnode = makeNode(ExecNodes);
+
+	COPY_NODE_FIELD(primarynodelist);
+	COPY_NODE_FIELD(nodeList);
+	COPY_SCALAR_FIELD(baselocatortype);
+	COPY_NODE_FIELD(en_expr);
+	COPY_SCALAR_FIELD(en_relid);
+	COPY_SCALAR_FIELD(accesstype);
+
+	return newnode;
+}
+
+/*
+ * _copySimpleSort
+ */
+static SimpleSort *
+_copySimpleSort(const SimpleSort *from)
+{
+	SimpleSort *newnode = makeNode(SimpleSort);
+
+	COPY_SCALAR_FIELD(numCols);
+	if (from->numCols > 0)
+	{
+		COPY_POINTER_FIELD(sortColIdx, from->numCols * sizeof(AttrNumber));
+		COPY_POINTER_FIELD(sortOperators, from->numCols * sizeof(Oid));
+		COPY_POINTER_FIELD(sortCollations, from->numCols * sizeof(Oid));
+		COPY_POINTER_FIELD(nullsFirst, from->numCols * sizeof(bool));
+	}
+
+	return newnode;
+}
+#endif
+
+
+#ifdef XCP
+/*
+ * _copyRemoteSubplan
+ */
+static RemoteSubplan *
+_copyRemoteSubplan(const RemoteSubplan *from)
+{
+	RemoteSubplan *newnode = makeNode(RemoteSubplan);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyScanFields((Scan *) from, (Scan *) newnode);
+
+	/*
+	 * copy remainder of node
+	 */
+	COPY_SCALAR_FIELD(distributionType);
+	COPY_SCALAR_FIELD(distributionKey);
+	COPY_NODE_FIELD(distributionNodes);
+	COPY_NODE_FIELD(distributionRestrict);
+	COPY_NODE_FIELD(nodeList);
+	COPY_SCALAR_FIELD(execOnAll);
+	COPY_NODE_FIELD(sort);
+	COPY_STRING_FIELD(cursor);
+	COPY_SCALAR_FIELD(unique);
+
+	return newnode;
+}
+
+/*
+ * _copyDistribution
+ */
+static Distribution *
+_copyDistribution(const Distribution *from)
+{
+	Distribution *newnode = makeNode(Distribution);
+
+	COPY_SCALAR_FIELD(distributionType);
+	COPY_NODE_FIELD(distributionExpr);
+	COPY_BITMAPSET_FIELD(nodes);
+	COPY_BITMAPSET_FIELD(restrictNodes);
+
+	return newnode;
+}
+#endif
+
+
 /* ****************************************************************
  *					   primnodes.h copy functions
  * ****************************************************************
@@ -1383,6 +1552,10 @@ _copyIntoClause(const IntoClause *from)
 	COPY_STRING_FIELD(tableSpaceName);
 	COPY_NODE_FIELD(viewQuery);
 	COPY_SCALAR_FIELD(skipData);
+#ifdef PGXC
+	COPY_NODE_FIELD(distributeby);
+	COPY_NODE_FIELD(subcluster);
+#endif
 
 	return newnode;
 }
@@ -3484,6 +3657,30 @@ _copyCopyStmt(const CopyStmt *from)
 	return newnode;
 }
 
+#ifdef PGXC
+static DistributeBy *
+_copyDistributeBy(const DistributeBy *from)
+{
+	DistributeBy *newnode = makeNode(DistributeBy);
+
+	COPY_SCALAR_FIELD(disttype);
+	COPY_STRING_FIELD(colname);
+
+	return newnode;
+}
+
+static PGXCSubCluster *
+_copyPGXCSubCluster(const PGXCSubCluster *from)
+{
+	PGXCSubCluster *newnode = makeNode(PGXCSubCluster);
+
+	COPY_SCALAR_FIELD(clustertype);
+	COPY_NODE_FIELD(members);
+
+	return newnode;
+}
+#endif
+
 /*
  * CopyCreateStmtFields
  *
@@ -3504,6 +3701,12 @@ CopyCreateStmtFields(const CreateStmt *from, CreateStmt *newnode)
 	COPY_SCALAR_FIELD(oncommit);
 	COPY_STRING_FIELD(tablespacename);
 	COPY_SCALAR_FIELD(if_not_exists);
+#ifdef PGXC
+	COPY_SCALAR_FIELD(islocal);
+	COPY_SCALAR_FIELD(relkind);
+	COPY_NODE_FIELD(distributeby);
+	COPY_NODE_FIELD(subcluster);
+#endif
 }
 
 static CreateStmt *
@@ -4040,6 +4243,9 @@ _copyCreateTableAsStmt(const CreateTableAsStmt *from)
 	COPY_NODE_FIELD(into);
 	COPY_SCALAR_FIELD(relkind);
 	COPY_SCALAR_FIELD(is_select_into);
+#ifdef PGXC	
+	COPY_SCALAR_FIELD(islocal);
+#endif
 	COPY_SCALAR_FIELD(if_not_exists);
 
 	return newnode;
@@ -5253,6 +5459,90 @@ _copyValue(const Value *from)
 	return newnode;
 }
 
+#ifdef PGXC
+/* ****************************************************************
+ *					barrier.h copy functions
+ * ****************************************************************
+ */
+static BarrierStmt *
+_copyBarrierStmt(const BarrierStmt *from)
+{
+	BarrierStmt *newnode = makeNode(BarrierStmt);
+
+	COPY_STRING_FIELD(id);
+
+	return newnode;
+}
+
+static PauseClusterStmt *
+_copyPauseClusterStmt(const PauseClusterStmt *from)
+{
+	PauseClusterStmt *newnode = makeNode(PauseClusterStmt);
+
+	COPY_SCALAR_FIELD(pause);
+
+	return newnode;
+}
+
+/* ****************************************************************
+ *					nodemgr.h copy functions
+ * ****************************************************************
+ */
+static AlterNodeStmt *
+_copyAlterNodeStmt(const AlterNodeStmt *from)
+{
+	AlterNodeStmt *newnode = makeNode(AlterNodeStmt);
+
+	COPY_STRING_FIELD(node_name);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
+static CreateNodeStmt *
+_copyCreateNodeStmt(const CreateNodeStmt *from)
+{
+	CreateNodeStmt *newnode = makeNode(CreateNodeStmt);
+
+	COPY_STRING_FIELD(node_name);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
+static DropNodeStmt *
+_copyDropNodeStmt(const DropNodeStmt *from)
+{
+	DropNodeStmt *newnode = makeNode(DropNodeStmt);
+
+	COPY_STRING_FIELD(node_name);
+
+	return newnode;
+}
+
+/* ****************************************************************
+ *					groupmgr.h copy functions
+ * ****************************************************************
+ */
+static CreateGroupStmt *
+_copyCreateGroupStmt(const CreateGroupStmt *from)
+{
+	CreateGroupStmt *newnode = makeNode(CreateGroupStmt);
+
+	COPY_STRING_FIELD(group_name);
+	COPY_NODE_FIELD(nodes);
+
+	return newnode;
+}
+
+static DropGroupStmt *
+_copyDropGroupStmt(const DropGroupStmt *from)
+{
+	DropGroupStmt *newnode = makeNode(DropGroupStmt);
+
+	COPY_STRING_FIELD(group_name);
+	return newnode;
+}
 
 static ForeignKeyCacheInfo *
 _copyForeignKeyCacheInfo(const ForeignKeyCacheInfo *from)
@@ -5270,6 +5560,24 @@ _copyForeignKeyCacheInfo(const ForeignKeyCacheInfo *from)
 	return newnode;
 }
 
+/* ****************************************************************
+ *					poolutils.h copy functions
+ * ****************************************************************
+ */
+static CleanConnStmt *
+_copyCleanConnStmt(const CleanConnStmt *from)
+{
+	CleanConnStmt *newnode = makeNode(CleanConnStmt);
+
+	COPY_NODE_FIELD(nodes);
+	COPY_STRING_FIELD(dbname);
+	COPY_STRING_FIELD(username);
+	COPY_SCALAR_FIELD(is_coord);
+	COPY_SCALAR_FIELD(is_force);
+
+	return newnode;
+}
+#endif
 
 /*
  * copyObjectImpl -- implementation of copyObject(); see nodes/nodes.h
@@ -5437,6 +5745,31 @@ copyObjectImpl(const void *from)
 		case T_PlanInvalItem:
 			retval = _copyPlanInvalItem(from);
 			break;
+#ifdef PGXC
+			/*
+			 * PGXC SPECIFIC NODES
+			 */
+		case T_ExecDirectStmt:
+			retval = _copyExecDirect(from);
+			break;
+		case T_RemoteQuery:
+			retval = _copyRemoteQuery(from);
+			break;
+		case T_ExecNodes:
+			retval = _copyExecNodes(from);
+			break;
+		case T_SimpleSort:
+			retval = _copySimpleSort(from);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplan:
+			retval = _copyRemoteSubplan(from);
+			break;
+		case T_Distribution:
+			retval = _copyDistribution(from);
+			break;
+#endif
 		case T_Shortestpath:
 			retval = _copyShortestpath(from);
 			break;
@@ -5981,6 +6314,32 @@ copyObjectImpl(const void *from)
 		case T_CheckPointStmt:
 			retval = (void *) makeNode(CheckPointStmt);
 			break;
+#ifdef PGXC
+		case T_BarrierStmt:
+			retval = _copyBarrierStmt(from);
+			break;
+		case T_PauseClusterStmt:
+			retval = _copyPauseClusterStmt(from);
+			break;
+		case T_AlterNodeStmt:
+			retval = _copyAlterNodeStmt(from);
+			break;
+		case T_CreateNodeStmt:
+			retval = _copyCreateNodeStmt(from);
+			break;
+		case T_DropNodeStmt:
+			retval = _copyDropNodeStmt(from);
+			break;
+		case T_CreateGroupStmt:
+			retval = _copyCreateGroupStmt(from);
+			break;
+		case T_DropGroupStmt:
+			retval = _copyDropGroupStmt(from);
+			break;
+		case T_CleanConnStmt:
+			retval = _copyCleanConnStmt(from);
+			break;
+#endif
 		case T_CreateSchemaStmt:
 			retval = _copyCreateSchemaStmt(from);
 			break;
@@ -6185,6 +6544,15 @@ copyObjectImpl(const void *from)
 		case T_XmlSerialize:
 			retval = _copyXmlSerialize(from);
 			break;
+#ifdef PGXC
+		case T_DistributeBy:
+			retval = _copyDistributeBy(from);
+			break;
+
+		case T_PGXCSubCluster:
+			retval = _copyPGXCSubCluster(from);
+			break;
+#endif
 		case T_RoleSpec:
 			retval = _copyRoleSpec(from);
 			break;

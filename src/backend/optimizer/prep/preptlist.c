@@ -44,6 +44,10 @@
 #include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
+#ifdef XCP
+#include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
+#endif
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
 #include "optimizer/var.h"
@@ -117,6 +121,122 @@ preprocess_targetlist(PlannerInfo *root)
 	if (command_type == CMD_INSERT || command_type == CMD_UPDATE)
 		tlist = expand_targetlist(tlist, command_type,
 								  result_relation, target_relation);
+#ifdef XCP
+	/*
+	 * If target relation is specified set distribution of the plan
+	 */
+	if (result_relation)
+	{
+		Relation rel = heap_open(getrelid(result_relation, range_table),
+								 NoLock);
+		RelationLocInfo *rel_loc_info = rel->rd_locator_info;
+
+		/* Is target table distributed ? */
+		if (rel_loc_info)
+		{
+			Distribution *distribution = makeNode(Distribution);
+			ListCell *lc;
+
+			distribution->distributionType = rel_loc_info->locatorType;
+			foreach(lc, rel_loc_info->rl_nodeList)
+				distribution->nodes = bms_add_member(distribution->nodes,
+													 lfirst_int(lc));
+			distribution->restrictNodes = NULL;
+			if (rel_loc_info->partAttrNum)
+			{
+				/*
+				 * For INSERT and UPDATE plan tlist is matching the target table
+				 * layout
+				 */
+				if (command_type == CMD_INSERT || command_type == CMD_UPDATE)
+				{
+					TargetEntry *keyTle;
+					keyTle = (TargetEntry *) list_nth(tlist,
+											  rel_loc_info->partAttrNum - 1);
+
+					distribution->distributionExpr = (Node *) keyTle->expr;
+
+					/*
+					 * We can restrict the distribution if the expression
+					 * is evaluated to a constant
+					 */
+					if (command_type == CMD_INSERT)
+					{
+						Oid 	keytype;
+						Const  *constExpr = NULL;
+
+						keytype = exprType(distribution->distributionExpr);
+						constExpr = (Const *) eval_const_expressions(root,
+												distribution->distributionExpr);
+						if (IsA(constExpr, Const) &&
+								constExpr->consttype == keytype)
+						{
+							List 	   *nodeList = NIL;
+							Bitmapset  *tmpset = bms_copy(distribution->nodes);
+							Bitmapset  *restrictinfo = NULL;
+							Locator    *locator;
+							int		   *nodenums;
+							int 		i, count;
+
+							while((i = bms_first_member(tmpset)) >= 0)
+								nodeList = lappend_int(nodeList, i);
+							bms_free(tmpset);
+
+							locator = createLocator(distribution->distributionType,
+													RELATION_ACCESS_INSERT,
+													keytype,
+													LOCATOR_LIST_LIST,
+													0,
+													(void *) nodeList,
+													(void **) &nodenums,
+													false);
+							count = GET_NODES(locator, constExpr->constvalue,
+											  constExpr->constisnull, NULL);
+
+							for (i = 0; i < count; i++)
+								restrictinfo = bms_add_member(restrictinfo, nodenums[i]);
+							distribution->restrictNodes = restrictinfo;
+							list_free(nodeList);
+							freeLocator(locator);
+						}
+					}
+				}
+
+				/*
+				 * For delete we need to add the partitioning key of the target
+				 * table to the tlist, so distribution can be correctly handled
+				 * trough all the planning process.
+				 */
+				if (command_type == CMD_DELETE)
+				{
+					Form_pg_attribute att_tup;
+					TargetEntry *tle;
+					Var		   *var;
+
+					att_tup = rel->rd_att->attrs[rel_loc_info->partAttrNum - 1];
+					var = makeVar(result_relation, rel_loc_info->partAttrNum,
+								  att_tup->atttypid, att_tup->atttypmod,
+								  att_tup->attcollation, 0);
+
+					tle = makeTargetEntry((Expr *) var,
+										  list_length(tlist) + 1,
+										  pstrdup(NameStr(att_tup->attname)),
+										  true);
+					tlist = lappend(tlist, tle);
+					distribution->distributionExpr = (Node *) var;
+				}
+			}
+			else
+				distribution->distributionExpr = NULL;
+
+			root->distribution = distribution;
+		}
+		else
+			root->distribution = NULL;
+
+		heap_close(rel, NoLock);
+	}
+#endif
 
 	/*
 	 * Add necessary junk columns for rowmarked rels.  These values are needed

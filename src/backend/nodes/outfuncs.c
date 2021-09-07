@@ -122,14 +122,157 @@ static void outChar(StringInfo str, char c);
 
 /* Write a Node field */
 #define WRITE_NODE_FIELD(fldname) \
-	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
-	 outNode(str, node->fldname))
+	do { \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		outNode(str, node->fldname); \
+	} while (0)
 
 /* Write a bitmapset field */
 #define WRITE_BITMAPSET_FIELD(fldname) \
 	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
 	 outBitmapset(str, node->fldname))
 
+#ifdef XCP
+#define NSP_NAME(oid) \
+	isTempNamespace(oid) ? "pg_temp" : get_namespace_name(oid)
+/*
+ * Macros to encode OIDs to send to other nodes. Objects on other nodes may have
+ * different OIDs, so send instead an unique identifier allowing to lookup
+ * the OID on target node. The identifier depends on object type.
+ */
+
+#define WRITE_RELID_INTERNAL(relid) \
+	(outToken(str, OidIsValid((relid)) ? NSP_NAME(get_rel_namespace((relid))) : NULL), \
+	 appendStringInfoChar(str, ' '), \
+	 outToken(str, OidIsValid((relid)) ? get_rel_name((relid)) : NULL))
+
+/* write an OID which is a relation OID */
+#define WRITE_RELID_FIELD(fldname) \
+	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
+	 WRITE_RELID_INTERNAL(node->fldname))
+
+#define WRITE_RELID_LIST_FIELD(fldname) \
+	do { \
+		ListCell *lc; \
+		char *sep = ""; \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		if (node->fldname == NIL || list_length(node->fldname) == 0) \
+			appendStringInfoString(str, "<>"); \
+		else \
+		{ \
+			appendStringInfoChar(str, '('); \
+			foreach (lc, node->fldname) \
+			{ \
+				Oid relid = lfirst_oid(lc); \
+				appendStringInfoString(str, sep); \
+				WRITE_RELID_INTERNAL(relid); \
+				sep = " , "; \
+			} \
+			appendStringInfoString(str, " )"); \
+		} \
+	}  while (0)
+
+#define WRITE_TYPID_INTERNAL(typid) \
+	(outToken(str, OidIsValid(typid) ? NSP_NAME(get_typ_namespace(typid)) : NULL), \
+	 appendStringInfoChar(str, ' '), \
+	 outToken(str, OidIsValid(typid) ? get_typ_name(typid) : NULL))
+
+/* write an OID which is a data type OID */
+#define WRITE_TYPID_FIELD(fldname) \
+	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
+	 WRITE_TYPID_INTERNAL(node->fldname))
+
+#define WRITE_TYPID_LIST_FIELD(fldname) \
+	do { \
+		ListCell *lc; \
+		char *sep = ""; \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		if (node->fldname == NIL || list_length(node->fldname) == 0) \
+			appendStringInfoString(str, "<>"); \
+		else \
+		{ \
+			appendStringInfoChar(str, '('); \
+			foreach (lc, node->fldname) \
+			{ \
+				Oid typid = lfirst_oid(lc); \
+				appendStringInfoString(str, sep); \
+				WRITE_TYPID_INTERNAL(typid); \
+				sep = " , "; \
+			} \
+			appendStringInfoString(str, " )"); \
+		} \
+	}  while (0)
+
+/* write an OID which is a function OID */
+#define WRITE_FUNCID_FIELD(fldname) \
+	do { \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		if (OidIsValid(node->fldname)) \
+		{ \
+			Oid *argtypes; \
+			int i, nargs; \
+			outToken(str, NSP_NAME(get_func_namespace(node->fldname))); \
+			appendStringInfoChar(str, ' '); \
+			outToken(str, get_func_name(node->fldname)); \
+			appendStringInfoChar(str, ' '); \
+			get_func_signature(node->fldname, &argtypes, &nargs); \
+			appendStringInfo(str, "%d", nargs); \
+			for (i = 0; i < nargs; i++) \
+			{ \
+				appendStringInfoChar(str, ' '); \
+				outToken(str, NSP_NAME(get_typ_namespace(argtypes[i]))); \
+				appendStringInfoChar(str, ' '); \
+				outToken(str, get_typ_name(argtypes[i])); \
+			} \
+		} \
+		else \
+			appendStringInfo(str, "<> <> 0"); \
+	} while (0)
+
+/* write an OID which is an operator OID */
+#define WRITE_OPERID_FIELD(fldname) \
+	do { \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		if (OidIsValid(node->fldname)) \
+		{ \
+			Oid oprleft, oprright; \
+			outToken(str, NSP_NAME(get_opnamespace(node->fldname))); \
+			appendStringInfoChar(str, ' '); \
+			outToken(str, get_opname(node->fldname)); \
+			appendStringInfoChar(str, ' '); \
+			op_input_types(node->fldname, &oprleft, &oprright); \
+			outToken(str, OidIsValid(oprleft) ? \
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL); \
+			appendStringInfoChar(str, ' '); \
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL); \
+			appendStringInfoChar(str, ' '); \
+			outToken(str, OidIsValid(oprright) ? \
+					NSP_NAME(get_typ_namespace(oprright)) : NULL); \
+			appendStringInfoChar(str, ' '); \
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL); \
+			appendStringInfoChar(str, ' '); \
+		} \
+		else \
+			appendStringInfo(str, "<> <> <> <> <> <>"); \
+	} while (0)
+
+/* write an OID which is a collation OID */
+#define WRITE_COLLID_FIELD(fldname) \
+	do { \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		if (OidIsValid(node->fldname)) \
+		{ \
+			outToken(str, NSP_NAME(get_collation_namespace(node->fldname))); \
+			appendStringInfoChar(str, ' '); \
+			outToken(str, get_collation_name(node->fldname)); \
+			appendStringInfo(str, " %d", get_collation_encoding(node->fldname)); \
+		} \
+		else \
+			appendStringInfo(str, "<> <> -1"); \
+	} while (0)
+
+
+#endif
 
 #define booltostr(x)  ((x) ? "true" : "false")
 
@@ -280,6 +423,48 @@ outDatum(StringInfo str, Datum value, int typlen, bool typbyval)
 }
 
 
+#ifdef XCP
+/*
+ * Output value in text format
+ */
+static void
+_printDatum(StringInfo str, Datum value, Oid typid)
+{
+	Oid 		typOutput;
+	bool 		typIsVarlena;
+	FmgrInfo    finfo;
+	Datum		tmpval;
+	char	   *textvalue;
+	int			saveDateStyle;
+
+	/* Get output function for the type */
+	getTypeOutputInfo(typid, &typOutput, &typIsVarlena);
+	fmgr_info(typOutput, &finfo);
+
+	/* Detoast value if needed */
+	if (typIsVarlena)
+		tmpval = PointerGetDatum(PG_DETOAST_DATUM(value));
+	else
+		tmpval = value;
+
+	/*
+	 * It was found that if configuration setting for date style is
+	 * "postgres,ymd" the output dates have format DD-MM-YYYY and they can not
+	 * be parsed correctly by receiving party. So force ISO format YYYY-MM-DD
+	 * in internal cluster communications, these values are always parsed
+	 * correctly.
+	 */
+	saveDateStyle = DateStyle;
+	DateStyle = USE_ISO_DATES;
+
+	textvalue = DatumGetCString(FunctionCall1(&finfo, tmpval));
+	outToken(str, textvalue);
+
+	DateStyle = saveDateStyle;
+}
+#endif
+
+
 /*
  *	Stuff from plannodes.h
  */
@@ -409,7 +594,16 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_INT_FIELD(epqParam);
 	WRITE_ENUM_FIELD(onConflictAction, OnConflictAction);
+#ifdef XCP	
+	if (portable_output)
+		WRITE_RELID_LIST_FIELD(arbiterIndexes);
+	else
+	{
+#endif
 	WRITE_NODE_FIELD(arbiterIndexes);
+#ifdef XCP
+	}
+#endif
 	WRITE_NODE_FIELD(onConflictSet);
 	WRITE_NODE_FIELD(onConflictWhere);
 	WRITE_UINT_FIELD(exclRelRTI);
@@ -447,10 +641,52 @@ _outMergeAppend(StringInfo str, const MergeAppend *node)
 
 	appendStringInfoString(str, " :sortOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->sortOperators[i];
+			Oid oprleft, oprright;
+			/* Sort operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->sortOperators[i]);
 
 	appendStringInfoString(str, " :collations");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid coll = node->collations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				outToken(str, NSP_NAME(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->collations[i]);
 
 	appendStringInfoString(str, " :nullsFirst");
@@ -476,6 +712,32 @@ _outRecursiveUnion(StringInfo str, const RecursiveUnion *node)
 
 	appendStringInfoString(str, " :dupOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->dupOperators[i];
+			Oid oprleft, oprright;
+			/* Unique operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+			appendStringInfoChar(str, ' ');
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->dupOperators[i]);
 
 	WRITE_LONG_FIELD(numGroups);
@@ -579,6 +841,11 @@ _outIndexScan(StringInfo str, const IndexScan *node)
 
 	_outScanInfo(str, (const Scan *) node);
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_RELID_FIELD(indexid);
+	else
+#endif
 	WRITE_OID_FIELD(indexid);
 	WRITE_NODE_FIELD(indexqual);
 	WRITE_NODE_FIELD(indexqualorig);
@@ -588,6 +855,48 @@ _outIndexScan(StringInfo str, const IndexScan *node)
 	WRITE_ENUM_FIELD(indexorderdir, ScanDirection);
 }
 
+#ifdef PGXC
+static void
+_outRemoteQuery(StringInfo str, const RemoteQuery *node)
+{
+	int			i;
+
+	WRITE_NODE_TYPE("REMOTEQUERY");
+
+	_outScanInfo(str, (Scan *) node);
+
+	WRITE_ENUM_FIELD(exec_direct_type, ExecDirectType);
+	WRITE_STRING_FIELD(sql_statement);
+	WRITE_NODE_FIELD(exec_nodes);
+	WRITE_ENUM_FIELD(combine_type, CombineType);
+	WRITE_BOOL_FIELD(read_only);
+	WRITE_STRING_FIELD(statement);
+	WRITE_STRING_FIELD(cursor);
+	WRITE_INT_FIELD(rq_num_params);
+
+	appendStringInfo(str, " :rq_param_types");
+	for (i = 0; i < node->rq_num_params; i++)
+		appendStringInfo(str, " %d", node->rq_param_types[i]);
+
+	WRITE_ENUM_FIELD(exec_type, RemoteQueryExecType);
+	WRITE_BOOL_FIELD(has_row_marks);
+	WRITE_BOOL_FIELD(has_ins_child_sel_parent);
+}
+
+static void
+_outExecNodes(StringInfo str, const ExecNodes *node)
+{
+	WRITE_NODE_TYPE("EXEC_NODES");
+
+	WRITE_NODE_FIELD(primarynodelist);
+	WRITE_NODE_FIELD(nodeList);
+	WRITE_CHAR_FIELD(baselocatortype);
+	WRITE_NODE_FIELD(en_expr);
+	WRITE_OID_FIELD(en_relid);
+	WRITE_ENUM_FIELD(accesstype, RelationAccessType);
+}
+#endif
+
 static void
 _outIndexOnlyScan(StringInfo str, const IndexOnlyScan *node)
 {
@@ -595,6 +904,11 @@ _outIndexOnlyScan(StringInfo str, const IndexOnlyScan *node)
 
 	_outScanInfo(str, (const Scan *) node);
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_RELID_FIELD(indexid);
+	else
+#endif
 	WRITE_OID_FIELD(indexid);
 	WRITE_NODE_FIELD(indexqual);
 	WRITE_NODE_FIELD(indexorderby);
@@ -609,6 +923,11 @@ _outBitmapIndexScan(StringInfo str, const BitmapIndexScan *node)
 
 	_outScanInfo(str, (const Scan *) node);
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_RELID_FIELD(indexid);
+	else
+#endif
 	WRITE_OID_FIELD(indexid);
 	WRITE_BOOL_FIELD(isshared);
 	WRITE_NODE_FIELD(indexqual);
@@ -795,6 +1114,23 @@ _outMergeJoin(StringInfo str, const MergeJoin *node)
 
 	appendStringInfoString(str, " :mergeCollations");
 	for (i = 0; i < numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid coll = node->mergeCollations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				outToken(str, NSP_NAME(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->mergeCollations[i]);
 
 	appendStringInfoString(str, " :mergeStrategies");
@@ -835,6 +1171,32 @@ _outAgg(StringInfo str, const Agg *node)
 
 	appendStringInfoString(str, " :grpOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->grpOperators[i];
+			Oid oprleft, oprright;
+			/* Group operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+			appendStringInfoChar(str, ' ');
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->grpOperators[i]);
 
 	WRITE_LONG_FIELD(numGroups);
@@ -861,6 +1223,32 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 
 	appendStringInfoString(str, " :partOperations");
 	for (i = 0; i < node->partNumCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->partOperators[i];
+			Oid oprleft, oprright;
+			/* The operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+			appendStringInfoChar(str, ' ');
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->partOperators[i]);
 
 	WRITE_INT_FIELD(ordNumCols);
@@ -871,6 +1259,32 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 
 	appendStringInfoString(str, " :ordOperations");
 	for (i = 0; i < node->ordNumCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->ordOperators[i];
+			Oid oprleft, oprright;
+			/* Group operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+			appendStringInfoChar(str, ' ');
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->ordOperators[i]);
 
 	WRITE_INT_FIELD(frameOptions);
@@ -895,6 +1309,32 @@ _outGroup(StringInfo str, const Group *node)
 
 	appendStringInfoString(str, " :grpOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->grpOperators[i];
+			Oid oprleft, oprright;
+			/* Group operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+			appendStringInfoChar(str, ' ');
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->grpOperators[i]);
 }
 
@@ -923,10 +1363,52 @@ _outSort(StringInfo str, const Sort *node)
 
 	appendStringInfoString(str, " :sortOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->sortOperators[i];
+			Oid oprleft, oprright;
+			/* Sort operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->sortOperators[i]);
 
 	appendStringInfoString(str, " :collations");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid coll = node->collations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				outToken(str, NSP_NAME(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->collations[i]);
 
 	appendStringInfoString(str, " :nullsFirst");
@@ -951,6 +1433,32 @@ _outUnique(StringInfo str, const Unique *node)
 
 	appendStringInfoString(str, " :uniqOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->uniqOperators[i];
+			Oid oprleft, oprright;
+			/* Unique operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+			appendStringInfoChar(str, ' ');
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->uniqOperators[i]);
 }
 
@@ -961,6 +1469,11 @@ _outHash(StringInfo str, const Hash *node)
 
 	_outPlanInfo(str, (const Plan *) node);
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_RELID_FIELD(skewTable);
+	else
+#endif
 	WRITE_OID_FIELD(skewTable);
 	WRITE_INT_FIELD(skewColumn);
 	WRITE_BOOL_FIELD(skewInherit);
@@ -985,6 +1498,31 @@ _outSetOp(StringInfo str, const SetOp *node)
 
 	appendStringInfoString(str, " :dupOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->dupOperators[i];
+			Oid oprleft, oprright;
+			/* Unique operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->dupOperators[i]);
 
 	WRITE_INT_FIELD(flagColIdx);
@@ -1086,6 +1624,138 @@ _outDijkstra(StringInfo str, const Dijkstra *node)
 	WRITE_NODE_FIELD(target);
 	WRITE_NODE_FIELD(limit);
 }
+
+#ifdef XCP
+static void
+_outRemoteSubplan(StringInfo str, const RemoteSubplan *node)
+{
+	WRITE_NODE_TYPE("REMOTESUBPLAN");
+
+	_outScanInfo(str, (Scan *) node);
+
+	WRITE_CHAR_FIELD(distributionType);
+	WRITE_INT_FIELD(distributionKey);
+	WRITE_NODE_FIELD(distributionNodes);
+	WRITE_NODE_FIELD(distributionRestrict);
+	WRITE_NODE_FIELD(nodeList);
+	WRITE_BOOL_FIELD(execOnAll);
+	WRITE_NODE_FIELD(sort);
+	WRITE_STRING_FIELD(cursor);
+	WRITE_INT_FIELD(unique);
+}
+
+static void
+_outRemoteStmt(StringInfo str, const RemoteStmt *node)
+{
+	int i;
+
+	WRITE_NODE_TYPE("REMOTESTMT");
+
+	WRITE_ENUM_FIELD(commandType, CmdType);
+	WRITE_BOOL_FIELD(hasReturning);
+	WRITE_NODE_FIELD(planTree);
+	WRITE_NODE_FIELD(rtable);
+	WRITE_NODE_FIELD(resultRelations);
+	WRITE_NODE_FIELD(subplans);
+	WRITE_INT_FIELD(nParamExec);
+	WRITE_INT_FIELD(nParamRemote);
+
+	for (i = 0; i < node->nParamRemote; i++)
+	{
+		RemoteParam *rparam = &(node->remoteparams[i]);
+		appendStringInfo(str, " :paramkind");
+		appendStringInfo(str, " %d", (int) rparam->paramkind);
+
+		appendStringInfo(str, " :paramid");
+		appendStringInfo(str, " %d", rparam->paramid);
+
+		appendStringInfo(str, " :paramused");
+		appendStringInfo(str, " %d", rparam->paramused);
+
+		appendStringInfo(str, " :paramtype");
+		if (portable_output)
+		{
+			Oid ptype = rparam->paramtype;
+			Assert(OidIsValid(ptype));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_typ_namespace(ptype)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_typ_name(ptype));
+		}
+		else
+			appendStringInfo(str, " %u", rparam->paramtype);
+	}
+	WRITE_NODE_FIELD(rowMarks);
+	WRITE_CHAR_FIELD(distributionType);
+	WRITE_INT_FIELD(distributionKey);
+	WRITE_NODE_FIELD(distributionNodes);
+	WRITE_NODE_FIELD(distributionRestrict);
+}
+
+static void
+_outSimpleSort(StringInfo str, const SimpleSort *node)
+{
+	int			i;
+
+	WRITE_NODE_TYPE("SIMPLESORT");
+
+	WRITE_INT_FIELD(numCols);
+
+	appendStringInfo(str, " :sortColIdx");
+	for (i = 0; i < node->numCols; i++)
+		appendStringInfo(str, " %d", node->sortColIdx[i]);
+
+	appendStringInfo(str, " :sortOperators");
+	for (i = 0; i < node->numCols; i++)
+		if (portable_output)
+		{
+			Oid oper = node->sortOperators[i];
+			Oid oprleft, oprright;
+			/* Sort operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+		}
+		else
+			appendStringInfo(str, " %u", node->sortOperators[i]);
+
+	appendStringInfo(str, " :sortCollations");
+	for (i = 0; i < node->numCols; i++)
+		if (portable_output)
+		{
+			Oid coll = node->sortCollations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				outToken(str, NSP_NAME(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+			appendStringInfo(str, " %u", node->sortCollations[i]);
+
+	appendStringInfo(str, " :nullsFirst");
+	for (i = 0; i < node->numCols; i++)
+		appendStringInfo(str, " %s", booltostr(node->nullsFirst[i]));
+}
+#endif
 
 static void
 _outNestLoopParam(StringInfo str, const NestLoopParam *node)
@@ -1193,8 +1863,18 @@ _outVar(StringInfo str, const Var *node)
 
 	WRITE_UINT_FIELD(varno);
 	WRITE_INT_FIELD(varattno);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(vartype);
+	else
+#endif
 	WRITE_OID_FIELD(vartype);
 	WRITE_INT_FIELD(vartypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(varcollid);
+	else
+#endif
 	WRITE_OID_FIELD(varcollid);
 	WRITE_UINT_FIELD(varlevelsup);
 	WRITE_UINT_FIELD(varnoold);
@@ -1207,8 +1887,18 @@ _outConst(StringInfo str, const Const *node)
 {
 	WRITE_NODE_TYPE("CONST");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(consttype);
+	else
+#endif
 	WRITE_OID_FIELD(consttype);
 	WRITE_INT_FIELD(consttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(constcollid);
+	else
+#endif
 	WRITE_OID_FIELD(constcollid);
 	WRITE_INT_FIELD(constlen);
 	WRITE_BOOL_FIELD(constbyval);
@@ -1219,6 +1909,11 @@ _outConst(StringInfo str, const Const *node)
 	if (node->constisnull)
 		appendStringInfoString(str, "<>");
 	else
+#ifdef XCP
+		if (portable_output)
+			_printDatum(str, node->constvalue, node->consttype);
+		else
+#endif
 		outDatum(str, node->constvalue, node->constlen, node->constbyval);
 }
 
@@ -1229,8 +1924,18 @@ _outParam(StringInfo str, const Param *node)
 
 	WRITE_ENUM_FIELD(paramkind, ParamKind);
 	WRITE_INT_FIELD(paramid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(paramtype);
+	else
+#endif
 	WRITE_OID_FIELD(paramtype);
 	WRITE_INT_FIELD(paramtypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(paramcollid);
+	else
+#endif
 	WRITE_OID_FIELD(paramcollid);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -1240,11 +1945,41 @@ _outAggref(StringInfo str, const Aggref *node)
 {
 	WRITE_NODE_TYPE("AGGREF");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(aggfnoid);
+	else
+#endif
 	WRITE_OID_FIELD(aggfnoid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(aggtype);
+	else
+#endif
 	WRITE_OID_FIELD(aggtype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(aggcollid);
+	else
+#endif
 	WRITE_OID_FIELD(aggcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(aggtranstype);
+	else
+#endif
 	WRITE_OID_FIELD(aggtranstype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_LIST_FIELD(aggargtypes);
+	else
+#endif
 	WRITE_NODE_FIELD(aggargtypes);
 	WRITE_NODE_FIELD(aggdirectargs);
 	WRITE_NODE_FIELD(args);
@@ -1276,9 +2011,29 @@ _outWindowFunc(StringInfo str, const WindowFunc *node)
 {
 	WRITE_NODE_TYPE("WINDOWFUNC");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(winfnoid);
+	else
+#endif
 	WRITE_OID_FIELD(winfnoid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(wintype);
+	else
+#endif
 	WRITE_OID_FIELD(wintype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(wincollid);
+	else
+#endif
 	WRITE_OID_FIELD(wincollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_NODE_FIELD(aggfilter);
@@ -1293,9 +2048,24 @@ _outArrayRef(StringInfo str, const ArrayRef *node)
 {
 	WRITE_NODE_TYPE("ARRAYREF");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(refarraytype);
+	else
+#endif
 	WRITE_OID_FIELD(refarraytype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(refelemtype);
+	else
+#endif
 	WRITE_OID_FIELD(refelemtype);
 	WRITE_INT_FIELD(reftypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(refcollid);
+	else
+#endif
 	WRITE_OID_FIELD(refcollid);
 	WRITE_NODE_FIELD(refupperindexpr);
 	WRITE_NODE_FIELD(reflowerindexpr);
@@ -1308,12 +2078,32 @@ _outFuncExpr(StringInfo str, const FuncExpr *node)
 {
 	WRITE_NODE_TYPE("FUNCEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(funcid);
+	else
+#endif
 	WRITE_OID_FIELD(funcid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(funcresulttype);
+	else
+#endif
 	WRITE_OID_FIELD(funcresulttype);
 	WRITE_BOOL_FIELD(funcretset);
 	WRITE_BOOL_FIELD(funcvariadic);
 	WRITE_ENUM_FIELD(funcformat, CoercionForm);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(funccollid);
+	else
+#endif
 	WRITE_OID_FIELD(funccollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1335,11 +2125,36 @@ _outOpExpr(StringInfo str, const OpExpr *node)
 {
 	WRITE_NODE_TYPE("OPEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(opno);
+	else
+#endif
 	WRITE_OID_FIELD(opno);
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(opfuncid);
+	else
+#endif
 	WRITE_OID_FIELD(opfuncid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(opresulttype);
+	else
+#endif
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(opcollid);
+	else
+#endif
 	WRITE_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1350,11 +2165,36 @@ _outDistinctExpr(StringInfo str, const DistinctExpr *node)
 {
 	WRITE_NODE_TYPE("DISTINCTEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(opno);
+	else
+#endif
 	WRITE_OID_FIELD(opno);
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(opfuncid);
+	else
+#endif
 	WRITE_OID_FIELD(opfuncid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(opresulttype);
+	else
+#endif
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(opcollid);
+	else
+#endif
 	WRITE_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1365,11 +2205,36 @@ _outNullIfExpr(StringInfo str, const NullIfExpr *node)
 {
 	WRITE_NODE_TYPE("NULLIFEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(opno);
+	else
+#endif
 	WRITE_OID_FIELD(opno);
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(opfuncid);
+	else
+#endif
 	WRITE_OID_FIELD(opfuncid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(opresulttype);
+	else
+#endif
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(opcollid);
+	else
+#endif
 	WRITE_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1380,9 +2245,24 @@ _outScalarArrayOpExpr(StringInfo str, const ScalarArrayOpExpr *node)
 {
 	WRITE_NODE_TYPE("SCALARARRAYOPEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(opno);
+	else
+#endif
 	WRITE_OID_FIELD(opno);
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(opfuncid);
+	else
+#endif
 	WRITE_OID_FIELD(opfuncid);
 	WRITE_BOOL_FIELD(useOr);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1438,8 +2318,18 @@ _outSubPlan(StringInfo str, const SubPlan *node)
 	WRITE_NODE_FIELD(paramIds);
 	WRITE_INT_FIELD(plan_id);
 	WRITE_STRING_FIELD(plan_name);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(firstColType);
+	else
+#endif
 	WRITE_OID_FIELD(firstColType);
 	WRITE_INT_FIELD(firstColTypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(firstColCollation);
+	else
+#endif
 	WRITE_OID_FIELD(firstColCollation);
 	WRITE_BOOL_FIELD(useHashTable);
 	WRITE_BOOL_FIELD(unknownEqFalse);
@@ -1466,8 +2356,18 @@ _outFieldSelect(StringInfo str, const FieldSelect *node)
 
 	WRITE_NODE_FIELD(arg);
 	WRITE_INT_FIELD(fieldnum);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 }
 
@@ -1479,6 +2379,11 @@ _outFieldStore(StringInfo str, const FieldStore *node)
 	WRITE_NODE_FIELD(arg);
 	WRITE_NODE_FIELD(newvals);
 	WRITE_NODE_FIELD(fieldnums);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
 }
 
@@ -1488,8 +2393,18 @@ _outRelabelType(StringInfo str, const RelabelType *node)
 	WRITE_NODE_TYPE("RELABELTYPE");
 
 	WRITE_NODE_FIELD(arg);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_ENUM_FIELD(relabelformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -1501,7 +2416,17 @@ _outCoerceViaIO(StringInfo str, const CoerceViaIO *node)
 	WRITE_NODE_TYPE("COERCEVIAIO");
 
 	WRITE_NODE_FIELD(arg);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_ENUM_FIELD(coerceformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -1513,9 +2438,24 @@ _outArrayCoerceExpr(StringInfo str, const ArrayCoerceExpr *node)
 	WRITE_NODE_TYPE("ARRAYCOERCEEXPR");
 
 	WRITE_NODE_FIELD(arg);
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(elemfuncid);
+	else
+#endif
 	WRITE_OID_FIELD(elemfuncid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_BOOL_FIELD(isExplicit);
 	WRITE_ENUM_FIELD(coerceformat, CoercionForm);
@@ -1528,6 +2468,11 @@ _outConvertRowtypeExpr(StringInfo str, const ConvertRowtypeExpr *node)
 	WRITE_NODE_TYPE("CONVERTROWTYPEEXPR");
 
 	WRITE_NODE_FIELD(arg);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_ENUM_FIELD(convertformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -1548,7 +2493,17 @@ _outCaseExpr(StringInfo str, const CaseExpr *node)
 {
 	WRITE_NODE_TYPE("CASE");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(casetype);
+	else
+#endif
 	WRITE_OID_FIELD(casetype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(casecollid);
+	else
+#endif
 	WRITE_OID_FIELD(casecollid);
 	WRITE_NODE_FIELD(arg);
 	WRITE_NODE_FIELD(args);
@@ -1571,8 +2526,18 @@ _outCaseTestExpr(StringInfo str, const CaseTestExpr *node)
 {
 	WRITE_NODE_TYPE("CASETESTEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(typeId);
+	else
+#endif
 	WRITE_OID_FIELD(typeId);
 	WRITE_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(collation);
+	else
+#endif
 	WRITE_OID_FIELD(collation);
 }
 
@@ -1581,8 +2546,23 @@ _outArrayExpr(StringInfo str, const ArrayExpr *node)
 {
 	WRITE_NODE_TYPE("ARRAY");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(array_typeid);
+	else
+#endif
 	WRITE_OID_FIELD(array_typeid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(array_collid);
+	else
+#endif
 	WRITE_OID_FIELD(array_collid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(element_typeid);
+	else
+#endif
 	WRITE_OID_FIELD(element_typeid);
 	WRITE_NODE_FIELD(elements);
 	WRITE_BOOL_FIELD(multidims);
@@ -1595,6 +2575,11 @@ _outRowExpr(StringInfo str, const RowExpr *node)
 	WRITE_NODE_TYPE("ROW");
 
 	WRITE_NODE_FIELD(args);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(row_typeid);
+	else
+#endif
 	WRITE_OID_FIELD(row_typeid);
 	WRITE_ENUM_FIELD(row_format, CoercionForm);
 	WRITE_NODE_FIELD(colnames);
@@ -1619,7 +2604,17 @@ _outCoalesceExpr(StringInfo str, const CoalesceExpr *node)
 {
 	WRITE_NODE_TYPE("COALESCE");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(coalescetype);
+	else
+#endif
 	WRITE_OID_FIELD(coalescetype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(coalescecollid);
+	else
+#endif
 	WRITE_OID_FIELD(coalescecollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1630,8 +2625,23 @@ _outMinMaxExpr(StringInfo str, const MinMaxExpr *node)
 {
 	WRITE_NODE_TYPE("MINMAX");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(minmaxtype);
+	else
+#endif
 	WRITE_OID_FIELD(minmaxtype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(minmaxcollid);
+	else
+#endif
 	WRITE_OID_FIELD(minmaxcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_ENUM_FIELD(op, MinMaxOp);
 	WRITE_NODE_FIELD(args);
@@ -1644,11 +2654,30 @@ _outSQLValueFunction(StringInfo str, const SQLValueFunction *node)
 	WRITE_NODE_TYPE("SQLVALUEFUNCTION");
 
 	WRITE_ENUM_FIELD(op, SQLValueFunctionOp);
-	WRITE_OID_FIELD(type);
+	if (portable_output)
+		WRITE_TYPID_FIELD(type);
+	else
+		WRITE_OID_FIELD(type);
 	WRITE_INT_FIELD(typmod);
 	WRITE_LOCATION_FIELD(location);
 }
 
+static void
+_outNextValueExpr(StringInfo str, const NextValueExpr *node)
+{
+	WRITE_NODE_TYPE("NEXTVALUEEXPR");
+
+	if (portable_output)
+	{
+		WRITE_RELID_FIELD(seqid);
+		WRITE_TYPID_FIELD(typeId);
+	}
+	else
+	{
+		WRITE_OID_FIELD(seqid);
+		WRITE_OID_FIELD(typeId);
+	}
+}
 static void
 _outXmlExpr(StringInfo str, const XmlExpr *node)
 {
@@ -1660,6 +2689,11 @@ _outXmlExpr(StringInfo str, const XmlExpr *node)
 	WRITE_NODE_FIELD(arg_names);
 	WRITE_NODE_FIELD(args);
 	WRITE_ENUM_FIELD(xmloption, XmlOptionType);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(type);
+	else
+#endif
 	WRITE_OID_FIELD(type);
 	WRITE_INT_FIELD(typmod);
 	WRITE_LOCATION_FIELD(location);
@@ -1692,8 +2726,18 @@ _outCoerceToDomain(StringInfo str, const CoerceToDomain *node)
 	WRITE_NODE_TYPE("COERCETODOMAIN");
 
 	WRITE_NODE_FIELD(arg);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(resulttype);
+	else
+#endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_ENUM_FIELD(coercionformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -1704,8 +2748,18 @@ _outCoerceToDomainValue(StringInfo str, const CoerceToDomainValue *node)
 {
 	WRITE_NODE_TYPE("COERCETODOMAINVALUE");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(typeId);
+	else
+#endif
 	WRITE_OID_FIELD(typeId);
 	WRITE_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(collation);
+	else
+#endif
 	WRITE_OID_FIELD(collation);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -1715,8 +2769,18 @@ _outSetToDefault(StringInfo str, const SetToDefault *node)
 {
 	WRITE_NODE_TYPE("SETTODEFAULT");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(typeId);
+	else
+#endif
 	WRITE_OID_FIELD(typeId);
 	WRITE_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(collation);
+	else
+#endif
 	WRITE_OID_FIELD(collation);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -1731,14 +2795,7 @@ _outCurrentOfExpr(StringInfo str, const CurrentOfExpr *node)
 	WRITE_INT_FIELD(cursor_param);
 }
 
-static void
-_outNextValueExpr(StringInfo str, const NextValueExpr *node)
-{
-	WRITE_NODE_TYPE("NEXTVALUEEXPR");
 
-	WRITE_OID_FIELD(seqid);
-	WRITE_OID_FIELD(typeId);
-}
 
 static void
 _outInferenceElem(StringInfo str, const InferenceElem *node)
@@ -1759,6 +2816,11 @@ _outTargetEntry(StringInfo str, const TargetEntry *node)
 	WRITE_INT_FIELD(resno);
 	WRITE_STRING_FIELD(resname);
 	WRITE_UINT_FIELD(ressortgroupref);
+#ifdef XCP
+	if (portable_output)
+		WRITE_RELID_FIELD(resorigtbl);
+	else
+#endif
 	WRITE_OID_FIELD(resorigtbl);
 	WRITE_INT_FIELD(resorigcol);
 	WRITE_BOOL_FIELD(resjunk);
@@ -2603,6 +3665,11 @@ _outEquivalenceClass(StringInfo str, const EquivalenceClass *node)
 	WRITE_NODE_TYPE("EQUIVALENCECLASS");
 
 	WRITE_NODE_FIELD(ec_opfamilies);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(ec_collation);
+	else
+#endif
 	WRITE_OID_FIELD(ec_collation);
 	WRITE_NODE_FIELD(ec_members);
 	WRITE_NODE_FIELD(ec_sources);
@@ -2743,6 +3810,11 @@ _outAppendRelInfo(StringInfo str, const AppendRelInfo *node)
 	WRITE_OID_FIELD(parent_reltype);
 	WRITE_OID_FIELD(child_reltype);
 	WRITE_NODE_FIELD(translated_vars);
+#ifdef XCP
+	if (portable_output)
+		WRITE_RELID_FIELD(parent_reloid);
+	else
+#endif
 	WRITE_OID_FIELD(parent_reloid);
 }
 
@@ -3214,7 +4286,17 @@ _outSortGroupClause(StringInfo str, const SortGroupClause *node)
 	WRITE_NODE_TYPE("SORTGROUPCLAUSE");
 
 	WRITE_UINT_FIELD(tleSortGroupRef);
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(eqop);
+	else
+#endif
 	WRITE_OID_FIELD(eqop);
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(sortop);
+	else
+#endif
 	WRITE_OID_FIELD(sortop);
 	WRITE_BOOL_FIELD(nulls_first);
 	WRITE_BOOL_FIELD(hashable);
@@ -3318,6 +4400,12 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 		case RTE_RELATION:
 			WRITE_OID_FIELD(relid);
 			WRITE_CHAR_FIELD(relkind);
+#ifdef XCP
+			if (portable_output)
+				WRITE_RELID_FIELD(relid);
+			else
+#endif
+			WRITE_OID_FIELD(relid);
 			WRITE_NODE_FIELD(tablesample);
 			break;
 		case RTE_SUBQUERY:
@@ -3358,6 +4446,11 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 			WRITE_NODE_FIELD(coltypmods);
 			WRITE_NODE_FIELD(colcollations);
 			break;
+#ifdef PGXC
+		case RTE_REMOTE_DUMMY:
+			/* Everything relevant already copied */
+			break;
+#endif /* PGXC */
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) node->rtekind);
 			break;
@@ -3367,6 +4460,12 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 	WRITE_BOOL_FIELD(inh);
 	WRITE_BOOL_FIELD(inFromCl);
 	WRITE_UINT_FIELD(requiredPerms);
+#ifdef XCP
+	/* no check on data node, consider it is trusted */
+	if (portable_output)
+		appendStringInfo(str, " :checkAsUser %u", InvalidOid);
+	else
+#endif
 	WRITE_OID_FIELD(checkAsUser);
 	WRITE_BITMAPSET_FIELD(selectedCols);
 	WRITE_BITMAPSET_FIELD(insertedCols);
@@ -3393,7 +4492,18 @@ _outTableSampleClause(StringInfo str, const TableSampleClause *node)
 {
 	WRITE_NODE_TYPE("TABLESAMPLECLAUSE");
 
+#ifdef XCP
+	if (portable_output)
+	{
+		WRITE_FUNCID_FIELD(tsmhandler);
+	}
+	else
+	{
+#endif
 	WRITE_OID_FIELD(tsmhandler);
+#ifdef XCP
+	}
+#endif
 	WRITE_NODE_FIELD(args);
 	WRITE_NODE_FIELD(repeatable);
 }
@@ -4213,6 +5323,11 @@ outNode(StringInfo str, const void *obj)
 			case T_SeqScan:
 				_outSeqScan(str, obj);
 				break;
+#ifdef PGXC
+			case T_RemoteQuery:
+				_outRemoteQuery(str, obj);
+				break;
+#endif
 			case T_SampleScan:
 				_outSampleScan(str, obj);
 				break;
@@ -4318,6 +5433,17 @@ outNode(StringInfo str, const void *obj)
 			case T_NestLoopParam:
 				_outNestLoopParam(str, obj);
 				break;
+#ifdef XCP
+			case T_RemoteSubplan:
+				_outRemoteSubplan(str, obj);
+				break;
+			case T_RemoteStmt:
+				_outRemoteStmt(str, obj);
+				break;
+			case T_SimpleSort:
+				_outSimpleSort(str, obj);
+				break;
+#endif
 			case T_PlanRowMark:
 				_outPlanRowMark(str, obj);
 				break;
@@ -4816,6 +5942,11 @@ outNode(StringInfo str, const void *obj)
 			case T_ForeignKeyCacheInfo:
 				_outForeignKeyCacheInfo(str, obj);
 				break;
+#ifdef PGXC
+			case T_ExecNodes:
+				_outExecNodes(str, obj);
+				break;
+#endif
 			case T_TriggerTransition:
 				_outTriggerTransition(str, obj);
 				break;

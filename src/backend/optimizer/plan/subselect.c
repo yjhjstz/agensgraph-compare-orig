@@ -34,7 +34,9 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 
 typedef struct convert_testexpr_context
 {
@@ -547,12 +549,38 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 	best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
+	if (!subroot->distribution)
+		subroot->distribution = best_path->distribution;
+
 	plan = create_plan(subroot, best_path);
+
+#ifdef XCP
+	/* Add a custom remote subplan if a re-distribution is needed. */
+	if (subroot->distribution)
+	{
+		plan = (Plan *) make_remotesubplan(subroot,
+										   plan,
+										   NULL,
+										   subroot->distribution,
+										   subroot->query_pathkeys);
+		/*
+		 * SS_finalize_plan has already been run on the subplan,
+		 * so we have to copy parameter info to wrapper plan node.
+		 */
+		plan->extParam = bms_copy(plan->lefttree->extParam);
+		plan->allParam = bms_copy(plan->lefttree->allParam);
+	}
+#endif
 
 	/* And convert to SubPlan or InitPlan format. */
 	result = build_subplan(root, plan, subroot, plan_params,
 						   subLinkType, subLinkId,
 						   testexpr, true, isTopQual);
+#ifdef PGXC
+	/* This is not necessary for a PGXC Coordinator, we just need one plan */
+	if (IS_PGXC_LOCAL_COORDINATOR)
+		return result;
+#endif
 
 	/*
 	 * If it's a correlated EXISTS with an unimportant targetlist, we might be
@@ -1199,7 +1227,28 @@ SS_process_ctes(PlannerInfo *root)
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = final_rel->cheapest_total_path;
 
+		if (!subroot->distribution)
+			subroot->distribution = best_path->distribution;
+
 		plan = create_plan(subroot, best_path);
+
+#ifdef XCP
+		/* Add a remote subplan, if redistribution is needed. */
+		if (subroot->distribution)
+		{
+			plan = (Plan *) make_remotesubplan(subroot,
+											   plan,
+											   NULL,
+											   subroot->distribution,
+											   subroot->query_pathkeys);
+			/*
+			 * SS_finalize_plan has already been run on the subplan,
+			 * so we have to copy parameter info to wrapper plan node.
+			 */
+			plan->extParam = bms_copy(plan->lefttree->extParam);
+			plan->allParam = bms_copy(plan->lefttree->allParam);
+		}
+#endif
 
 		/*
 		 * Make a SubPlan node for it.  This is just enough unlike
@@ -2266,6 +2315,7 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 	Bitmapset  *initSetParam;
 	Bitmapset  *child_params;
 	ListCell   *l;
+	List	   *initPlan;
 
 	if (plan == NULL)
 		return NULL;
@@ -2281,7 +2331,17 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 	 * SS_finalize_plan was run on them already.)
 	 */
 	initExtParam = initSetParam = NULL;
-	foreach(l, plan->initPlan)
+	/*
+	 * Usually initPlans are attached to the top level plan, but in Postgres-XL
+	 * we might add a RemoteSubplan plan on top the top level plan. If we don't
+	 * look at the initPlans, we might fail to conclude that param references
+	 * are valid (issue #81).
+	 */
+	initPlan = plan->initPlan;
+	if ((initPlan == NULL) && IsA(plan, RemoteSubplan) && plan->lefttree)
+		initPlan = plan->lefttree->initPlan;
+
+	foreach(l, initPlan)
 	{
 		SubPlan    *initsubplan = (SubPlan *) lfirst(l);
 		Plan	   *initplan = planner_subplan_get_plan(root, initsubplan);
@@ -2568,6 +2628,17 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 				}
 			}
 			break;
+#ifdef PGXC
+		case T_RemoteQuery:
+			//PGXCTODO
+			context.paramids = bms_add_members(context.paramids, scan_params);
+			break;
+#endif
+
+#ifdef XCP
+		case T_RemoteSubplan:
+			break;
+#endif
 
 		case T_Append:
 			{

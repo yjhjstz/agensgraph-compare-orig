@@ -702,6 +702,11 @@ ExecInitSubPlan(SubPlan *subplan, PlanState *parent)
 	/* ... and to its parent's state */
 	sstate->parent = parent;
 
+#ifdef XCP
+	/* subplan is referenced on local node, finish initialization */
+	ExecFinishInitProcNode(sstate->planstate);
+#endif
+
 	/* Initialize subexpressions */
 	sstate->testexpr = ExecInitExpr((Expr *) subplan->testexpr, parent);
 	sstate->args = ExecInitExprList(subplan->args, parent);

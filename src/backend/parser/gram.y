@@ -8,6 +8,7 @@
  *
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -53,10 +54,13 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_trigger.h"
 #include "commands/defrem.h"
+#include "miscadmin.h"
 #include "commands/trigger.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/gramparse.h"
+#include "nodes/nodes.h"
+#include "pgxc/poolmgr.h"
 #include "parser/parser.h"
 #include "parser/parse_expr.h"
 #include "parser/scansup.h"
@@ -248,6 +252,10 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 	struct ImportQual	*importqual;
 	InsertStmt			*istmt;
 	VariableSetStmt		*vsetstmt;
+/* PGXC_BEGIN */
+	DistributeBy		*distby;
+	PGXCSubCluster		*subclus;
+/* PGXC_END */
 	PartitionElem		*partelem;
 	PartitionSpec		*partspec;
 	PartitionBoundSpec	*partboundspec;
@@ -264,7 +272,7 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 		AlterCompositeTypeStmt AlterUserMappingStmt
 		AlterRoleStmt AlterRoleSetStmt AlterPolicyStmt
 		AlterDefaultPrivilegesStmt DefACLAction
-		AnalyzeStmt ClosePortalStmt ClusterStmt CommentStmt
+		AnalyzeStmt CleanConnStmt ClosePortalStmt ClusterStmt CommentStmt
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
@@ -277,7 +285,7 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 		DropAssertStmt DropCastStmt DropRoleStmt
 		DropdbStmt DropTableSpaceStmt
 		DropTransformStmt
-		DropUserMappingStmt ExplainStmt FetchStmt
+		DropUserMappingStmt ExplainStmt ExecDirectStmt FetchStmt
 		GrantStmt GrantRoleStmt ImportForeignSchemaStmt IndexStmt InsertStmt
 		ListenStmt LoadStmt LockStmt NotifyStmt ExplainableStmt PreparableStmt
 		CreateFunctionStmt AlterFunctionStmt ReindexStmt RemoveAggrStmt
@@ -290,6 +298,8 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 		DeallocateStmt PrepareStmt ExecuteStmt
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
+		BarrierStmt PauseStmt AlterNodeStmt CreateNodeStmt DropNodeStmt
+		CreateNodeGroupStmt DropNodeGroupStmt
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
@@ -311,13 +321,15 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 %type <list>	createdb_opt_list createdb_opt_items copy_opt_list
 				transaction_mode_list
 				create_extension_opt_list alter_extension_opt_list
+				pgxcnode_list pgxcnodes
 %type <defelt>	createdb_opt_item copy_opt_item
 				transaction_mode_item
 				create_extension_opt_item alter_extension_opt_item
 
 %type <ival>	opt_lock lock_type cast_context
 %type <ival>	vacuum_option_list vacuum_option_elem
-%type <boolean>	opt_or_replace
+%type <ival>	analyze_option_list analyze_option_elem
+%type <boolean>	opt_force opt_or_replace
 				opt_grant_grant_option opt_grant_admin_option
 				opt_nowait opt_if_exists opt_with_data
 %type <ival>	opt_nowait_or_skip
@@ -349,6 +361,7 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 				database_name access_method_clause access_method attr_name
 				name cursor_name file_name
 				index_name opt_index_name cluster_index_specification
+				pgxcnode_name pgxcgroup_name
 
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_class opt_inline_handler opt_validator validator_clause
@@ -449,6 +462,9 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 %type <boolean> opt_freeze opt_default opt_recheck
 %type <defelt>	opt_binary opt_oids copy_delimiter
 
+%type <str>		DirectStmt CleanConnDbName CleanConnUserName
+%type <boolean>	OptCluster
+/* PGXC_END */
 %type <boolean> copy_from opt_program
 
 %type <ival>	opt_column event cursor_options opt_hold opt_set_data
@@ -580,6 +596,11 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 %type <windef>	window_definition over_clause window_specification
 				opt_frame_clause frame_extent frame_bound
 %type <str>		opt_existing_window_name
+/* PGXC_BEGIN */
+%type <str>		opt_barrier_id OptDistributeType DistributeStyle OptDistKey
+%type <distby>	OptDistributeBy OptDistributeByInternal
+%type <subclus> OptSubCluster OptSubClusterInternal
+/* PGXC_END */
 %type <boolean> opt_if_not_exists
 %type <ival>	generated_when override_kind
 %type <partspec>	PartitionSpec OptPartitionSpec
@@ -696,26 +717,27 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
  */
 
 /* ordinary key words in alphabetical order */
+/* PGXC - added DISTRIBUTE, DISTRIBUTED, DISTSYLE, DISTKEY, RANDOMLY, DIRECT, COORDINATOR, CLEAN,  NODE, BARRIER */
 %token <keyword> ABORT_P ABSOLUTE_P ACCESS ACTION ADD_P ADMIN AFTER
 	AGGREGATE ALL ALLSHORTESTPATHS ALSO ALTER ALWAYS ANALYSE ANALYZE AND ANY
 	ARRAY AS ASC
 	ASSERT ASSERTION ASSIGNMENT ASYMMETRIC AT ATTACH ATTRIBUTE AUTHORIZATION
 
-	BACKWARD BEFORE BEGIN_P BETWEEN BIGINT BINARY BIT
+	BACKWARD BARRIER BEFORE BEGIN_P BETWEEN BIGINT BINARY BIT
 	BOOLEAN_P BOTH BY
 
 	CACHE CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
-	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
+	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLEAN CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COLUMNS COMMENT COMMENTS COMMIT
 	COMMITTED CONCURRENTLY CONFIGURATION CONFLICT CONNECTION CONSTRAINT
-	CONSTRAINTS CONTAINS CONTENT_P CONTINUE_P CONVERSION_P COPY COST CREATE
+	CONSTRAINTS CONTAINS CONTENT_P CONTINUE_P CONVERSION_P COORDINATOR COPY COST CREATE
 	CROSS CSV CUBE CURRENT_P
 	CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE CURRENT_SCHEMA
 	CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR CYCLE
 
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DESC
-	DETACH DICTIONARY DIJKSTRA DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
+	DETACH DICTIONARY DIRECT DIJKSTRA DISABLE_P DISCARD DISTINCT DISTKEY DISTRIBUTE DISTRIBUTED DISTSTYLE DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
 	EACH ELABEL ELSE ENABLE_P ENCODING ENCRYPTED END_P ENDS ENUM_P ESCAPE EVENT
@@ -745,20 +767,20 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 	MAPPING MATCH MATERIALIZED MAXVALUE MERGE METHOD
 	MINUTE_P MINVALUE MODE MONTH_P MOVE
 
-	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NONE
+	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NODE NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
 	NULLS_P NUMERIC
 
 	OBJECT_P OF OFF OFFSET OIDS OLD ON ONLY OPERATOR OPTION OPTIONAL_P OPTIONS OR
 	ORDER ORDINALITY OUT_P OUTER_P OVER OVERLAPS OVERLAY OVERRIDING OWNED OWNER
 
-	PARALLEL PARSER PARTIAL PARTITION PASSING PASSWORD PLACING PLANS POLICY
-	POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
+	PARALLEL PARSER PARTIAL PARTITION PASSING PASSWORD PAUSE PLACING PLANS POLICY
+	POSITION PRECEDING PRECISION PREFERRED PRESERVE PREPARE PREPARED PRIMARY
 	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROGRAM PROPERTY PUBLICATION
 
 	QUOTE
 
-	RANGE READ REAL REASSIGN RECHECK RECURSIVE REF REFERENCES REFERENCING
+	RANDOMLY RANGE READ REAL REASSIGN RECHECK RECURSIVE REF REFERENCES REFERENCING
 	REFRESH REINDEX RELATIVE_P RELEASE REMOVE RENAME REPEATABLE REPLACE REPLICA
 	RESET RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK
 	ROLLUP ROW ROWS RULE
@@ -775,7 +797,7 @@ static List *preserve_downcasing_type_func_namelist(List *namelist);
 	TRUNCATE TRUSTED TYPE_P TYPES_P
 
 	UNBOUNDED UNCOMMITTED UNENCRYPTED UNION UNIQUE UNKNOWN UNLISTEN UNLOGGED
-	UNTIL UNWIND UPDATE USER USING
+	UNPAUSE UNTIL UNWIND UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
 	VERBOSE VERSION_P VIEW VIEWS VLABEL VOLATILE
@@ -929,6 +951,7 @@ stmt :
 			| AlterForeignTableStmt
 			| AlterFunctionStmt
 			| AlterGroupStmt
+			| AlterNodeStmt
 			| AlterLabelStmt
 			| AlterObjectDependsStmt
 			| AlterObjectSchemaStmt
@@ -948,7 +971,9 @@ stmt :
 			| AlterTSDictionaryStmt
 			| AlterUserMappingStmt
 			| AnalyzeStmt
+			| BarrierStmt
 			| CheckPointStmt
+			| CleanConnStmt
 			| ClosePortalStmt
 			| ClusterStmt
 			| CommentStmt
@@ -970,6 +995,8 @@ stmt :
 			| CreateGraphStmt
 			| CreateLabelStmt
 			| CreateMatViewStmt
+			| CreateNodeGroupStmt
+			| CreateNodeStmt
 			| CreateOpClassStmt
 			| CreateOpFamilyStmt
 			| CreatePublicationStmt
@@ -999,7 +1026,9 @@ stmt :
 			| DoStmt
 			| DropAssertStmt
 			| DropCastStmt
+			| DropNodeGroupStmt
 			| DropConstraintStmt
+			| DropNodeStmt
 			| DropOpClassStmt
 			| DropOpFamilyStmt
 			| DropOwnedStmt
@@ -1012,6 +1041,7 @@ stmt :
 			| DropUserMappingStmt
 			| DropdbStmt
 			| ExecuteStmt
+			| ExecDirectStmt
 			| ExplainStmt
 			| FetchStmt
 			| GrantStmt
@@ -1024,6 +1054,7 @@ stmt :
 			| LoadStmt
 			| LockStmt
 			| NotifyStmt
+			| PauseStmt
 			| PrepareStmt
 			| ReassignOwnedStmt
 			| ReindexStmt
@@ -2604,6 +2635,40 @@ alter_table_cmd:
 					n->def = (Node *)$1;
 					$$ = (Node *) n;
 				}
+/* PGXC_BEGIN */
+			/* ALTER TABLE <name> DISTRIBUTE BY ... */
+			| OptDistributeByInternal
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DistributeBy;
+					n->def = (Node *)$1;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> TO [ NODE (nodelist) | GROUP groupname ] */
+			| OptSubClusterInternal
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SubCluster;
+					n->def = (Node *)$1;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ADD NODE (nodelist) */
+			| ADD_P NODE pgxcnodes
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_AddNodeList;
+					n->def = (Node *)$3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> DELETE NODE (nodelist) */
+			| DELETE_P NODE pgxcnodes
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DeleteNodeList;
+					n->def = (Node *)$3;
+					$$ = (Node *)n;
+				}
+/* PGXC_END */
 		;
 
 alter_column_default:
@@ -3154,10 +3219,20 @@ copy_generic_opt_arg_list_item:
  *		QUERY :
  *				CREATE TABLE relname
  *
+ *		PGXC-related extensions:
+ *		1) Distribution type of a table:
+ *			DISTRIBUTE BY ( HASH(column) | MODULO(column) |
+ *							REPLICATION | ROUNDROBIN )
+ *		2) Subcluster for table
+ *			TO ( GROUP groupname | NODE nodename1,...,nodenameN )
+ *
  *****************************************************************************/
 
 CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 			OptInherit OptPartitionSpec OptWith OnCommitOption OptTableSpace
+/* PGXC_BEGIN */
+			OptDistributeBy OptSubCluster
+/* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 					$4->relpersistence = $2;
@@ -3171,11 +3246,24 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $11;
 					n->tablespacename = $12;
 					n->if_not_exists = false;
+/* PGXC_BEGIN */
+					if ($2 == RELPERSISTENCE_LOCAL_TEMP)
+					{
+						$4->relpersistence = RELPERSISTENCE_TEMP;
+						n->islocal = true;
+					}
+					n->relkind = RELKIND_RELATION;
+					n->distributeby = $13;
+					n->subcluster = $14;
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name '('
 			OptTableElementList ')' OptInherit OptPartitionSpec OptWith
 			OnCommitOption OptTableSpace
+/* PGXC_BEGIN */
+			OptDistributeBy OptSubCluster
+/* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 					$7->relpersistence = $2;
@@ -3189,11 +3277,29 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $14;
 					n->tablespacename = $15;
 					n->if_not_exists = true;
+/* PGXC_BEGIN */
+					if ($2 == RELPERSISTENCE_LOCAL_TEMP)
+					{
+						$7->relpersistence = RELPERSISTENCE_TEMP;
+						n->islocal = true;
+					}
+					n->relkind = RELKIND_RELATION;
+					n->distributeby = $16;
+					n->subcluster = $17;
+					if (n->inhRelations != NULL && n->distributeby != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("CREATE TABLE cannot contains both an INHERITS and a DISTRIBUTE BY clause"),
+								 parser_errposition(exprLocation((Node *) n->distributeby))));
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE qualified_name OF any_name
 			OptTypedTableElementList OptPartitionSpec OptWith OnCommitOption
 			OptTableSpace
+/* PGXC_BEGIN */
+			OptDistributeBy OptSubCluster
+/* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 					$4->relpersistence = $2;
@@ -3208,11 +3314,29 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $10;
 					n->tablespacename = $11;
 					n->if_not_exists = false;
+/* PGXC_BEGIN */
+					if ($2 == RELPERSISTENCE_LOCAL_TEMP)
+					{
+						$4->relpersistence = RELPERSISTENCE_TEMP;
+						n->islocal = true;
+					}
+					n->relkind = RELKIND_RELATION;
+					n->distributeby = $12;
+					n->subcluster = $13;
+					if (n->inhRelations != NULL && n->distributeby != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("CREATE TABLE cannot contains both an INHERITS and a DISTRIBUTE BY clause"),
+								 parser_errposition(exprLocation((Node *) n->distributeby))));
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name OF any_name
 			OptTypedTableElementList OptPartitionSpec OptWith OnCommitOption
 			OptTableSpace
+/* PGXC_BEGIN */
+			OptDistributeBy OptSubCluster
+/* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 					$7->relpersistence = $2;
@@ -3227,6 +3351,21 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $13;
 					n->tablespacename = $14;
 					n->if_not_exists = true;
+/* PGXC_BEGIN */
+					if ($2 == RELPERSISTENCE_LOCAL_TEMP)
+					{
+						$7->relpersistence = RELPERSISTENCE_TEMP;
+						n->islocal = true;
+					}
+					n->relkind = RELKIND_RELATION;
+					n->distributeby = $15;
+					n->subcluster = $16;
+					if (n->inhRelations != NULL && n->distributeby != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("CREATE TABLE cannot contains both an INHERITS and a DISTRIBUTE BY clause"),
+								 parser_errposition(exprLocation((Node *) n->distributeby))));
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE qualified_name PARTITION OF qualified_name
@@ -3282,8 +3421,8 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
  */
 OptTemp:	TEMPORARY					{ $$ = RELPERSISTENCE_TEMP; }
 			| TEMP						{ $$ = RELPERSISTENCE_TEMP; }
-			| LOCAL TEMPORARY			{ $$ = RELPERSISTENCE_TEMP; }
-			| LOCAL TEMP				{ $$ = RELPERSISTENCE_TEMP; }
+			| LOCAL TEMPORARY			{ $$ = RELPERSISTENCE_LOCAL_TEMP; }
+			| LOCAL TEMP				{ $$ = RELPERSISTENCE_LOCAL_TEMP; }
 			| GLOBAL TEMPORARY
 				{
 					ereport(WARNING,
@@ -3920,6 +4059,129 @@ OptTableSpace:   TABLESPACE name					{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
+/* PGXC_BEGIN */
+OptDistributeBy: OptDistributeByInternal			{ $$ = $1; }
+			| /* EMPTY */							{ $$ = NULL; }
+		;
+
+/*
+ * For the distribution type, we use IDENT to limit the impact of keywords
+ * related to distribution on other commands and to allow extensibility for
+ * new distributions.
+ */
+OptDistributeType: IDENT							{ $$ = $1; }
+		;
+
+DistributeStyle: ALL								{ $$ = strdup("all"); }
+			| KEY									{ $$ = strdup("key"); }
+			| IDENT									
+				{ 
+					if (strcmp($1, "even") != 0)
+                        ereport(ERROR,
+                                (errcode(ERRCODE_SYNTAX_ERROR),
+                                 errmsg("unrecognized distribution style \"%s\"", $1)));
+					$$ = $1;
+				}
+		;
+
+OptDistKey: DISTKEY '(' name ')'					{ $$ = $3; }
+			| /* EMPTY */							{ $$ = NULL; }
+		;
+
+OptDistributeByInternal:  DISTRIBUTE BY OptDistributeType '(' name ')'
+				{
+					DistributeBy *n = makeNode(DistributeBy);
+					if (strcmp($3, "modulo") == 0)
+						n->disttype = DISTTYPE_MODULO;
+					else if (strcmp($3, "hash") == 0)
+						n->disttype = DISTTYPE_HASH;
+					else
+                        ereport(ERROR,
+                                (errcode(ERRCODE_SYNTAX_ERROR),
+                                 errmsg("unrecognized distribution option \"%s\"", $3)));
+					n->colname = $5;
+					$$ = n;
+				}
+			| DISTRIBUTE BY OptDistributeType
+				{
+					DistributeBy *n = makeNode(DistributeBy);
+					if (strcmp($3, "replication") == 0)
+                        n->disttype = DISTTYPE_REPLICATION;
+					else if (strcmp($3, "roundrobin") == 0)
+						n->disttype = DISTTYPE_ROUNDROBIN;
+                    else
+                        ereport(ERROR,
+                                (errcode(ERRCODE_SYNTAX_ERROR),
+                                 errmsg("unrecognized distribution option \"%s\"", $3)));
+					n->colname = NULL;
+					$$ = n;
+				}
+			| DISTRIBUTED BY '(' name ')'
+				{
+					DistributeBy *n = makeNode(DistributeBy);
+					n->disttype = DISTTYPE_HASH;
+					n->colname = $4;
+					$$ = n;
+				}
+			| DISTRIBUTED RANDOMLY
+				{
+					DistributeBy *n = makeNode(DistributeBy);
+					n->disttype = DISTTYPE_ROUNDROBIN;
+					n->colname = NULL;
+					$$ = n;
+				}
+			| DISTSTYLE DistributeStyle OptDistKey
+				{
+					DistributeBy *n = makeNode(DistributeBy);
+					if (strcmp($2, "even") == 0)
+						n->disttype = DISTTYPE_ROUNDROBIN;
+					else if (strcmp($2, "key") == 0)
+						n->disttype = DISTTYPE_HASH;
+					else if (strcmp($2, "all") == 0)
+						n->disttype = DISTTYPE_REPLICATION;
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("unrecognized distribution style \"%s\"", $2)));
+					if ((n->disttype == DISTTYPE_ROUNDROBIN ||
+						 n->disttype == DISTTYPE_REPLICATION) &&
+						($3 != NULL))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("distribution key cannot be specified for distribution style \"%s\"", $2)));
+
+					if ((n->disttype == DISTTYPE_HASH) && ($3 == NULL))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("distribution key must be specified for distribution style \"%s\"", $2)));
+
+					n->colname = $3;
+					$$ = n;
+				}
+		;
+
+OptSubCluster: OptSubClusterInternal				{ $$ = $1; }
+			| /* EMPTY */							{ $$ = NULL; }
+		;
+
+OptSubClusterInternal:
+			TO NODE pgxcnodes
+				{
+					PGXCSubCluster *n = makeNode(PGXCSubCluster);
+					n->clustertype = SUBCLUSTER_NODE;
+					n->members = $3;
+					$$ = n;
+				}
+			| TO GROUP_P pgxcgroup_name
+				{
+					PGXCSubCluster *n = makeNode(PGXCSubCluster);
+					n->clustertype = SUBCLUSTER_GROUP;
+					n->members = list_make1(makeString($3));
+					$$ = n;
+				}
+		;
+/* PGXC_END */
+
 OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
@@ -3987,6 +4249,12 @@ CreateAsStmt:
 					ctas->if_not_exists = false;
 					/* cram additional flags into the IntoClause */
 					$4->rel->relpersistence = $2;
+					if ($2 == RELPERSISTENCE_LOCAL_TEMP)
+					{
+						$4->rel->relpersistence = RELPERSISTENCE_TEMP;
+						ctas->islocal = true;
+					}
+
 					$4->skipData = !($7);
 					$$ = (Node *) ctas;
 				}
@@ -4007,6 +4275,9 @@ CreateAsStmt:
 
 create_as_target:
 			qualified_name opt_column_list OptWith OnCommitOption OptTableSpace
+/* PGXC_BEGIN */
+			OptDistributeBy OptSubCluster
+/* PGXC_END */
 				{
 					$$ = makeNode(IntoClause);
 					$$->rel = $1;
@@ -4016,6 +4287,10 @@ create_as_target:
 					$$->tableSpaceName = $5;
 					$$->viewQuery = NULL;
 					$$->skipData = false;		/* might get changed later */
+/* PGXC_BEGIN */
+					$$->distributeby = $6;
+					$$->subcluster = $7;
+/* PGXC_END */
 				}
 		;
 
@@ -4116,6 +4391,9 @@ CreateSeqStmt:
 					n->sequence = $4;
 					n->options = $5;
 					n->ownerId = InvalidOid;
+/* PGXC_BEGIN */
+					n->is_serial = false;
+/* PGXC_END */
 					n->if_not_exists = false;
 					$$ = (Node *)n;
 				}
@@ -4126,6 +4404,9 @@ CreateSeqStmt:
 					n->sequence = $7;
 					n->options = $8;
 					n->ownerId = InvalidOid;
+/* PGXC_BEGIN */
+					n->is_serial = false;
+/* PGXC_END */
 					n->if_not_exists = true;
 					$$ = (Node *)n;
 				}
@@ -4138,6 +4419,9 @@ AlterSeqStmt:
 					n->sequence = $3;
 					n->options = $4;
 					n->missing_ok = false;
+/* PGXC_BEGIN */
+					n->is_serial = false;
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 			| ALTER SEQUENCE IF_P EXISTS qualified_name SeqOptList
@@ -10445,6 +10729,22 @@ AnalyzeStmt:
 					n->va_cols = $4;
 					$$ = (Node *)n;
 				}
+			| analyze_keyword '(' analyze_option_list ')'
+				{
+					VacuumStmt *n = makeNode(VacuumStmt);
+					n->options = VACOPT_ANALYZE | $3;
+					n->relation = NULL;
+					n->va_cols = NIL;
+					$$ = (Node *)n;
+				}
+			| analyze_keyword '(' analyze_option_list ')' qualified_name opt_name_list
+				{
+					VacuumStmt *n = makeNode(VacuumStmt);
+					n->options = VACOPT_ANALYZE | $3;
+					n->relation = $5;
+					n->va_cols = $6;
+					$$ = (Node *)n;
+				}
 		;
 
 analyze_keyword:
@@ -10465,11 +10765,174 @@ opt_freeze: FREEZE									{ $$ = TRUE; }
 			| /*EMPTY*/								{ $$ = FALSE; }
 		;
 
+
+analyze_option_list:
+			analyze_option_elem								{ $$ = $1; }
+			| analyze_option_list ',' analyze_option_elem		{ $$ = $1 | $3; }
+		;
+
+analyze_option_elem:
+			VERBOSE			{ $$ = VACOPT_VERBOSE; }
+			| COORDINATOR 	{ $$ = VACOPT_COORDINATOR; }
+		;
+
 opt_name_list:
 			'(' name_list ')'						{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = NIL; }
 		;
 
+
+/* PGXC_BEGIN */
+PauseStmt: PAUSE CLUSTER
+				{
+					PauseClusterStmt *n = makeNode(PauseClusterStmt);
+					n->pause = true;
+					$$ = (Node *)n;
+				}
+			| UNPAUSE CLUSTER
+				{
+					PauseClusterStmt *n = makeNode(PauseClusterStmt);
+					n->pause = false;
+					$$ = (Node *)n;
+				}
+			;
+
+BarrierStmt: CREATE BARRIER opt_barrier_id
+				{
+					BarrierStmt *n = makeNode(BarrierStmt);
+					n->id = $3;
+					$$ = (Node *)n;
+				}
+			;
+
+opt_barrier_id:
+				Sconst
+				{
+					$$ = pstrdup($1);
+				}
+			| /* EMPTY */
+				{
+					$$ = NULL;
+				}
+			;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *
+ *		CREATE NODE nodename WITH
+ *				(
+ *					[ TYPE = ('datanode' | 'coordinator'), ]
+ *					[ HOST = 'hostname', ]
+ *					[ PORT = portnum, ]
+ *					[ PRIMARY [ = boolean ], ]
+ *					[ PREFERRED [ = boolean ] ]
+ *				)
+ *
+ *****************************************************************************/
+
+CreateNodeStmt: CREATE NODE pgxcnode_name OptWith
+				{
+					CreateNodeStmt *n = makeNode(CreateNodeStmt);
+					n->node_name = $3;
+					n->options = $4;
+					$$ = (Node *)n;
+				}
+		;
+
+pgxcnode_name:
+			ColId							{ $$ = $1; };
+
+pgxcgroup_name:
+			ColId							{ $$ = $1; };
+
+pgxcnodes:
+			'(' pgxcnode_list ')'			{ $$ = $2; }
+		;
+
+pgxcnode_list:
+			pgxcnode_list ',' pgxcnode_name		{ $$ = lappend($1, makeString($3)); }
+			| pgxcnode_name						{ $$ = list_make1(makeString($1)); }
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *		ALTER [CLUSTER] NODE nodename WITH
+ *				(
+ *					[ TYPE = ('datanode' | 'coordinator'), ]
+ *					[ HOST = 'hostname', ]
+ *					[ PORT = portnum, ]
+ *					[ PRIMARY [ = boolean ], ]
+ *					[ PREFERRED [ = boolean ], ]
+ *				)
+ *
+ *             If CLUSTER is mentioned, the command is executed on all nodes.
+ *             PS: We need to add this option on all other pertinent NODE ddl
+ *             operations too!)
+ *****************************************************************************/
+
+AlterNodeStmt: ALTER OptCluster NODE pgxcnode_name OptWith
+				{
+					AlterNodeStmt *n = makeNode(AlterNodeStmt);
+					n->cluster = $2;
+					n->node_name = $4;
+					n->options = $5;
+					$$ = (Node *)n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				DROP NODE nodename
+ *
+ *****************************************************************************/
+
+DropNodeStmt: DROP NODE pgxcnode_name
+				{
+					DropNodeStmt *n = makeNode(DropNodeStmt);
+					n->node_name = $3;
+					$$ = (Node *)n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				CREATE NODE GROUP groupname WITH (node1,...,nodeN)
+ *
+ *****************************************************************************/
+
+CreateNodeGroupStmt: CREATE NODE GROUP_P pgxcgroup_name WITH pgxcnodes
+				{
+					CreateGroupStmt *n = makeNode(CreateGroupStmt);
+					n->group_name = $4;
+					n->nodes = $6;
+					$$ = (Node *)n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				DROP NODE GROUP groupname
+ *
+ *****************************************************************************/
+
+DropNodeGroupStmt: DROP NODE GROUP_P pgxcgroup_name
+				{
+					DropGroupStmt *n = makeNode(DropGroupStmt);
+					n->group_name = $4;
+					$$ = (Node *)n;
+				}
+		;
+
+OptCluster:    CLUSTER                     	{ $$ = TRUE; }
+		  | /* EMPTY */        				{ $$ = FALSE; }
+		;
+
+/* PGXC_END */
 
 /*****************************************************************************
  *
@@ -10558,6 +11021,89 @@ explain_option_arg:
 /*****************************************************************************
  *
  *		QUERY:
+ *				EXECUTE DIRECT ON ( nodename [, ... ] ) query
+ *
+ *****************************************************************************/
+
+ExecDirectStmt: EXECUTE DIRECT ON pgxcnodes DirectStmt
+				{
+					ExecDirectStmt *n = makeNode(ExecDirectStmt);
+					n->node_names = $4;
+					n->query = $5;
+					$$ = (Node *)n;
+
+					if (!superuser())
+						ereport(ERROR,
+						       (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						        errmsg("must be superuser to use EXECUTE DIRECT")));
+				}
+		;
+
+DirectStmt:
+			Sconst					/* by default all are $$=$1 */
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *
+ *		CLEAN CONNECTION TO { COORDINATOR ( nodename ) | NODE ( nodename ) | ALL {FORCE} }
+ *				[ FOR DATABASE dbname ]
+ *				[ TO USER username ]
+ *
+ *****************************************************************************/
+
+CleanConnStmt: CLEAN CONNECTION TO COORDINATOR pgxcnodes CleanConnDbName CleanConnUserName
+				{
+					CleanConnStmt *n = makeNode(CleanConnStmt);
+					n->is_coord = true;
+					n->nodes = $5;
+					n->is_force = false;
+					n->dbname = $6;
+					n->username = $7;
+					$$ = (Node *)n;
+				}
+				| CLEAN CONNECTION TO NODE pgxcnodes CleanConnDbName CleanConnUserName
+				{
+					CleanConnStmt *n = makeNode(CleanConnStmt);
+					n->is_coord = false;
+					n->nodes = $5;
+					n->is_force = false;
+					n->dbname = $6;
+					n->username = $7;
+					$$ = (Node *)n;
+				}
+				| CLEAN CONNECTION TO ALL opt_force CleanConnDbName CleanConnUserName
+				{
+					CleanConnStmt *n = makeNode(CleanConnStmt);
+					n->is_coord = true;
+					n->nodes = NIL;
+					n->is_force = $5;
+					n->dbname = $6;
+					n->username = $7;
+					$$ = (Node *)n;
+				}
+		;
+
+CleanConnDbName: FOR DATABASE database_name		{ $$ = $3; }
+				| FOR database_name				{ $$ = $2; }
+				| /* EMPTY */					{ $$ = NULL; }
+		;
+
+CleanConnUserName: TO USER RoleId				{ $$ = $3; }
+				| TO RoleId						{ $$ = $2; }
+				| /* EMPTY */					{ $$ = NULL; }
+		;
+
+opt_force:	FORCE									{  $$ = TRUE; }
+			| /* EMPTY */							{  $$ = FALSE; }
+		;
+
+/* PGXC_END */
+
+/*****************************************************************************
+ *
+ *		QUERY:
  *				PREPARE <plan_name> [(args, ...)] AS <query>
  *
  *****************************************************************************/
@@ -10611,6 +11157,11 @@ ExecuteStmt: EXECUTE name execute_param_clause
 					ctas->is_select_into = false;
 					/* cram additional flags into the IntoClause */
 					$4->rel->relpersistence = $2;
+#ifdef PGXC
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CREATE TABLE AS EXECUTE not yet supported")));
+#endif
 					$4->skipData = !($9);
 					$$ = (Node *) ctas;
 				}
@@ -14867,6 +15418,7 @@ ColLabel:	IDENT									{ $$ = $1; }
 
 /* "Unreserved" keywords --- available for use as any kind of name.
  */
+/* PGXC - added DISTRIBUTE, DISTRIBUTED, RANDOMLY, DIRECT, COORDINATOR, CLEAN, NODE, BARRIER */
 unreserved_keyword:
 			  ABORT_P
 			| ABSOLUTE_P
@@ -14887,6 +15439,9 @@ unreserved_keyword:
 			| ATTACH
 			| ATTRIBUTE
 			| BACKWARD
+/* PGXC_BEGIN */
+			| BARRIER
+/* PGXC_END */
 			| BEFORE
 			| BEGIN_P
 			| BY
@@ -14899,6 +15454,7 @@ unreserved_keyword:
 			| CHARACTERISTICS
 			| CHECKPOINT
 			| CLASS
+			| CLEAN
 			| CLOSE
 			| CLUSTER
 			| COLUMNS
@@ -14914,6 +15470,7 @@ unreserved_keyword:
 			| CONTENT_P
 			| CONTINUE_P
 			| CONVERSION_P
+			| COORDINATOR
 			| COPY
 			| COST
 			| CSV
@@ -14936,8 +15493,15 @@ unreserved_keyword:
 			| DETACH
 			| DICTIONARY
 			| DIJKSTRA
+			| DIRECT
 			| DISABLE_P
 			| DISCARD
+/* PGXC_BEGIN */
+			| DISTKEY
+			| DISTRIBUTE
+			| DISTRIBUTED
+			| DISTSTYLE
+/* PGXC_END */
 			| DOCUMENT_P
 			| DOMAIN_P
 			| DOUBLE_P
@@ -15021,6 +15585,7 @@ unreserved_keyword:
 			| NEW
 			| NEXT
 			| NO
+			| NODE
 			| NOTHING
 			| NOTIFY
 			| NOWAIT
@@ -15045,9 +15610,15 @@ unreserved_keyword:
 			| PARTITION
 			| PASSING
 			| PASSWORD
+/* PGXC_BEGIN */
+			| PAUSE
+/* PGXC_END */
 			| PLANS
 			| POLICY
 			| PRECEDING
+/* PGXC_BEGIN */
+			| PREFERRED
+/* PGXC_END */
 			| PREPARE
 			| PREPARED
 			| PRESERVE
@@ -15059,6 +15630,9 @@ unreserved_keyword:
 			| PROPERTY
 			| PUBLICATION
 			| QUOTE
+/* PGXC_BEGIN */
+			| RANDOMLY
+/* PGXC_END */
 			| RANGE
 			| READ
 			| REASSIGN
@@ -15141,6 +15715,9 @@ unreserved_keyword:
 			| UNKNOWN
 			| UNLISTEN
 			| UNLOGGED
+/* PGXC_BEGIN */
+			| UNPAUSE
+/* PGXC_END */
 			| UNTIL
 			| UPDATE
 			| VACUUM

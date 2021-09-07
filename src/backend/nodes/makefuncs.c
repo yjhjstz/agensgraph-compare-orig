@@ -207,6 +207,12 @@ makeWholeRowVar(RangeTblEntry *rte,
 			}
 			break;
 
+#ifdef PGXC
+		case RTE_REMOTE_DUMMY:
+			result = NULL;
+			elog(ERROR, "Invalid RTE found");
+			break;
+#endif /* PGXC */
 		default:
 
 			/*

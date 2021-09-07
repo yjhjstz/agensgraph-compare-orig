@@ -3112,6 +3112,27 @@ RenameRelationInternal(Oid myrelid, const char *newrelname, bool is_internal)
 			RenameConstraintById(constraintId, newrelname);
 	}
 
+#ifdef PGXC
+	/* Operation with GTM can only be done with a Remote Coordinator */
+	if (IS_PGXC_LOCAL_COORDINATOR &&
+		(targetrelation->rd_rel->reltype == OBJECT_SEQUENCE ||
+		 targetrelation->rd_rel->relkind == RELKIND_SEQUENCE))
+	{
+		char *seqname = GetGlobalSeqName(targetrelation, NULL, NULL);
+		char *newseqname = GetGlobalSeqName(targetrelation, newrelname, NULL);
+
+		/* We also need to rename it on the GTM */
+		if (RenameSequenceGTM(seqname, newseqname) < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("GTM error, could not rename sequence")));
+
+
+		pfree(seqname);
+		pfree(newseqname);
+	}
+#endif
+
 	/*
 	 * Close rel, but keep exclusive lock!
 	 */
@@ -3366,6 +3387,15 @@ AlterTableGetLockLevel(List *cmds)
 				cmd_lockmode = AccessExclusiveLock;
 				break;
 
+#ifdef PGXC
+			case AT_DistributeBy:		/* Changes table distribution type */
+			case AT_SubCluster:			/* Changes node list of distribution */
+			case AT_AddNodeList:		/* Adds nodes in distribution */
+			case AT_DeleteNodeList:		/* Deletes nodes in distribution */
+				cmd_lockmode = ExclusiveLock;
+				break;
+#endif
+
 				/*
 				 * These subcommands affect write operations only.
 				 */
@@ -3549,20 +3579,98 @@ ATController(AlterTableStmt *parsetree,
 {
 	List	   *wqueue = NIL;
 	ListCell   *lcmd;
+#ifdef PGXC
+	RedistribState   *redistribState = NULL;
+#endif
 
 	/* Phase 1: preliminary examination of commands, create work queue */
 	foreach(lcmd, cmds)
 	{
 		AlterTableCmd *cmd = (AlterTableCmd *) lfirst(lcmd);
 
+#ifdef PGXC
+		/* Check restrictions of ALTER TABLE in cluster */
+		ATCheckCmd(rel, cmd);
+#endif
+
 		ATPrepCmd(&wqueue, rel, cmd, recurse, false, lockmode);
 	}
+
+#ifdef PGXC
+	/* Only check that on local Coordinator */
+	if (IS_PGXC_LOCAL_COORDINATOR)
+	{
+		ListCell   *ltab;
+
+		/*
+		 * Redistribution is only applied to the parent table and not subsequent
+		 * children. It is also not applied in recursion. This needs to be done
+		 * once all the commands have been treated.
+		 */
+		foreach(ltab, wqueue)
+		{
+			AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+
+			if (RelationGetRelid(rel) == tab->relid &&
+				list_length(tab->subcmds[AT_PASS_DISTRIB]) > 0)
+			{
+				/*
+				 * Check if there are any commands incompatible
+				 * with redistribution. For the time being no other commands
+				 * are authorized.
+				 */
+				if (list_length(tab->subcmds[AT_PASS_ADD_COL]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_DROP]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ALTER_TYPE]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_OLD_CONSTR]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_COL_ATTRS]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ADD_COL]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ADD_INDEX]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ADD_CONSTR]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_MISC]) > 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+							 errmsg("Incompatible operation with data redistribution")));
+
+
+					/* Scan redistribution commands and improve operation */
+					redistribState = BuildRedistribCommands(RelationGetRelid(rel),
+														tab->subcmds[AT_PASS_DISTRIB]);
+					break;
+			}
+		}
+	}
+#endif
 
 	/* Close the relation, but keep lock until commit */
 	relation_close(rel, NoLock);
 
+#ifdef PGXC
+	/* Perform pre-catalog-update redistribution operations */
+	PGXCRedistribTable(redistribState, CATALOG_UPDATE_BEFORE);
+#endif
+
 	/* Phase 2: update system catalogs */
 	ATRewriteCatalogs(&wqueue, lockmode);
+
+#ifdef PGXC
+	/* Invalidate cache for redistributed relation */
+	if (redistribState)
+	{
+		Relation rel2 = relation_open(redistribState->relid, NoLock);
+
+		/* Invalidate all entries related to this relation */
+		CacheInvalidateRelcache(rel2);
+
+		/* Make sure locator info is rebuilt */
+		RelationCacheInvalidateEntry(redistribState->relid);
+		relation_close(rel2, NoLock);
+	}
+
+	/* Perform post-catalog-update redistribution operations */
+	PGXCRedistribTable(redistribState, CATALOG_UPDATE_AFTER);
+	FreeRedistribState(redistribState);
+#endif
 
 	/* Phase 3: scan/rewrite tables as needed */
 	ATRewriteTables(parsetree, &wqueue, lockmode);
@@ -3851,6 +3959,16 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			/* No command-specific prep needed */
 			pass = AT_PASS_MISC;
 			break;
+#ifdef PGXC
+		case AT_DistributeBy:
+		case AT_SubCluster:
+		case AT_AddNodeList:
+		case AT_DeleteNodeList:
+			ATSimplePermissions(rel, ATT_TABLE);
+			/* No command-specific prep needed */
+			pass = AT_PASS_DISTRIB;
+			break;
+#endif
 		case AT_AttachPartition:
 		case AT_DetachPartition:
 			ATSimplePermissions(rel, ATT_TABLE);
@@ -4194,6 +4312,18 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		case AT_GenericOptions:
 			ATExecGenericOptions(rel, (List *) cmd->def);
 			break;
+		case AT_DistributeBy:
+			AtExecDistributeBy(rel, (DistributeBy *) cmd->def);
+			break;
+		case AT_SubCluster:
+			AtExecSubCluster(rel, (PGXCSubCluster *) cmd->def);
+			break;
+		case AT_AddNodeList:
+			AtExecAddNode(rel, (List *) cmd->def);
+			break;
+		case AT_DeleteNodeList:
+			AtExecDeleteNode(rel, (List *) cmd->def);
+			break;
 		case AT_DisableIndex:
 			//ATExecDisableIndex(rel);
 			break;
@@ -4233,6 +4363,16 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 	foreach(ltab, *wqueue)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+
+#ifdef PGXC
+		/* Forbid table rewrite operations with online data redistribution */
+		if (tab->rewrite &&
+			list_length(tab->subcmds[AT_PASS_DISTRIB]) > 0 &&
+			IS_PGXC_LOCAL_COORDINATOR)
+			ereport(ERROR,
+					(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+					 errmsg("Incompatible operation with data redistribution")));
+#endif
 
 		/* Foreign tables have no storage, nor do partitioned tables. */
 		if (tab->relkind == RELKIND_FOREIGN_TABLE ||
@@ -4402,6 +4542,20 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 		}
 	}
 
+#ifdef PGXC
+	/*
+	 * In PGXC, do not check the FK constraints on the Coordinator, and just return
+	 * That is because a SELECT is generated whose plan will try and use
+	 * the Datanodes. We (currently) do not want to do that on the Coordinator,
+	 * when the command is passed down to the Datanodes it will
+	 * peform the check locally.
+	 * This issue was introduced when we added multi-step handling,
+	 * it caused foreign key constraints to fail.
+	 * PGXCTODO - issue for pg_catalog or any other cases?
+	 */
+	if (IS_PGXC_COORDINATOR)
+		return;
+#endif
 	/*
 	 * Foreign key constraints are checked in a final pass, since (a) it's
 	 * generally best to examine each one separately, and (b) it's at least
@@ -8357,6 +8511,16 @@ validateForeignKeyConstraint(char *conname,
 	ereport(DEBUG1,
 			(errmsg("validating foreign key constraint \"%s\"", conname)));
 
+#ifdef XCP
+	/*
+	 * No need to do the same thing on the other coordinator. Its enough to
+	 * check constraint on the datanodes and at all on just one coordinator
+	 * if we ever support coordinator only relations
+	 */
+	if (IS_PGXC_REMOTE_COORDINATOR)
+		return;
+#endif
+
 	/*
 	 * Build a trigger call structure; we'll need it either way.
 	 */
@@ -9408,6 +9572,9 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 			case OCLASS_PUBLICATION_REL:
 			case OCLASS_SUBSCRIPTION:
 			case OCLASS_TRANSFORM:
+			case OCLASS_PGXC_NODE:
+			case OCLASS_PGXC_GROUP:
+			case OCLASS_PGXC_CLASS:
 			case OCLASS_GRAPH:
 			case OCLASS_LABEL:
 
@@ -11274,6 +11441,22 @@ CreateInheritance(Relation child_rel, Relation parent_rel)
 
 	/* Match up the constraints and bump coninhcount as needed */
 	MergeConstraintsIntoExisting(child_rel, parent_rel);
+
+	if (IS_PGXC_COORDINATOR)
+	{
+		/*
+		 * Match up the distribution mechanism.
+		 *
+		 * If do the check only on the coordinator since the distribution
+		 * information is not available on the datanodes. This should not cause
+		 * any problem since if the check fails on the coordinator, the entire
+		 * transaction will be aborted and changes will be rolled back on the
+		 * datanodes too. In fact, since we first run the command on the
+		 * coordinator, the error will be caught even before any changes are
+		 * made on the datanodes.
+		 */
+		MergeDistributionIntoExisting(child_rel, parent_rel);
+	}
 
 	/*
 	 * OK, it looks valid.  Make the catalog entries that show inheritance.
@@ -13509,6 +13692,16 @@ PreCommit_on_commit_actions(void)
 	ListCell   *l;
 	List	   *oids_to_truncate = NIL;
 
+#ifdef XCP
+	/*
+	 * If we are being called outside a valid transaction, do nothing. This can
+	 * only happen when the function gets called while we are still processing
+	 * CommitTransaction/PrepareTransaction
+	 */
+	if (GetTopTransactionIdIfAny() == InvalidTransactionId)
+		return;
+#endif
+
 	foreach(l, on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(l);
@@ -13530,7 +13723,13 @@ PreCommit_on_commit_actions(void)
 				 * relations, we can skip truncating ON COMMIT DELETE ROWS
 				 * tables, as they must still be empty.
 				 */
+#ifndef XCP
+				/*
+				 * This optimization does not work in XL since temporary tables
+				 * are handled differently in XL.
+				 */
 				if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPREL))
+#endif
 					oids_to_truncate = lappend_oid(oids_to_truncate, oc->relid);
 				break;
 			case ONCOMMIT_DROP:

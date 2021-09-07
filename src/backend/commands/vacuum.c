@@ -1186,7 +1186,10 @@ vac_truncate_clog(TransactionId frozenXID,
 		ereport(WARNING,
 				(errmsg("some databases have not been vacuumed in over 2 billion transactions"),
 				 errdetail("You might have already suffered transaction-wraparound data loss.")));
+#ifndef PGXC
+		/* Don't return if PGXC: We want to update the transaction limits anyways */
 		return;
+#endif
 	}
 
 	/* chicken out if data is bogus in any other way */
@@ -1252,11 +1255,14 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 	/* Begin a transaction for vacuuming this relation */
 	StartTransactionCommand();
 
+#ifndef PGXC
+	/* In Postgres-XC, take a snapshot after setting the vacuum flags */
 	/*
 	 * Functions in indexes may want a snapshot set.  Also, setting a snapshot
 	 * ensures that RecentGlobalXmin is kept truly recent.
 	 */
 	PushActiveSnapshot(GetTransactionSnapshot());
+#endif
 
 	if (!(options & VACOPT_FULL))
 	{
@@ -1287,6 +1293,19 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 		LWLockRelease(ProcArrayLock);
 	}
 
+#ifdef PGXC
+	if (params->is_wraparound)
+		elog(DEBUG1, "Starting wraparound autovacuum");
+	else
+		elog(DEBUG1, "Starting autovacuum");
+
+	/* Now that flags have been set, we can take a snapshot correctly */
+	PushActiveSnapshot(GetTransactionSnapshot());
+	if (params->is_wraparound)
+		elog(DEBUG1, "Started wraparound autovacuum");
+	else
+		elog(DEBUG1, "Started autovacuum");
+#endif
 	/*
 	 * Check for user-requested abort.  Note we want this to be inside a
 	 * transaction, so xact.c doesn't issue useless WARNING.
@@ -1445,6 +1464,17 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 	save_nestlevel = NewGUCNestLevel();
 
+#ifdef XCP
+	/*
+	 * If we are on coordinator and target relation is distributed, read
+	 * the statistics from the data node instead of vacuuming local relation.
+	 */
+	if (IS_PGXC_COORDINATOR && onerel->rd_locator_info)
+	{
+		vacuum_rel_coordinator(onerel, true);
+	}
+	else
+#endif
 	/*
 	 * Do the actual work --- either FULL or "lazy" vacuum
 	 */

@@ -64,7 +64,15 @@
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
-
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "commands/copy.h"
+#endif
+#ifdef XCP
+#include "access/gtm.h"
+#include "pgxc/execRemote.h"
+#include "pgxc/poolmgr.h"
+#endif
 
 /* Hooks for plugins to get control in ExecutorStart/Run/Finish/End */
 ExecutorStart_hook_type ExecutorStart_hook = NULL;
@@ -184,6 +192,12 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 		!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ExecCheckXactReadOnly(queryDesc->plannedstmt);
 
+#ifdef XCP
+	if (queryDesc->plannedstmt->commandType != CMD_SELECT ||
+		queryDesc->plannedstmt->hasModifyingCTE)
+		GetTopTransactionId();
+#endif
+
 	/*
 	 * Build EState, switch into per-query memory context for startup.
 	 */
@@ -199,8 +213,40 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	estate->es_param_list_info = queryDesc->params;
 
 	if (queryDesc->plannedstmt->nParamExec > 0)
+#ifdef XCP
+	{
 		estate->es_param_exec_vals = (ParamExecData *)
 			palloc0(queryDesc->plannedstmt->nParamExec * sizeof(ParamExecData));
+		if (queryDesc->plannedstmt->nParamRemote > 0)
+		{
+			ParamListInfo extparams = estate->es_param_list_info;
+			int i = queryDesc->plannedstmt->nParamRemote;
+			while (--i >= 0 &&
+				queryDesc->plannedstmt->remoteparams[i].paramkind == PARAM_EXEC)
+			{
+				int paramno = queryDesc->plannedstmt->remoteparams[i].paramid;
+				ParamExecData *prmdata;
+
+				Assert(paramno >= 0 &&
+					   paramno < queryDesc->plannedstmt->nParamExec);
+				prmdata = &(estate->es_param_exec_vals[paramno]);
+				prmdata->value = extparams->params[i].value;
+				prmdata->isnull = extparams->params[i].isnull;
+				prmdata->ptype = extparams->params[i].ptype;
+				prmdata->done = true;
+			}
+			/*
+			 * Truncate exec parameters from the list of received parameters
+			 * to avoid sending down duplicates if there are multiple levels
+			 * of RemoteSubplan statements
+			 */
+			extparams->numParams = i + 1;
+		}
+	}
+#else
+		estate->es_param_exec_vals = (ParamExecData *)
+			palloc0(queryDesc->plannedstmt->nParamExec * sizeof(ParamExecData));
+#endif
 
 	estate->es_sourceText = queryDesc->sourceText;
 
@@ -1046,6 +1092,16 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 			& (EXEC_FLAG_EXPLAIN_ONLY | EXEC_FLAG_WITH_NO_DATA);
 		if (bms_is_member(i, plannedstmt->rewindPlanIDs))
 			sp_eflags |= EXEC_FLAG_REWIND;
+#ifdef XCP
+		/*
+		 * Distributed executor may never execute that plan because referencing
+		 * subplan is executed on remote node, so we may save some resources.
+		 * At the moment only RemoteSubplan is aware of this flag, it is
+		 * skipping sending down subplan.
+		 * ExecInitSubPlan takes care about finishing initialization.
+		 */
+		sp_eflags |= EXEC_FLAG_SUBPLAN;
+#endif
 
 		subplanstate = ExecInitNode(subplan, estate, sp_eflags);
 
@@ -1071,7 +1127,15 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	 * Initialize the junk filter if needed.  SELECT queries need a filter if
 	 * there are any junk attrs in the top-level tlist.
 	 */
+#ifdef XCP
+	/*
+ 	 * We need to keep junk attrs in intermediate results, they may be needed
+	 * in upper level plans on the receiving side
+	 */
+	if (!IS_PGXC_DATANODE && operation == CMD_SELECT)
+#else
 	if (operation == CMD_SELECT)
+#endif
 	{
 		bool		junk_filter_needed = false;
 		ListCell   *tlist;
@@ -2998,6 +3062,9 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 			tuple.t_data = td;
 			/* relation might be a foreign table, if so provide tableoid */
 			tuple.t_tableOid = erm->relid;
+#ifdef PGXC
+			tuple.t_xc_node_id = 0;
+#endif
 			/* also copy t_ctid in case there's valid data there */
 			tuple.t_self = td->t_ctid;
 

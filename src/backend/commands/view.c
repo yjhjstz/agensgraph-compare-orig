@@ -34,6 +34,9 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#ifdef PGXC
+#include "pgxc/execRemote.h"
+#endif
 
 
 static void checkViewTupleDesc(TupleDesc newdesc, TupleDesc olddesc);
@@ -550,6 +553,14 @@ DefineView(ViewStmt *stmt, const char *queryString,
 	if (view->relpersistence == RELPERSISTENCE_PERMANENT
 		&& isQueryUsingTempRelation(viewParse))
 	{
+		view = copyObject(view);	/* don't corrupt original command */
+#ifdef XCP
+		/*
+		 * Change original command as well - we do not want to create that view
+		 * on other coordinators where temp table does not exist
+		 */
+		stmt->view->relpersistence = RELPERSISTENCE_TEMP;
+#endif
 		view->relpersistence = RELPERSISTENCE_TEMP;
 		ereport(NOTICE,
 				(errmsg("view \"%s\" will be a temporary view",

@@ -23,6 +23,9 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/pg_authid.h"
+#ifdef XCP
+#include "catalog/pgxc_node.h"
+#endif
 #include "commands/variable.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
@@ -528,7 +531,14 @@ check_XactIsoLevel(char **newval, void **extra, GucSource source)
 
 	if (strcmp(*newval, "serializable") == 0)
 	{
+#ifdef PGXC
+		/*
+		 * PGXCTODO - PGXC does not support 9.1 serializable transactions yet
+		 */
+		newXactIsoLevel = XACT_REPEATABLE_READ;
+#else
 		newXactIsoLevel = XACT_SERIALIZABLE;
+#endif
 	}
 	else if (strcmp(*newval, "repeatable read") == 0)
 	{
@@ -586,6 +596,13 @@ void
 assign_XactIsoLevel(const char *newval, void *extra)
 {
 	XactIsoLevel = *((int *) extra);
+#ifdef PGXC
+	/*
+	 * PGXCTODO - PGXC does not support 9.1 serializable transactions yet
+	 */
+	if (XactIsoLevel == XACT_SERIALIZABLE)
+		XactIsoLevel = XACT_REPEATABLE_READ;
+#endif
 }
 
 const char *
@@ -850,6 +867,135 @@ assign_session_authorization(const char *newval, void *extra)
 
 	SetSessionAuthorization(myextra->roleid, myextra->is_superuser);
 }
+
+
+#ifdef XCP
+
+/*
+ * SET GLOBAL SESSION
+ */
+
+typedef struct
+{
+	/* This is the "extra" state for GLOBAL SESSION */
+	Oid			coordid;
+	int			coordpid;
+} global_session_extra;
+
+
+bool
+check_global_session(char **newval, void **extra, GucSource source)
+{
+	HeapTuple	coordTup;
+	Oid			coordid;
+	char	   *separatorPos;
+	int 		coordpid;
+	global_session_extra *myextra;
+
+	/* Do nothing for the boot_val default of NULL */
+	if (*newval == NULL)
+		return true;
+
+	if (strcmp(*newval, "none") == 0)
+	{
+		/* hardwired translation */
+		coordid = InvalidOid;
+		coordpid = 0;
+	}
+	else
+	{
+		if (!IsTransactionState())
+		{
+			/*
+			 * Can't do catalog lookups, so fail.  The result of this is that
+			 * global_session cannot be set in postgresql.conf, which seems
+			 * like a good thing anyway, so we don't work hard to avoid it.
+			 */
+			return false;
+		}
+
+		/*
+		 * Get pointer on '_' character separating coordinator name from pid in the
+		 * global session identifier
+		 */
+		separatorPos = strrchr(*newval, '_');
+		if (separatorPos == NULL)
+		{
+			GUC_check_errmsg("malformed Global Session identifier: \"%s\"", *newval);
+			return false;
+		}
+
+		/*
+		 * The pid is written immediately after the separator
+		 */
+		coordpid = atoi(separatorPos + 1);
+		if (coordpid <= 0)
+		{
+			GUC_check_errmsg("malformed Global Session identifier: \"%s\"", *newval);
+			return false;
+		}
+
+
+		/*
+		 * Temporary truncate the Global Session identifier to extract session name
+		 */
+		*separatorPos = '\0';
+		/* Look up the nodename */
+		coordTup = SearchSysCache1(PGXCNODENAME, PointerGetDatum(*newval));
+		if (!HeapTupleIsValid(coordTup))
+		{
+			*separatorPos = '_';
+			GUC_check_errmsg("node \"%s\" does not exist", *newval);
+			return false;
+		}
+
+		if (((Form_pgxc_node) GETSTRUCT(coordTup))->node_type != PGXC_NODE_COORDINATOR)
+		{
+			ReleaseSysCache(coordTup);
+			*separatorPos = '_';
+			GUC_check_errmsg("node \"%s\" is not a coordinator", *newval);
+			return false;
+		}
+
+		coordid = HeapTupleGetOid(coordTup);
+
+		/*
+		 * Save the coordinator name is a global variable so that we don't need
+		 * to do catalog lookups later, especially if we running outside a
+		 * transaction block or in an aborted transaction
+		 */
+		if (OidIsValid(coordid))
+			strncpy(MyCoordName, *newval, NAMEDATALEN);
+
+		*separatorPos = '_';
+		ReleaseSysCache(coordTup);
+	}
+
+	/* Set up "extra" struct for assign_session_authorization to use */
+	myextra = (global_session_extra *) malloc(sizeof(global_session_extra));
+	if (!myextra)
+		return false;
+
+	myextra->coordid = coordid;
+	myextra->coordpid = coordpid;
+	*extra = (void *) myextra;
+
+	return true;
+}
+
+
+void
+assign_global_session(const char *newval, void *extra)
+{
+	global_session_extra *myextra = (global_session_extra *) extra;
+
+	/* Do nothing for the boot_val default of NULL */
+	if (!myextra)
+		return;
+
+	SetGlobalSession(myextra->coordid, myextra->coordpid);
+}
+#endif
 
 
 /*
