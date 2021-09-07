@@ -51,6 +51,17 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
+#ifdef XCP
+#include "access/visibilitymap.h"
+#include "executor/executor.h"
+#include "nodes/makefuncs.h"
+#include "pgxc/execRemote.h"
+#include "pgxc/planner.h"
+#include "utils/lsyscache.h"
+#endif /* XCP */
 
 /*
  * GUC parameters
@@ -870,7 +881,10 @@ vac_update_relstats(Relation relation,
 		pgcform->relfrozenxid != frozenxid &&
 		(TransactionIdPrecedes(pgcform->relfrozenxid, frozenxid) ||
 		 TransactionIdPrecedes(ReadNewTransactionId(),
-							   pgcform->relfrozenxid)))
+							   pgcform->relfrozenxid)
+#ifdef PGXC
+		    || !IsPostmasterEnvironment))
+#endif
 	{
 		pgcform->relfrozenxid = frozenxid;
 		dirty = true;
@@ -1023,7 +1037,10 @@ vac_update_datfrozenxid(void)
 	 */
 	if (dbform->datfrozenxid != newFrozenXid &&
 		(TransactionIdPrecedes(dbform->datfrozenxid, newFrozenXid) ||
-		 TransactionIdPrecedes(lastSaneFrozenXid, dbform->datfrozenxid)))
+		 TransactionIdPrecedes(lastSaneFrozenXid, dbform->datfrozenxid)
+#ifdef PGXC
+       || !IsPostmasterEnvironment))
+#endif
 	{
 		dbform->datfrozenxid = newFrozenXid;
 		dirty = true;
@@ -1583,3 +1600,324 @@ vacuum_delay_point(void)
 		CHECK_FOR_INTERRUPTS();
 	}
 }
+
+#ifdef XCP
+/*
+ * For the data node query make up TargetEntry representing specified column
+ * of pg_class catalog table
+ */
+TargetEntry *
+make_relation_tle(Oid reloid, const char *relname, const char *column)
+{
+	HeapTuple	tuple;
+	Var		   *var;
+	Form_pg_attribute att_tup;
+	TargetEntry *tle;
+
+	tuple = SearchSysCacheAttName(reloid, column);
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						column, relname)));
+	att_tup = (Form_pg_attribute) GETSTRUCT(tuple);
+
+	var = makeVar(1,
+				  att_tup->attnum,
+				  att_tup->atttypid,
+				  att_tup->atttypmod,
+				  InvalidOid,
+				  0);
+
+	tle = makeTargetEntry((Expr *) var, att_tup->attnum, NULL, false);
+	ReleaseSysCache(tuple);
+	return tle;
+}
+
+
+/*
+ * Get relation statistics from remote data nodes
+ * Returns number of nodes that returned correct statistics.
+ */
+static int
+get_remote_relstat(char *nspname, char *relname, bool istemp, bool replicated,
+				   int32 *pages, int32 *allvisiblepages,
+				   float4 *tuples, TransactionId *frozenXid)
+{
+	StringInfoData query;
+	EState 	   *estate;
+	MemoryContext oldcontext;
+	RemoteQuery *step;
+	RemoteQueryState *node;
+	TupleTableSlot *result;
+	int			validpages,
+				validtuples,
+				validfrozenxids,
+				validallvisiblepages;
+
+	/* Make up query string */
+	initStringInfo(&query);
+
+	/*
+	 * For temporary tables, the namespace may be different on each node. So we
+	 * must not use the namespace from the coordinator. Instead,
+	 * pg_my_temp_schema() does the right thing of finding the correct
+	 * temporary namespace being used for the current session. We use that.
+	 */
+	if (istemp)
+		appendStringInfo(&query, "SELECT c.relpages, "
+				"c.reltuples, "
+				"c.relallvisible, "
+				"c.relfrozenxid "
+				"FROM pg_class c "
+				"WHERE c.relnamespace = pg_my_temp_schema() "
+				"AND c.relname = '%s'",
+				relname);
+	else
+		appendStringInfo(&query, "SELECT c.relpages, "
+				"c.reltuples, "
+				"c.relallvisible, "
+				"c.relfrozenxid "
+				"FROM pg_class c JOIN pg_namespace n "
+				"ON c.relnamespace = n.oid "
+				"WHERE n.nspname = '%s' "
+				"AND c.relname = '%s'",
+				nspname, relname);
+
+	/* Build up RemoteQuery */
+	step = makeNode(RemoteQuery);
+
+	step->combine_type = COMBINE_TYPE_NONE;
+	step->exec_nodes = NULL;
+	step->sql_statement = query.data;
+	step->exec_type = EXEC_ON_DATANODES;
+
+	/* Add targetlist entries */
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "relpages"));
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "reltuples"));
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "relallvisible"));
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "relfrozenxid"));
+
+	/* Execute query on the data nodes */
+	estate = CreateExecutorState();
+
+	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	estate->es_snapshot = GetActiveSnapshot();
+
+	node = ExecInitRemoteQuery(step, estate, 0);
+	MemoryContextSwitchTo(oldcontext);
+	/* get ready to combine results */
+	*pages = 0;
+	*allvisiblepages = 0;
+	*tuples = 0.0;
+	*frozenXid = InvalidTransactionId;
+	validpages = 0;
+	validallvisiblepages = 0;
+	validtuples = 0;
+	validfrozenxids = 0;
+	result = ExecRemoteQuery((PlanState *) node);
+	while (result != NULL && !TupIsNull(result))
+	{
+		Datum 	value;
+		bool	isnull;
+		/* Process statistics from the data node */
+		value = slot_getattr(result, 1, &isnull); /* relpages */
+		if (!isnull)
+		{
+			validpages++;
+			*pages += DatumGetInt32(value);
+		}
+		value = slot_getattr(result, 2, &isnull); /* reltuples */
+		if (!isnull)
+		{
+			validtuples++;
+			*tuples += DatumGetFloat4(value);
+		}
+		value = slot_getattr(result, 3, &isnull); /* relallvisible */
+		if (!isnull)
+		{
+			validallvisiblepages++;
+			*allvisiblepages += DatumGetInt32(value);
+		}
+		value = slot_getattr(result, 4, &isnull); /* relfrozenxid */
+		if (!isnull)
+		{
+			/*
+			 * relfrozenxid on coordinator should be the lowest one from the
+			 * datanodes.
+			 */
+			TransactionId xid = DatumGetTransactionId(value);
+			if (TransactionIdIsValid(xid))
+			{
+				validfrozenxids++;
+				if (!TransactionIdIsValid(*frozenXid) ||
+						TransactionIdPrecedes(xid, *frozenXid))
+				{
+					*frozenXid = xid;
+				}
+			}
+		}
+		/* fetch next */
+		result = ExecRemoteQuery((PlanState *) node);
+	}
+	ExecEndRemoteQuery(node);
+
+	if (replicated)
+	{
+		/*
+		 * Normally numbers should be the same on the nodes, but relations
+		 * are autovacuum'ed independedly, so they may differ.
+		 * Average is good enough approximation in this case.
+		 */
+		if (validpages > 0)
+			*pages /= validpages;
+
+		if (validtuples > 0)
+			*tuples /= validtuples;
+
+		if (validallvisiblepages > 0)
+			*allvisiblepages /= validallvisiblepages;
+	}
+
+	if (validfrozenxids < validpages || validfrozenxids < validtuples)
+	{
+		/*
+		 * If some node returned invalid value for frozenxid we can not set
+		 * it on coordinator. There are other cases when returned value of
+		 * frozenXid should be ignored, these cases are checked by caller.
+		 * Basically, to be sure, there should be one value from each node,
+		 * where the table is partitioned.
+		 */
+		*frozenXid = InvalidTransactionId;
+		return Max(validpages, validtuples);
+	}
+	else
+	{
+		return validfrozenxids;
+	}
+}
+
+
+/*
+ * Coordinator does not contain any data, so we never need to vacuum relations.
+ * This function only updates optimizer statistics based on info from the
+ * data nodes.
+ */
+void
+vacuum_rel_coordinator(Relation onerel, bool is_outer)
+{
+	char 	   *nspname;
+	char 	   *relname;
+	/* fields to combine relation statistics */
+	int32		num_pages;
+	int32		num_allvisible_pages;
+	float4		num_tuples;
+	TransactionId min_frozenxid;
+	bool		hasindex;
+	bool 		replicated;
+	int 		rel_nodes;
+	bool		istemp;
+
+	/* Get the relation identifier */
+	relname = RelationGetRelationName(onerel);
+	nspname = get_namespace_name(RelationGetNamespace(onerel));
+	istemp = (onerel->rd_rel->relpersistence == RELPERSISTENCE_TEMP);
+
+	replicated = IsLocatorReplicated(RelationGetLocatorType(onerel));
+	/*
+	 * Get stats from the remote nodes. Function returns the number of nodes
+	 * returning correct stats.
+	 */
+	rel_nodes = get_remote_relstat(nspname, relname, istemp, replicated,
+								   &num_pages, &num_allvisible_pages,
+								   &num_tuples, &min_frozenxid);
+	if (rel_nodes > 0)
+	{
+		int			nindexes;
+		Relation   *Irel;
+		int 		nodes = list_length(RelationGetLocInfo(onerel)->rl_nodeList);
+
+		vac_open_indexes(onerel, ShareUpdateExclusiveLock, &nindexes, &Irel);
+		hasindex = (nindexes > 0);
+
+		if (hasindex)
+		{
+			int 	i;
+
+			/* Fetch index stats */
+			for (i = 0; i < nindexes; i++)
+			{
+				int32	idx_pages, idx_allvisible_pages;
+				float4	idx_tuples;
+				TransactionId idx_frozenxid;
+				int idx_nodes;
+
+				/* Get the index identifier */
+				relname = RelationGetRelationName(Irel[i]);
+				nspname = get_namespace_name(RelationGetNamespace(Irel[i]));
+				/* Index is replicated if parent relation is replicated */
+				idx_nodes = get_remote_relstat(nspname, relname, istemp,
+										replicated,
+										&idx_pages, &idx_allvisible_pages,
+										&idx_tuples, &idx_frozenxid);
+				if (idx_nodes > 0)
+				{
+					/*
+					 * Do not update the frozenxid if information was not from
+					 * all the expected nodes.
+					 */
+					if (idx_nodes < nodes)
+					{
+						idx_frozenxid = InvalidTransactionId;
+					}
+					/* save changes */
+					/* !!TODO Get multi-xid from remote nodes */
+					vac_update_relstats(Irel[i],
+										(BlockNumber) idx_pages,
+										(double) idx_tuples,
+										0,
+										false,
+										idx_frozenxid,
+										InvalidMultiXactId,
+										is_outer);
+				}
+			}
+		}
+
+		/* Done with indexes */
+		vac_close_indexes(nindexes, Irel, NoLock);
+
+		/*
+		 * Do not update the frozenxid if information was not from all
+		 * the expected nodes.
+		 */
+		if (rel_nodes < nodes)
+		{
+			min_frozenxid = InvalidTransactionId;
+		}
+
+		/* save changes */
+		vac_update_relstats(onerel,
+							(BlockNumber) num_pages,
+							(double) num_tuples,
+							num_allvisible_pages,
+							hasindex,
+							min_frozenxid,
+							InvalidMultiXactId,
+							is_outer);
+	}
+}
+#endif

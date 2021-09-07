@@ -38,7 +38,13 @@
 #include "utils/tuplesort.h"
 #include "utils/typcache.h"
 #include "utils/xml.h"
-
+#ifdef PGXC
+#include "catalog/pgxc_node.h"
+#include "nodes/makefuncs.h"
+#include "pgxc/pgxcnode.h"
+#include "pgxc/planner.h"
+#include "pgxc/execRemote.h"
+#endif
 
 /* Hook for plugins to get control in ExplainOneQuery() */
 ExplainOneQuery_hook_type ExplainOneQuery_hook = NULL;
@@ -80,6 +86,8 @@ static void show_upper_qual(List *qual, const char *qlabel,
 				ExplainState *es);
 static void show_sort_keys(SortState *sortstate, List *ancestors,
 			   ExplainState *es);
+static void show_simple_sort_keys(RemoteSubplanState *remotestate,
+			   List *ancestors, ExplainState *es);
 static void show_merge_append_keys(MergeAppendState *mstate, List *ancestors,
 					   ExplainState *es);
 static void show_agg_keys(AggState *astate, List *ancestors,
@@ -131,6 +139,11 @@ static void ExplainCloseGroup(const char *objtype, const char *labelname,
 				  bool labeled, ExplainState *es);
 static void ExplainDummyGroup(const char *objtype, const char *labelname,
 				  ExplainState *es);
+#ifdef PGXC
+static void ExplainExecNodes(ExecNodes *en, ExplainState *es);
+static void ExplainRemoteQuery(RemoteQuery *plan, PlanState *planstate,
+								List *ancestors, ExplainState *es);
+#endif
 static void ExplainXMLTag(const char *tagname, int flags, ExplainState *es);
 static void ExplainJSONLineEnding(ExplainState *es);
 static void ExplainYAMLLineStarting(ExplainState *es);
@@ -167,6 +180,12 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 			es->costs = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "buffers") == 0)
 			es->buffers = defGetBoolean(opt);
+#ifdef PGXC
+		else if (strcmp(opt->defname, "nodes") == 0)
+			es->nodes = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "num_nodes") == 0)
+			es->num_nodes = defGetBoolean(opt);
+#endif /* PGXC */
 		else if (strcmp(opt->defname, "timing") == 0)
 		{
 			timing_set = true;
@@ -289,6 +308,9 @@ NewExplainState(void)
 
 	/* Set default options (most fields can be left as zeroes). */
 	es->costs = true;
+#ifdef PGXC
+	es->nodes = true;
+#endif /* PGXC */
 	/* Prepare output buffer. */
 	es->str = makeStringInfo();
 
@@ -979,6 +1001,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_WorkTableScan:
 			pname = sname = "WorkTable Scan";
 			break;
+#ifdef PGXC
+		case T_RemoteQuery:
+			pname = "Remote Fast Query Execution";
+			break;
+#endif
 		case T_ForeignScan:
 			sname = "Foreign Scan";
 			switch (((ForeignScan *) plan)->operation)
@@ -1004,6 +1031,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					break;
 			}
 			break;
+#ifdef XCP
+		case T_RemoteSubplan:
+			pname = sname = "Remote Subquery Scan";
+			break;
+#endif /* XCP */
 		case T_CustomScan:
 			sname = "Custom Scan";
 			custom_name = ((CustomScan *) plan)->methods->CustomName;
@@ -1204,6 +1236,73 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (((Scan *) plan)->scanrelid > 0)
 				ExplainScanTarget((Scan *) plan, es);
 			break;
+#ifdef PGXC
+		case T_RemoteQuery:
+			/* Emit node execution list */
+			ExplainExecNodes(((RemoteQuery *)plan)->exec_nodes, es);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplan:
+			{
+				RemoteSubplan  *rsubplan = (RemoteSubplan *) plan;
+				List *nodeNameList = NIL;
+				ListCell *lc;
+
+				foreach(lc, rsubplan->nodeList)
+				{
+					char *nodename = get_pgxc_nodename(
+							PGXCNodeGetNodeOid(lfirst_int(lc),
+											   PGXC_NODE_DATANODE));
+					nodeNameList = lappend(nodeNameList, nodename);
+				}
+
+				/* print out destination nodes */
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+				{
+					if (nodeNameList)
+					{
+						if (es->nodes)
+						{
+							bool 			first = true;
+							ListCell 	   *lc;
+							foreach(lc, nodeNameList)
+							{
+								char *nodename = (char *) lfirst(lc);
+								if (first)
+								{
+									appendStringInfo(es->str, " on %s (%s",
+													 rsubplan->execOnAll ? "all" : "any",
+													 nodename);
+									first = false;
+								}
+								else
+									appendStringInfo(es->str, ",%s", nodename);
+							}
+							appendStringInfoChar(es->str, ')');
+						}
+						else
+						{
+							appendStringInfo(es->str, " on %s",
+										 rsubplan->execOnAll ? "all" : "any");
+						}
+					}
+					else
+					{
+						appendStringInfo(es->str, " on local node");
+					}
+				}
+				else
+				{
+					ExplainPropertyText("Replicated",
+										rsubplan->execOnAll ? "no" : "yes",
+										es);
+					if (es->nodes)
+						ExplainPropertyList("Node List", nodeNameList, es);
+				}
+			}
+			break;
+#endif /* XCP */
 		case T_IndexScan:
 			{
 				IndexScan  *indexscan = (IndexScan *) plan;
@@ -1497,6 +1596,53 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
 			break;
+#ifdef PGXC
+		case T_RemoteQuery:
+			/* Remote query */
+			ExplainRemoteQuery((RemoteQuery *)plan, planstate, ancestors, es);
+			Assert(!plan->qual);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplan:
+			{
+				RemoteSubplan  *rsubplan = (RemoteSubplan *) plan;
+
+				/* print out destination nodes */
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+				{
+					if (list_length(rsubplan->distributionNodes) > 0)
+					{
+						char 		label[24];
+						AttrNumber 	dkey = rsubplan->distributionKey;
+						sprintf(label, "Distribute results by %c",
+								rsubplan->distributionType);
+						if (dkey == InvalidAttrNumber)
+						{
+							appendStringInfoSpaces(es->str, es->indent * 2);
+							appendStringInfo(es->str, "%s\n", label);
+						}
+						else
+						{
+							TargetEntry *tle = NULL;
+							if (plan->targetlist)
+								tle = (TargetEntry *) list_nth(plan->targetlist,
+															   dkey-1);
+							if (IsA(tle, TargetEntry))
+								show_expression((Node *) tle->expr, label,
+												planstate, ancestors,
+												false, es);
+						}
+					}
+				}
+
+				/* add info about output sort order */
+				if (es->verbose)
+					show_simple_sort_keys((RemoteSubplanState *)planstate,
+										  ancestors, es);
+			}
+			break;
+#endif
 		case T_BitmapHeapScan:
 			show_scan_qual(((BitmapHeapScan *) plan)->bitmapqualorig,
 						   "Recheck Cond", planstate, ancestors, es);
@@ -1937,6 +2083,11 @@ show_plan_tlist(PlanState *planstate, List *ancestors, ExplainState *es)
 		return;
 	if (IsA(plan, RecursiveUnion))
 		return;
+	/* Ditto for RemoteSubplan on top of ModifyTable */
+	if (IsA(plan, RemoteSubplan) && plan->lefttree &&
+		IsA(plan->lefttree, ModifyTable) &&
+		(((ModifyTable *) plan->lefttree)->returningLists != NIL))
+		return;
 
 	/*
 	 * Likewise for ForeignScan that executes a direct INSERT/UPDATE/DELETE
@@ -2056,6 +2207,28 @@ show_sort_keys(SortState *sortstate, List *ancestors, ExplainState *es)
 						 plan->numCols, plan->sortColIdx,
 						 plan->sortOperators, plan->collations,
 						 plan->nullsFirst,
+						 ancestors, es);
+}
+
+/*
+ * Show the sort keys for a SimpleSort node.
+ */
+static void
+show_simple_sort_keys(RemoteSubplanState *planstate, List *ancestors, ExplainState *es)
+{
+	Plan		   *plan = ((ScanState *)planstate)->ps.plan;
+	RemoteSubplan  *remoteplan = (RemoteSubplan *)plan;
+
+	SimpleSort *sort = (SimpleSort *)remoteplan->sort;
+
+	/* if remote subplan does not sort the results */
+	if (!sort)
+		return;
+
+	show_sort_group_keys((PlanState *) planstate, "Sort Key",
+						 sort->numCols, sort->sortColIdx,
+						 sort->sortOperators, sort->sortCollations,
+						 sort->nullsFirst,
 						 ancestors, es);
 }
 
@@ -2900,6 +3073,12 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 			objectname = rte->ctename;
 			objecttag = "CTE Name";
 			break;
+		case T_RemoteQuery:
+			/* get the object name from RTE itself */
+			Assert(rte->rtekind == RTE_REMOTE_DUMMY);
+			objectname = get_rel_name(rte->relid);
+			objecttag = "RemoteQuery name";
+			break;
 		default:
 			break;
 	}
@@ -3616,6 +3795,174 @@ ExplainSeparatePlans(ExplainState *es)
 			break;
 	}
 }
+
+#ifdef PGXC
+/*
+ * Emit execution node list number.
+ */
+static void
+ExplainExecNodes(ExecNodes *en, ExplainState *es)
+{
+	int primary_node_count = en ? list_length(en->primarynodelist) : 0;
+	int node_count = en ? list_length(en->nodeList) : 0;
+
+	if (!es->num_nodes)
+		return;
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		appendStringInfo(es->str, " (primary node count=%d, node count=%d)",
+						 primary_node_count, node_count);
+	}
+	else
+	{
+		ExplainPropertyInteger("Primary node count", primary_node_count, es);
+		ExplainPropertyInteger("Node count", node_count, es);
+	}
+}
+
+/*
+ * Emit remote query planning details
+ */
+static void
+ExplainRemoteQuery(RemoteQuery *plan, PlanState *planstate, List *ancestors, ExplainState *es)
+{
+	ExecNodes	*en = plan->exec_nodes;
+	/* add names of the nodes if they exist */
+	if (en && es->nodes)
+	{
+		StringInfo node_names = makeStringInfo();
+		ListCell *lcell;
+		char	*sep;
+		int		node_no;
+		if (en->primarynodelist)
+		{
+			sep = "";
+			foreach(lcell, en->primarynodelist)
+			{
+				node_no = lfirst_int(lcell);
+				appendStringInfo(node_names, "%s%s", sep,
+									get_pgxc_nodename(PGXCNodeGetNodeOid(node_no, PGXC_NODE_DATANODE)));
+				sep = ", ";
+			}
+			ExplainPropertyText("Primary node/s", node_names->data, es);
+		}
+		if (en->nodeList)
+		{
+			resetStringInfo(node_names);
+			sep = "";
+			foreach(lcell, en->nodeList)
+			{
+				node_no = lfirst_int(lcell);
+				appendStringInfo(node_names, "%s%s", sep,
+									get_pgxc_nodename(PGXCNodeGetNodeOid(node_no, PGXC_NODE_DATANODE)));
+				sep = ", ";
+			}
+			ExplainPropertyText("Node/s", node_names->data, es);
+		}
+	}
+
+	if (en && en->en_expr)
+		show_expression((Node *)en->en_expr, "Node expr", planstate, ancestors,
+						es->verbose, es);
+
+	/* Remote query statement */
+	if (es->verbose)
+		ExplainPropertyText("Remote query", plan->sql_statement, es);
+
+	if (!es->analyze)
+	{
+		RemoteQuery *step = makeNode(RemoteQuery);
+		StringInfoData explainQuery;
+		StringInfoData explainResult;
+		EState *estate;
+		RemoteQueryState *node;
+		Var *dummy;
+		MemoryContext oldcontext;
+		TupleTableSlot *result;
+		bool firstline = true;
+
+		initStringInfo(&explainQuery);
+		initStringInfo(&explainResult);
+
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			if (es->indent)
+			{
+				appendStringInfoSpaces(es->str, es->indent * 2);
+				appendStringInfoString(es->str, "->  ");
+				es->indent += 2;
+			}
+		}
+
+		appendStringInfo(&explainQuery, "EXPLAIN (");
+		switch (es->format)
+		{
+			case EXPLAIN_FORMAT_TEXT:
+				appendStringInfo(&explainQuery, "FORMAT TEXT");
+				break;
+			case EXPLAIN_FORMAT_YAML:
+				appendStringInfo(&explainQuery, "FORMAT YAML");
+				break;
+			case EXPLAIN_FORMAT_JSON:
+				appendStringInfo(&explainQuery, "FORMAT JSON");
+				break;
+			case EXPLAIN_FORMAT_XML:
+				appendStringInfo(&explainQuery, "FORMAT XML");
+				break;
+		}
+		appendStringInfo(&explainQuery, ", VERBOSE %s", es->verbose ? "ON" : "OFF");
+		appendStringInfo(&explainQuery, ", COSTS %s", es->costs ? "ON" : "OFF");
+		appendStringInfo(&explainQuery, ", TIMING %s", es->timing ? "ON" : "OFF");
+		appendStringInfo(&explainQuery, ", BUFFERS %s", es->buffers ? "ON" : "OFF");
+		appendStringInfo(&explainQuery, ") %s", plan->sql_statement);
+
+		step->sql_statement = explainQuery.data;
+		step->combine_type = COMBINE_TYPE_NONE;
+		step->exec_nodes = copyObject(plan->exec_nodes);
+		step->exec_nodes->primarynodelist = NIL;
+
+		if (plan->exec_nodes && plan->exec_nodes->nodeList)
+			step->exec_nodes->nodeList =
+				list_make1_int(linitial_int(plan->exec_nodes->nodeList));
+
+		step->exec_type = EXEC_ON_DATANODES;
+
+		dummy = makeVar(1, 1, TEXTOID, -1, InvalidOid, 0);
+		plan->scan.plan.targetlist = lappend(plan->scan.plan.targetlist,
+				makeTargetEntry((Expr *) dummy, 1, "QUERY PLAN", false));
+
+		estate = planstate->state;
+		oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+		node = ExecInitRemoteQuery(step, estate, 0);
+		MemoryContextSwitchTo(oldcontext);
+		result = ExecRemoteQuery((PlanState *) node);
+		while (result != NULL && !TupIsNull(result))
+		{
+			Datum 	value;
+			bool	isnull;
+			value = slot_getattr(result, 1, &isnull);
+			if (!isnull)
+			{
+				if (!firstline)
+					appendStringInfoSpaces(&explainResult, 2 * es->indent);
+				appendStringInfo(&explainResult, "%s\n", TextDatumGetCString(value));
+				firstline = false;
+			}
+
+			/* fetch next */
+			result = ExecRemoteQuery((PlanState *) node);
+		}
+		ExecEndRemoteQuery(node);
+
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+			appendStringInfo(es->str, "%s", explainResult.data);
+		else
+			ExplainPropertyText("Remote plan", explainResult.data, es);
+	}
+}
+#endif
 
 /*
  * Emit opening or closing XML tag.

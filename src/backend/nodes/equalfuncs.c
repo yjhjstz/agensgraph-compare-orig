@@ -159,19 +159,42 @@ _equalIntoClause(const IntoClause *a, const IntoClause *b)
  */
 
 static bool
-_equalVar(const Var *a, const Var *b)
+_equalVarInternal(const Var *a, const Var *b, bool compareVarno)
 {
-	COMPARE_SCALAR_FIELD(varno);
+	if (compareVarno)
+		COMPARE_SCALAR_FIELD(varno);
 	COMPARE_SCALAR_FIELD(varattno);
 	COMPARE_SCALAR_FIELD(vartype);
 	COMPARE_SCALAR_FIELD(vartypmod);
 	COMPARE_SCALAR_FIELD(varcollid);
 	COMPARE_SCALAR_FIELD(varlevelsup);
-	COMPARE_SCALAR_FIELD(varnoold);
+	if (compareVarno)
+		COMPARE_SCALAR_FIELD(varnoold);
 	COMPARE_SCALAR_FIELD(varoattno);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
+}
+
+static bool
+_equalVar(const Var *a, const Var *b)
+{
+	return _equalVarInternal(a, b, true);
+}
+
+/*
+ * Compare all fields in Var except varno
+ */
+bool
+static equalVarExceptVarno(const void *a, const void *b)
+{
+	if (a == b)
+		return true;
+
+	if (a == NULL || b == NULL)
+		return false;
+
+	return _equalVarInternal(a, b, false);
 }
 
 static bool
@@ -1355,6 +1378,12 @@ _equalCreateStmt(const CreateStmt *a, const CreateStmt *b)
 	COMPARE_SCALAR_FIELD(oncommit);
 	COMPARE_STRING_FIELD(tablespacename);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+#ifdef PGXC
+	COMPARE_SCALAR_FIELD(islocal);
+	COMPARE_SCALAR_FIELD(relkind);
+	COMPARE_NODE_FIELD(distributeby);
+	COMPARE_NODE_FIELD(subcluster);
+#endif
 
 	return true;
 }
@@ -1801,6 +1830,9 @@ _equalCreateTableAsStmt(const CreateTableAsStmt *a, const CreateTableAsStmt *b)
 	COMPARE_NODE_FIELD(into);
 	COMPARE_SCALAR_FIELD(relkind);
 	COMPARE_SCALAR_FIELD(is_select_into);
+#ifdef PGXC
+	COMPARE_SCALAR_FIELD(islocal);
+#endif
 	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
@@ -2912,6 +2944,36 @@ _equalXmlSerialize(const XmlSerialize *a, const XmlSerialize *b)
 	return true;
 }
 
+#ifdef XCP
+static bool
+_equalDistribution(const Distribution *a, const Distribution *b,
+		bool exceptVarno)
+{
+	COMPARE_SCALAR_FIELD(distributionType);
+	COMPARE_BITMAPSET_FIELD(nodes);
+	if (exceptVarno &&
+		a->distributionExpr && IsA(a->distributionExpr, Var) &&
+		b->distributionExpr && IsA(b->distributionExpr, Var))
+		return equalVarExceptVarno(a->distributionExpr, b->distributionExpr);
+	else
+		COMPARE_NODE_FIELD(distributionExpr);
+
+	return true;
+}
+
+bool
+equalDistribution(const void *a, const void *b)
+{
+	if (a == b)
+		return true;
+
+	if (a == NULL || b == NULL)
+		return false;
+
+	return _equalDistribution(a, b, true);
+}
+#endif
+
 static bool
 _equalRoleSpec(const RoleSpec *a, const RoleSpec *b)
 {
@@ -3384,6 +3446,91 @@ _equalValue(const Value *a, const Value *b)
 
 	return true;
 }
+
+#ifdef PGXC
+/*
+ * stuff from barrier.h
+ */
+
+static bool
+_equalBarrierStmt(const BarrierStmt *a, const BarrierStmt *b)
+{
+	COMPARE_STRING_FIELD(id);
+	return true;
+}
+
+#ifdef XCP
+/*
+ * Lock Cluster stuff
+ */
+static bool
+_equalPauseClusterStmt(const PauseClusterStmt *a, const PauseClusterStmt *b)
+{
+	COMPARE_SCALAR_FIELD(pause);
+	return true;
+}
+#endif
+/*
+ * stuff from nodemgr.h
+ */
+
+static bool
+_equalAlterNodeStmt(const AlterNodeStmt *a, const AlterNodeStmt *b)
+{
+	COMPARE_STRING_FIELD(node_name);
+	COMPARE_NODE_FIELD(options);
+	return true;
+}
+
+static bool
+_equalCreateNodeStmt(const CreateNodeStmt *a, const CreateNodeStmt *b)
+{
+	COMPARE_STRING_FIELD(node_name);
+	COMPARE_NODE_FIELD(options);
+	return true;
+}
+
+static bool
+_equalDropNodeStmt(const DropNodeStmt *a, const DropNodeStmt *b)
+{
+	COMPARE_STRING_FIELD(node_name);
+	return true;
+}
+
+/*
+ * stuff from groupmgr.h
+ */
+
+static bool
+_equalCreateGroupStmt(const CreateGroupStmt *a, const CreateGroupStmt *b)
+{
+	COMPARE_STRING_FIELD(group_name);
+	COMPARE_NODE_FIELD(nodes);
+	return true;
+}
+
+static bool
+_equalDropGroupStmt(const DropGroupStmt *a, const DropGroupStmt *b)
+{
+	COMPARE_STRING_FIELD(group_name);
+	return true;
+}
+
+/*
+ * stuff from poolutils.h
+ */
+static bool
+_equalCleanConnStmt(const CleanConnStmt *a, const CleanConnStmt *b)
+{
+	COMPARE_NODE_FIELD(nodes);
+	COMPARE_STRING_FIELD(dbname);
+	COMPARE_STRING_FIELD(username);
+	COMPARE_SCALAR_FIELD(is_coord);
+	COMPARE_SCALAR_FIELD(is_force);
+	return true;
+}
+
+#endif
 
 /*
  * equal
@@ -3932,6 +4079,32 @@ equal(const void *a, const void *b)
 		case T_CheckPointStmt:
 			retval = true;
 			break;
+#ifdef PGXC
+		case T_BarrierStmt:
+			retval = _equalBarrierStmt(a, b);
+			break;
+		case T_PauseClusterStmt:
+			retval = _equalPauseClusterStmt(a, b);
+			break;
+		case T_AlterNodeStmt:
+			retval = _equalAlterNodeStmt(a, b);
+			break;
+		case T_CreateNodeStmt:
+			retval = _equalCreateNodeStmt(a, b);
+			break;
+		case T_DropNodeStmt:
+			retval = _equalDropNodeStmt(a, b);
+			break;
+		case T_CreateGroupStmt:
+			retval = _equalCreateGroupStmt(a, b);
+			break;
+		case T_DropGroupStmt:
+			retval = _equalDropGroupStmt(a, b);
+			break;
+		case T_CleanConnStmt:
+			retval = _equalCleanConnStmt(a, b);
+			break;
+#endif
 		case T_CreateSchemaStmt:
 			retval = _equalCreateSchemaStmt(a, b);
 			break;
@@ -4106,6 +4279,11 @@ equal(const void *a, const void *b)
 		case T_XmlSerialize:
 			retval = _equalXmlSerialize(a, b);
 			break;
+#ifdef XCP
+		case T_Distribution:
+			retval = _equalDistribution(a, b, false);
+			break;
+#endif
 		case T_RoleSpec:
 			retval = _equalRoleSpec(a, b);
 			break;

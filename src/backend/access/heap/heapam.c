@@ -73,6 +73,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 
 
 /* GUC variable */
@@ -1493,6 +1496,10 @@ heap_beginscan_internal(Relation relation, Snapshot snapshot,
 	/* we only need to set this up once */
 	scan->rs_ctup.t_tableOid = RelationGetRelid(relation);
 
+#ifdef PGXC
+	scan->rs_ctup.t_xc_node_id = PGXCNodeIdentifier;
+#endif
+
 	/*
 	 * we do this here instead of in initscan() because heap_rescan also calls
 	 * initscan() and we don't want to allocate memory again
@@ -1932,6 +1939,9 @@ heap_fetch(Relation relation,
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
+#ifdef PGXC
+	tuple->t_xc_node_id = PGXCNodeIdentifier;
+#endif
 
 	/*
 	 * check time qualification of tuple, then release lock
@@ -2046,6 +2056,9 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 		heapTuple->t_data = (HeapTupleHeader) PageGetItem(dp, lp);
 		heapTuple->t_len = ItemIdGetLength(lp);
+#ifdef PGXC
+		heapTuple->t_xc_node_id = PGXCNodeIdentifier;
+#endif
 		heapTuple->t_tableOid = RelationGetRelid(relation);
 		ItemPointerSetOffsetNumber(&heapTuple->t_self, offnum);
 
@@ -2625,6 +2638,9 @@ heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
 	HeapTupleHeaderSetCmin(tup->t_data, cid);
 	HeapTupleHeaderSetXmax(tup->t_data, 0); /* for cleanliness */
 	tup->t_tableOid = RelationGetRelid(relation);
+#ifdef PGXC
+	tup->t_xc_node_id = PGXCNodeIdentifier;
+#endif
 
 	/*
 	 * If the new tuple is too big for storage or contains already toasted
@@ -3936,6 +3952,9 @@ l2:
 	newtup->t_data->t_infomask2 &= ~(HEAP2_XACT_MASK);
 	HeapTupleHeaderSetXmin(newtup->t_data, xid);
 	HeapTupleHeaderSetCmin(newtup->t_data, cid);
+#ifdef PGXC
+	newtup->t_xc_node_id = PGXCNodeIdentifier;
+#endif
 	newtup->t_data->t_infomask |= HEAP_UPDATED | infomask_new_tuple;
 	newtup->t_data->t_infomask2 |= infomask2_new_tuple;
 	HeapTupleHeaderSetXmax(newtup->t_data, xmax_new_tuple);
@@ -4363,6 +4382,9 @@ heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 	if (attrnum < 0)
 	{
 		if (attrnum != ObjectIdAttributeNumber &&
+#ifdef PGXC
+			attrnum != XC_NodeIdAttributeNumber &&
+#endif
 			attrnum != TableOidAttributeNumber)
 			return false;
 	}
@@ -4579,6 +4601,9 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
+#ifdef PGXC
+	tuple->t_xc_node_id = PGXCNodeIdentifier;
+#endif
 
 l3:
 	result = HeapTupleSatisfiesUpdate(tuple, cid, *buffer);

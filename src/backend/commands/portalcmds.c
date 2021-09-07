@@ -27,12 +27,16 @@
 #include "commands/portalcmds.h"
 #include "executor/executor.h"
 #include "executor/tstoreReceiver.h"
+#include "optimizer/cost.h"
 #include "rewrite/rewriteHandler.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#endif
 
 /*
  * PerformCursorOpen
@@ -95,6 +99,14 @@ PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
 	 * Create a portal and copy the plan and queryString into its memory.
 	 */
 	portal = CreatePortal(cstmt->portalname, false, false);
+
+#ifdef PGXC
+	/*
+	 * Consume the command id of the command creating the cursor
+	 */
+	if (IS_PGXC_LOCAL_COORDINATOR)
+		GetCurrentCommandId(true);
+#endif
 
 	oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
 
@@ -280,6 +292,98 @@ PortalCleanup(Portal portal)
 	queryDesc = PortalGetQueryDesc(portal);
 	if (queryDesc)
 	{
+#ifdef XCP
+		if (portal->strategy == PORTAL_DISTRIBUTED)
+		{
+			/* If portal is producing it has an executor which should be
+			 * shut down */
+			if (queryDesc->myindex == -1)
+			{
+				if (portal->status == PORTAL_FAILED)
+				{
+					/*
+					 * Failed portal is not producing, we may remove it from the
+					 * producers list.
+					 */
+					removeProducingPortal(portal);
+					/* If cleanup fails below prevent double cleanup */
+					portal->queryDesc = NULL;
+					/*
+					 * Inform consumers about failed producer if they are
+					 * still waiting
+					 */
+					if (queryDesc->squeue)
+						SharedQueueReset(queryDesc->squeue, -1);
+				}
+				/* executor may be finished already, if so estate will be null */
+				if (queryDesc->estate)
+				{
+					ResourceOwner saveResourceOwner;
+
+					/* We must make the portal's resource owner current to
+					 * release resources properly */
+					saveResourceOwner = CurrentResourceOwner;
+					PG_TRY();
+					{
+						CurrentResourceOwner = portal->resowner;
+						/* Finish executor if it is not yet finished */
+						if (!queryDesc->estate->es_finished)
+							ExecutorFinish(queryDesc);
+						/* Destroy executor if not yet destroyed */
+						if (queryDesc->estate)
+							ExecutorEnd(queryDesc);
+						if (portal->status == PORTAL_FAILED)
+						{
+							/*
+							 * If portal if failed we can allow to be blocked
+							 * here while UnBind is waiting for finishing
+							 * consumers.
+							 */
+							if (queryDesc->squeue)
+								SharedQueueUnBind(queryDesc->squeue, true);
+							FreeQueryDesc(queryDesc);
+						}
+					}
+					PG_CATCH();
+					{
+						/* Ensure CurrentResourceOwner is restored on error */
+						CurrentResourceOwner = saveResourceOwner;
+						PG_RE_THROW();
+					}
+					PG_END_TRY();
+					CurrentResourceOwner = saveResourceOwner;
+				}
+			}
+			else
+			{
+				/* Cleaning up consumer */
+				ResourceOwner saveResourceOwner;
+
+				/* We must make the portal's resource owner current */
+				saveResourceOwner = CurrentResourceOwner;
+				PG_TRY();
+				{
+					CurrentResourceOwner = portal->resowner;
+					/* Prevent double cleanup in case of error below */
+					portal->queryDesc = NULL;
+					/* Reset the squeue if exists */
+					if (queryDesc->squeue)
+						SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
+					FreeQueryDesc(queryDesc);
+				}
+				PG_CATCH();
+				{
+					/* Ensure CurrentResourceOwner is restored on error */
+					CurrentResourceOwner = saveResourceOwner;
+					PG_RE_THROW();
+				}
+				PG_END_TRY();
+				CurrentResourceOwner = saveResourceOwner;
+			}
+		}
+		else
+		{
+#endif
 		/*
 		 * Reset the queryDesc before anything else.  This prevents us from
 		 * trying to shut down the executor twice, in case of an error below.
@@ -311,6 +415,9 @@ PortalCleanup(Portal portal)
 			PG_END_TRY();
 			CurrentResourceOwner = saveResourceOwner;
 		}
+#ifdef XCP
+		}
+#endif
 	}
 }
 

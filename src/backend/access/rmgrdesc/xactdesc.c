@@ -190,7 +190,8 @@ xact_desc_commit(StringInfo buf, uint8 info, xl_xact_commit *xlrec, RepOriginId 
 		appendStringInfoString(buf, "; rels:");
 		for (i = 0; i < parsed.nrels; i++)
 		{
-			char	   *path = relpathperm(parsed.xnodes[i], MAIN_FORKNUM);
+			char	   *path = relpathperm_client(parsed.xnodes[i],
+					MAIN_FORKNUM, "");
 
 			appendStringInfo(buf, " %s", path);
 			pfree(path);
@@ -240,7 +241,8 @@ xact_desc_abort(StringInfo buf, uint8 info, xl_xact_abort *xlrec)
 		appendStringInfoString(buf, "; rels:");
 		for (i = 0; i < parsed.nrels; i++)
 		{
-			char	   *path = relpathperm(parsed.xnodes[i], MAIN_FORKNUM);
+			char	   *path = relpathperm_client(parsed.xnodes[i],
+					MAIN_FORKNUM, "");
 
 			appendStringInfo(buf, " %s", path);
 			pfree(path);

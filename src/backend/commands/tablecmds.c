@@ -783,12 +783,58 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	CommandCounterIncrement();
 
 	/*
+	 * Add to pgxc_class.
+	 * we need to do this after CommandCounterIncrement
+	 * Distribution info is to be added under the following conditions:
+	 * 1. The create table command is being run on a coordinator
+	 * 2. The create table command is being run in restore mode and
+	 *    the statement contains distribute by clause.
+	 *    While adding a new datanode to the cluster an existing dump
+	 *    that was taken from a datanode is used, and
+	 *    While adding a new coordinator to the cluster an exiting dump
+	 *    that was taken from a coordinator is used.
+	 *    The dump taken from a datanode does NOT contain any DISTRIBUTE BY
+	 *    clause. This fact is used here to make sure that when the
+	 *    DISTRIBUTE BY clause is missing in the statemnet the system
+	 *    should not try to find out the node list itself.
+	 */
+	if ((IS_PGXC_COORDINATOR && stmt->distributeby) ||
+			(isRestoreMode && stmt->distributeby != NULL))
+	{
+		AddRelationDistribution(relationId, stmt->distributeby,
+								stmt->subcluster, inheritOids, descriptor);
+		CommandCounterIncrement();
+		/* Make sure locator info gets rebuilt */
+		RelationCacheInvalidateEntry(relationId);
+	}
+
+	/*
 	 * Open the new relation and acquire exclusive lock on it.  This isn't
 	 * really necessary for locking out other backends (since they can't see
 	 * the new rel anyway until we commit), but it keeps the lock manager from
 	 * complaining about deadlock risks.
 	 */
 	rel = relation_open(relationId, AccessExclusiveLock);
+
+	/*
+	 * If we are inheriting from more than one parent, ensure that the
+	 * distribution strategy of the child table and each of the parent table
+	 * satisfies various limitations imposed by XL. Any violation will be
+	 * reported as ERROR by MergeDistributionIntoExisting.
+	 */
+	if (IS_PGXC_COORDINATOR && list_length(inheritOids) > 1)
+	{
+		ListCell   *entry;
+		foreach(entry, inheritOids)
+		{
+			Oid			parentOid = lfirst_oid(entry);
+			Relation	parent_rel = heap_open(parentOid, ShareUpdateExclusiveLock);
+
+			MergeDistributionIntoExisting(rel, parent_rel);
+			heap_close(parent_rel, NoLock);
+		}
+	}
+
 
 	/* Process and store partition bound, if any. */
 	if (stmt->partbound)
@@ -4149,7 +4195,7 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			ATExecGenericOptions(rel, (List *) cmd->def);
 			break;
 		case AT_DisableIndex:
-			ATExecDisableIndex(rel);
+			//ATExecDisableIndex(rel);
 			break;
 		case AT_AttachPartition:
 			ATExecAttachPartition(wqueue, rel, (PartitionCmd *) cmd->def);
@@ -11575,6 +11621,85 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
 	heap_close(catalog_relation, RowExclusiveLock);
 }
 
+static void
+MergeDistributionIntoExisting(Relation child_rel, Relation parent_rel)
+{
+	RelationLocInfo *parent_locinfo = RelationGetLocInfo(parent_rel);
+	RelationLocInfo *child_locinfo = RelationGetLocInfo(child_rel);
+	List *nodeList1, *nodeList2;
+
+
+	nodeList1 = parent_locinfo->rl_nodeList;
+	nodeList2 = child_locinfo->rl_nodeList;
+
+	/* Same locator type? */
+	if (parent_locinfo->locatorType != child_locinfo->locatorType)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("table \"%s\" is using distribution type %c, but the "
+					"parent table \"%s\" is using distribution type %c",
+					RelationGetRelationName(child_rel),
+					child_locinfo->locatorType,
+					RelationGetRelationName(parent_rel),
+					parent_locinfo->locatorType),
+				errdetail("Distribution type for the child must be same as the parent")));
+
+
+	/*
+	 * Same attribute number?
+	 *
+	 * For table distributed by roundrobin or replication, the partAttrNum will
+	 * be -1 and inheritance is allowed for tables distributed by roundrobin or
+	 * replication, as long as the distribution type matches (i.e. all tables
+	 * are either roundrobin or all tables are replicated).
+	 *
+	 * Tables distributed by roundrobin or replication do not have partAttrName
+	 * set. We should have checked for distribution type above. So if the
+	 * partAttrNum does not match below, we must be dealing with either modulo
+	 * or hash distributed tables and partAttrName must be set in both the
+	 * cases.
+	 */
+	if (parent_locinfo->partAttrNum != child_locinfo->partAttrNum)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("table \"%s\" is distributed on column \"%s\", but the "
+					"parent table \"%s\" is distributed on column \"%s\"",
+					RelationGetRelationName(child_rel),
+					child_locinfo->partAttrName,
+					RelationGetRelationName(parent_rel),
+					parent_locinfo->partAttrName),
+				errdetail("Distribution column for the child must be same as the parent")));
+
+	/*
+	 * Same attribute name? partAttrName could be NULL if we are dealing with
+	 * roundrobin or replicated tables. So check for that.
+	 */
+	if (parent_locinfo->partAttrName &&
+		child_locinfo->partAttrName &&
+		strcmp(parent_locinfo->partAttrName, child_locinfo->partAttrName) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("table \"%s\" is distributed on column \"%s\", but the "
+					"parent table \"%s\" is distributed on column \"%s\"",
+					RelationGetRelationName(child_rel),
+					child_locinfo->partAttrName,
+					RelationGetRelationName(parent_rel),
+					parent_locinfo->partAttrName),
+				errdetail("Distribution column for the child must be same as the parent")));
+
+
+	/* Same node list? */
+	if (list_difference_int(nodeList1, nodeList2) != NIL ||
+		list_difference_int(nodeList2, nodeList1) != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("child table \"%s\" and the parent table \"%s\" "
+					"are distributed on different sets of nodes",
+					RelationGetRelationName(child_rel),
+					RelationGetRelationName(parent_rel)),
+				errdetail("Distribution nodes for the child must be same as the parent")));
+}
+
 /*
  * ALTER TABLE NO INHERIT
  *
@@ -12429,11 +12554,420 @@ ATExecGenericOptions(Relation rel, List *options)
 	heap_freetuple(tuple);
 }
 
+#ifdef PGXC
+/*
+ * ALTER TABLE <name> DISTRIBUTE BY ...
+ */
 static void
-ATExecDisableIndex(Relation rel)
+AtExecDistributeBy(Relation rel, DistributeBy *options)
 {
-	DisableIndexLabel(rel->rd_id);
+	Oid relid;
+	char locatortype;
+	int hashalgorithm, hashbuckets;
+	AttrNumber attnum;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NULL)
+		return;
+
+	relid = RelationGetRelid(rel);
+
+	/* Get necessary distribution information */
+	GetRelationDistributionItems(relid,
+								 options,
+								 RelationGetDescr(rel),
+								 &locatortype,
+								 &hashalgorithm,
+								 &hashbuckets,
+								 &attnum);
+
+	/*
+	 * It is not checked if the distribution type list is the same as the old one,
+	 * user might define a different sub-cluster at the same time.
+	 */
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(relid,
+				   locatortype,
+				   (int) attnum,
+				   hashalgorithm,
+				   hashbuckets,
+				   0,
+				   NULL,
+				   PGXC_CLASS_ALTER_DISTRIBUTION);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
 }
+
+
+/*
+ * ALTER TABLE <name> TO [ NODE nodelist | GROUP groupname ]
+ */
+static void
+AtExecSubCluster(Relation rel, PGXCSubCluster *options)
+{
+	Oid *nodeoids;
+	int numnodes;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NULL)
+		return;
+
+	/*
+	 * It is not checked if the new subcluster list is the same as the old one,
+	 * user might define a different distribution type.
+	 */
+
+	/* Obtain new node information */
+	nodeoids = GetRelationDistributionNodes(options, &numnodes);
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(RelationGetRelid(rel),
+				   '\0',
+				   0,
+				   0,
+				   0,
+				   numnodes,
+				   nodeoids,
+				   PGXC_CLASS_ALTER_NODES);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ALTER TABLE <name> ADD NODE nodelist
+ */
+static void
+AtExecAddNode(Relation rel, List *options)
+{
+	Oid *add_oids, *old_oids;
+	int add_num, old_num;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NIL)
+		return;
+
+	/*
+	 * Build a new array of sorted node Oids given the list of name nodes
+	 * to be added.
+	 */
+	add_oids = BuildRelationDistributionNodes(options, &add_num);
+
+	/*
+	 * Then check if nodes to be added are not in existing node
+	 * list and build updated list of nodes.
+	 */
+	old_num = get_pgxc_classnodes(RelationGetRelid(rel), &old_oids);
+
+	/* Add elements to array */
+	old_oids = add_node_list(old_oids, old_num, add_oids, add_num, &old_num);
+
+	/* Sort once again the newly-created array of node Oids to maintain consistency */
+	old_oids = SortRelationDistributionNodes(old_oids, old_num);
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(RelationGetRelid(rel),
+				   '\0',
+				   0,
+				   0,
+				   0,
+				   old_num,
+				   old_oids,
+				   PGXC_CLASS_ALTER_NODES);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ALTER TABLE <name> DELETE NODE nodelist
+ */
+static void
+AtExecDeleteNode(Relation rel, List *options)
+{
+	Oid *del_oids, *old_oids;
+	int del_num, old_num;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NIL)
+		return;
+
+	/*
+	 * Build a new array of sorted node Oids given the list of name nodes
+	 * to be deleted.
+	 */
+	del_oids = BuildRelationDistributionNodes(options, &del_num);
+
+	/*
+	 * Check if nodes to be deleted are really included in existing
+	 * node list and get updated list of nodes.
+	 */
+	old_num = get_pgxc_classnodes(RelationGetRelid(rel), &old_oids);
+
+	/* Delete elements on array */
+	old_oids = delete_node_list(old_oids, old_num, del_oids, del_num, &old_num);
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(RelationGetRelid(rel),
+				   '\0',
+				   0,
+				   0,
+				   0,
+				   old_num,
+				   old_oids,
+				   PGXC_CLASS_ALTER_NODES);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ATCheckCmd
+ *
+ * Check ALTER TABLE restrictions in Postgres-XC
+ */
+static void
+ATCheckCmd(Relation rel, AlterTableCmd *cmd)
+{
+	/* Do nothing in the case of a remote node */
+	if (IS_PGXC_DATANODE || IsConnFromCoord())
+		return;
+
+	switch (cmd->subtype)
+	{
+		case AT_DropColumn:
+			/* Distribution column cannot be dropped */
+			if (IsDistColumnForRelId(RelationGetRelid(rel), cmd->name))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("Distribution column cannot be dropped")));
+			break;
+
+		default:
+			break;
+	}
+}
+
+
+/*
+ * BuildRedistribCommands
+ * Evaluate new and old distribution and build the list of operations
+ * necessary to perform table redistribution.
+ */
+static RedistribState *
+BuildRedistribCommands(Oid relid, List *subCmds)
+{
+	RedistribState   *redistribState = makeRedistribState(relid);
+	RelationLocInfo *oldLocInfo, *newLocInfo; /* Former locator info */
+	Relation	rel;
+	Oid		   *new_oid_array;	/* Modified list of Oids */
+	int			new_num, i;	/* Modified number of Oids */
+	ListCell   *item;
+#ifdef XCP
+	char		node_type = PGXC_NODE_DATANODE;
+#endif
+
+	/* Get necessary information about relation */
+	rel = relation_open(redistribState->relid, NoLock);
+	oldLocInfo = RelationGetLocInfo(rel);
+	Assert(oldLocInfo);
+
+	/*
+	 * Get a copy of the locator information that will be modified by
+	 * successive ALTER TABLE commands.
+	 */
+	newLocInfo = CopyRelationLocInfo(oldLocInfo);
+	/* The node list of this locator information will be rebuilt after command scan */
+	list_free(newLocInfo->rl_nodeList);
+	newLocInfo->rl_nodeList = NULL;
+
+	/* Get the list to be modified */
+	new_num = get_pgxc_classnodes(RelationGetRelid(rel), &new_oid_array);
+
+	foreach(item, subCmds)
+	{
+		AlterTableCmd *cmd = (AlterTableCmd *) lfirst(item);
+		switch (cmd->subtype)
+		{
+			case AT_DistributeBy:
+				/*
+				 * Get necessary distribution information and update to new
+				 * distribution type.
+				 */
+				GetRelationDistributionItems(redistribState->relid,
+											 (DistributeBy *) cmd->def,
+											 RelationGetDescr(rel),
+											 &(newLocInfo->locatorType),
+											 NULL,
+											 NULL,
+											 (AttrNumber *)&(newLocInfo->partAttrNum));
+				break;
+			case AT_SubCluster:
+				/* Update new list of nodes */
+				new_oid_array = GetRelationDistributionNodes((PGXCSubCluster *) cmd->def, &new_num);
+				break;
+			case AT_AddNodeList:
+				{
+					Oid *add_oids;
+					int add_num;
+					add_oids = BuildRelationDistributionNodes((List *) cmd->def, &add_num);
+					/* Add elements to array */
+					new_oid_array = add_node_list(new_oid_array, new_num, add_oids, add_num, &new_num);
+				}
+				break;
+			case AT_DeleteNodeList:
+				{
+					Oid *del_oids;
+					int del_num;
+					del_oids = BuildRelationDistributionNodes((List *) cmd->def, &del_num);
+					/* Delete elements from array */
+					new_oid_array = delete_node_list(new_oid_array, new_num, del_oids, del_num, &new_num);
+				}
+				break;
+			default:
+				Assert(0); /* Should not happen */
+		}
+	}
+
+	/* Build relation node list for new locator info */
+	for (i = 0; i < new_num; i++)
+		newLocInfo->rl_nodeList = lappend_int(newLocInfo->rl_nodeList,
+										   PGXCNodeGetNodeId(new_oid_array[i],
+															 &node_type));
+	/* Build the command tree for table redistribution */
+	PGXCRedistribCreateCommandList(redistribState, newLocInfo);
+
+	/* Clean up */
+	FreeRelationLocInfo(newLocInfo);
+	pfree(new_oid_array);
+	relation_close(rel, NoLock);
+
+	return redistribState;
+}
+
+
+/*
+ * Delete from given Oid array old_oids the given oid list del_oids
+ * and build a new one.
+ */
+Oid *
+delete_node_list(Oid *old_oids, int old_num, Oid *del_oids, int del_num, int *new_num)
+{
+	/* Allocate former array and data */
+	Oid *new_oids = old_oids;
+	int loc_new_num = old_num;
+	int i;
+
+	/*
+	 * Delete from existing node Oid array the elements to be removed.
+	 * An error is returned if an element to be deleted is not in existing array.
+	 * It is not necessary to sort once again the result array of node Oids
+	 * as here only a deletion of elements is done.
+	 */
+	for (i = 0; i < del_num; i++)
+	{
+		Oid nodeoid = del_oids[i];
+		int j, position;
+		bool is_listed = false;
+		position = 0;
+
+		for (j = 0; j < loc_new_num; j++)
+		{
+			/* Check if element can be removed */
+			if (nodeoid == new_oids[j])
+			{
+				is_listed = true;
+				position = j;
+			}
+		}
+
+		/* Move all the elements from [j+1, n-1] to [j, n-2] */
+		if (is_listed)
+		{
+			for (j = position + 1; j < loc_new_num; j++)
+				new_oids[j - 1] = new_oids[j];
+
+			loc_new_num--;
+
+			/* Not possible to have an empty list */
+			if (loc_new_num == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_DUPLICATE_OBJECT),
+						 errmsg("Node list is empty: one node at least is mandatory")));
+
+			new_oids = (Oid *) repalloc(new_oids, loc_new_num * sizeof(Oid));
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("PGXC Node %s: object not in relation node list",
+							get_pgxc_nodename(nodeoid))));
+	}
+
+	/* Save new number of nodes */
+	*new_num = loc_new_num;
+	return new_oids;
+}
+
+
+/*
+ * Add to given Oid array old_oids the given oid list add_oids
+ * and build a new one.
+ */
+Oid *
+add_node_list(Oid *old_oids, int old_num, Oid *add_oids, int add_num, int *new_num)
+{
+	/* Allocate former array and data */
+	Oid *new_oids = old_oids;
+	int loc_new_num = old_num;
+	int i;
+
+	/*
+	 * Build new Oid list, both addition and old list are already sorted.
+	 * The idea here is to go through the list of nodes to be added and
+	 * add the elements one-by-one on the existing list.
+	 * An error is returned if an element to be added already exists
+	 * in relation node array.
+	 * Here we do O(n^2) scan to avoid a dependency with the way
+	 * oids are sorted by heap APIs. They are sorted once again once
+	 * the addition operation is completed.
+	 */
+	for (i = 0; i < add_num; i++)
+	{
+		Oid nodeoid = add_oids[i];
+		int j;
+
+		/* Check if element is already a part of array */
+		for (j = 0; j < loc_new_num; j++)
+		{
+			/* Item is already in node list */
+			if (nodeoid == new_oids[j])
+				ereport(ERROR,
+						(errcode(ERRCODE_DUPLICATE_OBJECT),
+						 errmsg("PGXC Node %s: object already in relation node list",
+								get_pgxc_nodename(nodeoid))));
+		}
+
+		/* If we are here, element can be added safely in node array */
+		loc_new_num++;
+		new_oids = (Oid *) repalloc(new_oids, loc_new_num * sizeof(Oid));
+		new_oids[loc_new_num - 1] = nodeoid;
+	}
+
+	/* Sort once again the newly-created array of node Oids to maintain consistency */
+	new_oids = SortRelationDistributionNodes(new_oids, loc_new_num);
+
+	/* Save new number of nodes */
+	*new_num = loc_new_num;
+	return new_oids;
+}
+#endif
+
 
 /*
  * Preparation phase for SET LOGGED/UNLOGGED
@@ -12666,6 +13200,28 @@ AlterTableNamespaceInternal(Relation rel, Oid oldNspOid, Oid nspOid,
 	}
 
 	heap_close(classRel, RowExclusiveLock);
+
+#ifdef PGXC
+	/* Rename also sequence on GTM for a sequence */
+	if (IS_PGXC_LOCAL_COORDINATOR &&
+		rel->rd_rel->relkind == RELKIND_SEQUENCE &&
+		(oldNspOid != nspOid))
+	{
+		char *seqname = GetGlobalSeqName(rel, NULL, NULL);
+		char *newseqname = GetGlobalSeqName(rel, NULL, get_namespace_name(nspOid));
+
+		/* We also need to rename it on the GTM */
+		if (RenameSequenceGTM(seqname, newseqname) < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("GTM error, could not rename sequence")));
+
+
+		pfree(seqname);
+		pfree(newseqname);
+	}
+#endif
+
 }
 
 /*
@@ -12851,6 +13407,26 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
 		 */
 		AlterTypeNamespaceInternal(RelationGetForm(seqRel)->reltype,
 								   newNspOid, false, false, objsMoved);
+
+#ifdef PGXC
+		/* Change also this sequence name on GTM */
+		if (IS_PGXC_LOCAL_COORDINATOR &&
+			(oldNspOid != newNspOid))
+		{
+			char *seqname = GetGlobalSeqName(seqRel, NULL, NULL);
+			char *newseqname = GetGlobalSeqName(seqRel, NULL, get_namespace_name(newNspOid));
+
+			/* We also need to rename it on the GTM */
+			if (RenameSequenceGTM(seqname, newseqname) < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("GTM error, could not rename sequence")));
+
+
+			pfree(seqname);
+			pfree(newseqname);
+		}
+#endif
 
 		/* Now we can close it.  Keep the lock till end of transaction. */
 		relation_close(seqRel, NoLock);

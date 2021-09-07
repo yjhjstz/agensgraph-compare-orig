@@ -310,6 +310,19 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 		subpath = get_cheapest_fractional_path(final_rel,
 											   root->tuple_fraction);
 
+#ifdef XCP
+		/*
+		  * create remote_subplan_path if needed, and we'll use this path to
+		  * create remote_subplan at the top.
+		  */
+		if(subpath->distribution)
+		{
+			subpath = create_remotesubplan_path(NULL, subpath, NULL);
+
+			subroot->distribution = NULL;
+		}
+#endif
+
 		/*
 		 * Stick a SubqueryScanPath atop that.
 		 *
@@ -319,7 +332,7 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 		 * soon too, likely.)
 		 */
 		path = (Path *) create_subqueryscan_path(root, rel, subpath,
-												 NIL, NULL);
+												 NIL, NULL, subroot->distribution);
 
 		/*
 		 * Figure out the appropriate target list, and update the
@@ -423,6 +436,41 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 		*pTargetList = NIL;
 		return NULL;			/* keep compiler quiet */
 	}
+}
+
+/*
+ * remove RemoteSubquery from the top of the path
+ *
+ * Essentially find_push_down_plan() but applied when constructing the path,
+ * not when creating the plan. Compared to find_push_down_plan it only deals
+ * with a subset of node types, however.
+ *
+ * XXX Does this need to handle additional node types?
+ */
+static Path *
+strip_remote_subquery(PlannerInfo *root, Path *path)
+{
+	/* if there's RemoteSubplan at the top, we're trivially done */
+	if (IsA(path, RemoteSubPath))
+		return ((RemoteSubPath *)path)->subpath;
+
+	/* for subquery, we tweak the subpath (and descend into it) */
+	if (IsA(path, SubqueryScanPath))
+	{
+		SubqueryScanPath *subquery = (SubqueryScanPath *)path;
+		subquery->subpath = strip_remote_subquery(root, subquery->subpath);
+
+		subquery->path.param_info = subquery->subpath->param_info;
+		subquery->path.pathkeys = subquery->subpath->pathkeys;
+
+		/* also update the distribution */
+		subquery->path.distribution = copyObject(subquery->subpath->distribution);
+
+		/* recompute costs */
+		cost_subqueryscan(subquery, root, path->parent, subquery->path.param_info);
+	}
+
+	return path;
 }
 
 /*

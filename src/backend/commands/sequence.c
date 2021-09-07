@@ -13,6 +13,7 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include <math.h>
 
 #include "access/bufmask.h"
 #include "access/htup_details.h"
@@ -145,7 +146,8 @@ static void init_params(ParseState *pstate, List *options, bool for_identity,
 			Form_pg_sequence seqform,
 			Form_pg_sequence_data seqdataform,
 			bool *need_seq_rewrite,
-			List **owned_by);
+			List **owned_by,
+			bool *is_restart);
 static void do_setval(Oid relid, int64 next, bool iscalled);
 static void process_owned_by(Relation seqrel, List *owned_by, bool for_identity);
 
@@ -172,6 +174,15 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 	Datum		pgs_values[Natts_pg_sequence];
 	bool		pgs_nulls[Natts_pg_sequence];
 	int			i;
+#ifdef PGXC /* PGXC_COORD */
+	GTM_Sequence	start_value = 1;
+	GTM_Sequence	min_value = 1;
+	GTM_Sequence	max_value = InvalidSequenceValue;
+	GTM_Sequence	increment = 1;
+	bool		cycle = false;
+	bool		is_restart;
+	char		*seqname;
+#endif
 
 	/* Unlogged sequences are not implemented -- not clear if useful. */
 	if (seq->sequence->relpersistence == RELPERSISTENCE_UNLOGGED)
@@ -200,7 +211,8 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 	/* Check and set all option values */
 	init_params(pstate, seq->options, seq->for_identity, true,
 				&seqform, &seqdataform,
-				&need_seq_rewrite, &owned_by);
+				&need_seq_rewrite, &owned_by,
+				&is_restart);
 
 	/*
 	 * Create relation (and fill value[] and null[] for the tuple)
@@ -269,6 +281,13 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 	if (owned_by)
 		process_owned_by(rel, owned_by, seq->for_identity);
 
+	seqname = GetGlobalSeqName(rel, NULL, NULL);
+	increment = seqform.seqincrement;
+	min_value = seqform.seqmin;
+	max_value = seqform.seqmax;
+	start_value = seqform.seqstart;
+	cycle = seqform.seqcycle;
+
 	heap_close(rel, NoLock);
 
 	/* fill in pg_sequence */
@@ -292,6 +311,29 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 	heap_freetuple(tuple);
 	heap_close(rel, RowExclusiveLock);
 
+#ifdef PGXC  /* PGXC_COORD */
+	/*
+	 * Remote Coordinator is in charge of creating sequence in GTM.
+	 * If sequence is temporary, it is not necessary to create it on GTM.
+	 */
+	if (IS_PGXC_LOCAL_COORDINATOR)
+	{
+		/* We also need to create it on the GTM */
+		if (CreateSequenceGTM(seqname,
+							  increment,
+							  min_value,
+							  max_value,
+							  start_value, cycle) < 0)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("GTM error, could not create sequence")));
+		}
+
+
+		pfree(seqname);
+	}
+#endif
 	return address;
 }
 
@@ -466,6 +508,15 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 	Form_pg_sequence_data newdataform;
 	bool		need_seq_rewrite;
 	List	   *owned_by;
+#ifdef PGXC
+	GTM_Sequence	start_value;
+	GTM_Sequence	last_value;
+	GTM_Sequence	min_value;
+	GTM_Sequence	max_value;
+	GTM_Sequence	increment;
+	bool			cycle;
+	bool			is_restart;
+#endif
 	ObjectAddress address;
 	Relation	rel;
 	HeapTuple	seqtuple;
@@ -509,11 +560,22 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 	/* Check and set new values */
 	init_params(pstate, stmt->options, stmt->for_identity, false,
 				seqform, newdataform,
-				&need_seq_rewrite, &owned_by);
+				&need_seq_rewrite, &owned_by,
+				&is_restart);
 
 	/* Clear local cache so that we don't think we have cached numbers */
 	/* Note that we do not change the currval() state */
 	elm->cached = elm->last;
+
+	/* Now okay to update the on-disk tuple */
+#ifdef PGXC
+	increment = seqform->seqincrement;
+	min_value = seqform->seqmin;
+	max_value = seqform->seqmax;
+	start_value = seqform->seqstart;
+	last_value = newdataform->last_value;
+	cycle = seqform->seqcycle;
+#endif
 
 	/* If needed, rewrite the sequence relation itself */
 	if (need_seq_rewrite)
@@ -551,6 +613,30 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 	heap_close(rel, RowExclusiveLock);
 	relation_close(seqrel, NoLock);
 
+#ifdef PGXC
+	/*
+	 * Remote Coordinator is in charge of create sequence in GTM
+	 * If sequence is temporary, no need to go through GTM.
+	 */
+	if (IS_PGXC_LOCAL_COORDINATOR && seqrel->rd_backend != MyBackendId)
+	{
+		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
+
+		/* We also need to create it on the GTM */
+		if (AlterSequenceGTM(seqname,
+							 increment,
+							 min_value,
+							 max_value,
+							 start_value,
+							 last_value,
+							 cycle,
+							 is_restart) < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("GTM error, could not alter sequence")));
+		pfree(seqname);
+	}
+#endif
 	return address;
 }
 
@@ -677,6 +763,86 @@ nextval_internal(Oid relid, bool check_permissions)
 	/* lock page' buffer and read tuple */
 	seq = read_seq_tuple(seqrel, &buf, &seqdatatuple);
 	page = BufferGetPage(buf);
+
+	{
+		int64 range = cache; /* how many values to ask from GTM? */
+		int64 rangemax; /* the max value returned from the GTM for our request */
+		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
+
+		/*
+		 * Above, we still use the page as a locking mechanism to handle
+		 * concurrency
+		 *
+		 * If the user has set a CACHE parameter, we use that. Else we pass in
+		 * the SequenceRangeVal value
+		 */
+		if (range == DEFAULT_CACHEVAL && SequenceRangeVal > range)
+		{
+			TimestampTz curtime = GetCurrentTimestamp();
+
+			if (!TimestampDifferenceExceeds(elm->last_call_time,
+													curtime, 1000))
+			{
+				/*
+				 * The previous GetNextValGTM call was made just a while back.
+				 * Request double the range of what was requested in the
+				 * earlier call. Honor the SequenceRangeVal boundary
+				 * value to limit very large range requests!
+				 */
+				elm->range_multiplier *= 2;
+				if (elm->range_multiplier < SequenceRangeVal)
+					range = elm->range_multiplier;
+				else
+					elm->range_multiplier = range = SequenceRangeVal;
+
+				elog(DEBUG1, "increase sequence range %ld", range);
+			}
+			else if (TimestampDifferenceExceeds(elm->last_call_time,
+												curtime, 5000))
+			{
+				/* The previous GetNextValGTM call was pretty old */
+				range = elm->range_multiplier = DEFAULT_CACHEVAL;
+				elog(DEBUG1, "reset sequence range %ld", range);
+			}
+			else if (TimestampDifferenceExceeds(elm->last_call_time,
+												curtime, 3000))
+			{
+				/*
+				 * The previous GetNextValGTM call was made quite some time
+				 * ago. Try to reduce the range request to reduce the gap
+				 */
+				if (elm->range_multiplier != DEFAULT_CACHEVAL)
+				{
+					range = elm->range_multiplier =
+								rint(elm->range_multiplier/2);
+					elog(DEBUG1, "decrease sequence range %ld", range);
+				}
+			}
+			else
+			{
+				/*
+				 * Current range_multiplier alllows to cache sequence values
+				 * for 1-3 seconds of work. Keep that rate.
+				 */
+				range = elm->range_multiplier;
+			}
+			elm->last_call_time = curtime;
+		}
+
+		result = (int64) GetNextValGTM(seqname, range, &rangemax);
+		pfree(seqname);
+
+		/* Update the on-disk data */
+		seq->last_value = result; /* last fetched number */
+		seq->is_called = true;
+
+		/* save info in local cache */
+		elm->last = result;			/* last returned number */
+		elm->cached = rangemax;		/* last fetched range max limit */
+		elm->last_valid = true;
+
+		last_used_seq = elm;
+	}
 
 	elm->increment = incby;
 	last = next = result = seq->last_value;
@@ -881,8 +1047,18 @@ currval_oid(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("currval of sequence \"%s\" is not yet defined in this session",
 						RelationGetRelationName(seqrel))));
-
-	result = elm->last;
+#ifdef XCP
+	{
+		/*
+ 		 * Always contact GTM for currval
+ 		 */
+		{
+			char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
+			result = (int64) GetCurrentValGTM(seqname);
+			pfree(seqname);
+		}
+	}
+#endif
 
 	relation_close(seqrel, NoLock);
 
@@ -997,13 +1173,25 @@ do_setval(Oid relid, int64 next, bool iscalled)
 						bufm, bufx)));
 	}
 
-	/* Set the currval() state only if iscalled = true */
-	if (iscalled)
 	{
-		elm->last = next;		/* last returned number */
-		elm->last_valid = true;
-	}
+		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
 
+		if (SetValGTM(seqname, next, iscalled) < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("GTM error, could not obtain sequence value")));
+		pfree(seqname);
+		/* Update the on-disk data */
+		seq->last_value = next; /* last fetched number */
+		seq->is_called = iscalled;
+		seq->log_cnt = (iscalled) ? 0 : 1;
+
+		if (iscalled)
+		{
+			elm->last = next;		/* last returned number */
+			elm->last_valid = true;
+		}
+	}
 	/* In any case, forget any future cached numbers */
 	elm->cached = elm->last;
 
@@ -1166,6 +1354,10 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 		elm->filenode = InvalidOid;
 		elm->lxid = InvalidLocalTransactionId;
 		elm->last_valid = false;
+#ifdef XCP
+		elm->last_call_time = 0;
+		elm->range_multiplier = DEFAULT_CACHEVAL;
+#endif
 		elm->last = elm->cached = 0;
 	}
 
@@ -1278,7 +1470,8 @@ init_params(ParseState *pstate, List *options, bool for_identity,
 			Form_pg_sequence seqform,
 			Form_pg_sequence_data seqdataform,
 			bool *need_seq_rewrite,
-			List **owned_by)
+			List **owned_by,
+			bool *is_restart)
 {
 	DefElem    *as_type = NULL;
 	DefElem    *start_value = NULL;
@@ -1291,6 +1484,10 @@ init_params(ParseState *pstate, List *options, bool for_identity,
 	ListCell   *option;
 	bool		reset_max_value = false;
 	bool		reset_min_value = false;
+
+#ifdef PGXC
+	*is_restart = false;
+#endif
 
 	*need_seq_rewrite = false;
 	*owned_by = NIL;
@@ -1612,6 +1809,9 @@ init_params(ParseState *pstate, List *options, bool for_identity,
 			seqdataform->last_value = defGetInt64(restart_value);
 		else
 			seqdataform->last_value = seqform->seqstart;
+#ifdef PGXC
+		*is_restart = true;
+#endif
 		seqdataform->is_called = false;
 		seqdataform->log_cnt = 0;
 	}

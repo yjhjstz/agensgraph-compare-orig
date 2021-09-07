@@ -20,12 +20,20 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#ifdef XCP
+#include "pgstat.h"
+#endif
+
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/pg_type.h"
+#ifdef XCP
+#include "catalog/dependency.h"
+#include "commands/sequence.h"
+#endif
 #include "commands/copy.h"
 #include "commands/defrem.h"
 #include "commands/trigger.h"
@@ -36,7 +44,17 @@
 #include "miscadmin.h"
 #include "optimizer/clauses.h"
 #include "optimizer/planner.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/execRemote.h"
+#include "pgxc/locator.h"
+#include "pgxc/remotecopy.h"
+#include "nodes/nodes.h"
+#include "pgxc/poolmgr.h"
+#include "catalog/pgxc_node.h"
+#endif
 #include "nodes/makefuncs.h"
+#include "optimizer/pgxcship.h"
 #include "parser/parse_relation.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
@@ -62,6 +80,9 @@ typedef enum CopyDest
 	COPY_FILE,					/* to/from file (or a piped program) */
 	COPY_OLD_FE,				/* to/from frontend (2.0 protocol) */
 	COPY_NEW_FE,				/* to/from frontend (3.0 protocol) */
+#ifdef PGXC
+	COPY_BUFFER,				/* Do not send, just prepare */
+#endif
 	COPY_CALLBACK				/* to/from callback function */
 } CopyDest;
 
@@ -211,6 +232,10 @@ typedef struct CopyStateData
 	char	   *raw_buf;
 	int			raw_buf_index;	/* next byte to process */
 	int			raw_buf_len;	/* total # of bytes stored */
+#ifdef PGXC
+	/* Remote COPY state data */
+	RemoteCopyData *remoteCopyState;
+#endif
 } CopyStateData;
 
 /* DestReceiver for COPY (query) TO */
@@ -340,6 +365,11 @@ static bool CopyGetInt32(CopyState cstate, int32 *val);
 static void CopySendInt16(CopyState cstate, int16 val);
 static bool CopyGetInt16(CopyState cstate, int16 *val);
 
+
+#ifdef PGXC
+static RemoteCopyOptions *GetRemoteCopyOptions(CopyState cstate);
+static void append_defvals(Datum *values, CopyState cstate);
+#endif
 
 /*
  * Send copy start/stop messages for frontend copies.  These have changed
@@ -533,6 +563,11 @@ CopySendEndOfRow(CopyState cstate)
 			/* Dump the accumulated row as one CopyData message */
 			(void) pq_putmessage('d', fe_msgbuf->data, fe_msgbuf->len);
 			break;
+#ifdef PGXC
+		case COPY_BUFFER:
+			/* Do not send yet anywhere, just return */
+			return;
+#endif
 		case COPY_CALLBACK:
 			Assert(false);		/* Not yet supported. */
 			break;
@@ -650,6 +685,11 @@ CopyGetData(CopyState cstate, void *databuf, int minread, int maxread)
 				bytesread += avail;
 			}
 			break;
+#ifdef PGXC
+		case COPY_BUFFER:
+			elog(ERROR, "COPY_BUFFER not allowed in this context");
+			break;
+#endif
 		case COPY_CALLBACK:
 			bytesread = cstate->data_source_cb(databuf, minread, maxread);
 			break;
@@ -975,6 +1015,15 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 		cstate = BeginCopyFrom(pstate, rel, stmt->filename, stmt->is_program,
 							   NULL, stmt->attlist, stmt->options);
 		*processed = CopyFrom(cstate);	/* copy from file to database */
+#ifdef XCP
+		/*
+		 * We should record insert to distributed table.
+		 * Bulk inserts into local tables are recorded when heap tuples are
+		 * written.
+		 */
+		if (IS_PGXC_COORDINATOR && rel->rd_locator_info)
+			pgstat_count_remote_insert(rel, (int) *processed);
+#endif
 		EndCopyFrom(cstate);
 	}
 	else
@@ -1415,6 +1464,31 @@ BeginCopy(ParseState *pstate,
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 					 errmsg("table \"%s\" does not have OIDs",
 							RelationGetRelationName(cstate->rel))));
+#ifdef PGXC
+		/* Get copy statement and execution node information */
+		if (IS_PGXC_COORDINATOR)
+		{
+			RemoteCopyData *remoteCopyState = (RemoteCopyData *) palloc0(sizeof(RemoteCopyData));
+			List *attnums = CopyGetAttnums(tupDesc, cstate->rel, attnamelist);
+
+			/* Setup correct COPY FROM/TO flag */
+			remoteCopyState->is_from = is_from;
+
+			/* Get execution node list */
+			RemoteCopy_GetRelationLoc(remoteCopyState,
+									  cstate->rel,
+									  attnums);
+			/* Build remote query */
+			RemoteCopy_BuildStatement(remoteCopyState,
+									  cstate->rel,
+									  GetRemoteCopyOptions(cstate),
+									  attnamelist,
+									  attnums);
+
+			/* Then assign built structure */
+			cstate->remoteCopyState = remoteCopyState;
+		}
+#endif
 	}
 	else
 	{
@@ -1676,6 +1750,30 @@ BeginCopy(ParseState *pstate,
 	cstate->encoding_embeds_ascii = PG_ENCODING_IS_CLIENT_ONLY(cstate->file_encoding);
 
 	cstate->copy_dest = COPY_FILE;	/* default */
+
+#ifdef PGXC
+	/*
+	 * We are here just at copy begin process,
+	 * so only pick up the list of connections.
+	 */
+	if (IS_PGXC_COORDINATOR)
+	{
+		RemoteCopyData *remoteCopyState = cstate->remoteCopyState;
+
+		/*
+		 * In the case of CopyOut, it is just necessary to pick up one node randomly.
+		 * This is done when rel_loc is found.
+		 */
+		if (remoteCopyState && remoteCopyState->rel_loc)
+		{
+			DataNodeCopyBegin(remoteCopyState);
+			if (!remoteCopyState->locator)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_EXCEPTION),
+						 errmsg("Failed to initialize Datanodes for COPY")));
+		}
+	}
+#endif
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -1974,6 +2072,10 @@ CopyTo(CopyState cstate)
 
 	if (cstate->binary)
 	{
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR)
+	{
+#endif
 		/* Generate header for a binary copy */
 		int32		tmp;
 
@@ -1987,6 +2089,12 @@ CopyTo(CopyState cstate)
 		/* No header extension */
 		tmp = 0;
 		CopySendInt32(cstate, tmp);
+
+#ifdef PGXC
+		/* Need to flush out the trailer */
+		CopySendEndOfRow(cstate);
+	}
+#endif
 	}
 	else
 	{
@@ -2022,6 +2130,21 @@ CopyTo(CopyState cstate)
 			CopySendEndOfRow(cstate);
 		}
 	}
+
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR &&
+		cstate->remoteCopyState &&
+		cstate->remoteCopyState->rel_loc)
+	{
+		RemoteCopyData *rcstate = cstate->remoteCopyState;
+		processed = DataNodeCopyOut(
+					(PGXCNodeHandle **) getLocatorNodeMap(rcstate->locator),
+					getLocatorNodeCount(rcstate->locator),
+					cstate->copy_dest == COPY_FILE ? cstate->copy_file : NULL);
+	}
+	else
+	{
+#endif
 
 	if (cstate->rel)
 	{
@@ -2060,7 +2183,19 @@ CopyTo(CopyState cstate)
 		processed = ((DR_copy *) cstate->queryDesc->dest)->processed;
 	}
 
+#ifdef PGXC
+	}
+#endif
+
+#ifdef PGXC
+	/*
+	 * In PGXC, it is not necessary for a Datanode to generate
+	 * the trailer as Coordinator is in charge of it
+	 */
+	if (cstate->binary && IS_PGXC_COORDINATOR)
+#else
 	if (cstate->binary)
+#endif
 	{
 		/* Generate trailer for a binary copy */
 		CopySendInt16(cstate, -1);
@@ -2580,6 +2715,37 @@ CopyFrom(CopyState cstate)
 		if (!NextCopyFrom(cstate, econtext, values, nulls, &loaded_oid))
 			break;
 
+#ifdef PGXC
+		/*
+		 * Send the data row as-is to the Datanodes. If default values
+		 * are to be inserted, append them onto the data row.
+		 */
+		if (IS_PGXC_COORDINATOR && cstate->remoteCopyState->rel_loc)
+		{
+			Datum 				value = (Datum) 0;
+			bool				isnull = true;
+			RemoteCopyData 	   *rcstate = cstate->remoteCopyState;
+			AttrNumber			dist_col = rcstate->rel_loc->partAttrNum;
+
+			if (AttributeNumberIsValid(dist_col))
+			{
+				value = values[dist_col-1];
+				isnull = nulls[dist_col-1];
+			}
+
+			if (DataNodeCopyIn(cstate->line_buf.data,
+							   cstate->line_buf.len,
+							   GET_NODES(rcstate->locator, value, isnull, NULL),
+							   (PGXCNodeHandle**) getLocatorResults(rcstate->locator),
+					   		   cstate->binary))
+					ereport(ERROR,
+							(errcode(ERRCODE_CONNECTION_EXCEPTION),
+							 errmsg("Copy failed on a data node")));
+			processed++;
+		}
+		else
+		{
+#endif
 		/* And now we can form the input tuple. */
 		tuple = heap_form_tuple(tupDesc, values, nulls);
 
@@ -2803,14 +2969,16 @@ CopyFrom(CopyState cstate)
 			 * tuples inserted by an INSERT command.
 			 */
 			processed++;
-		}
 
-		/* Restore the saved ResultRelInfo */
-		if (saved_resultRelInfo)
-		{
-			resultRelInfo = saved_resultRelInfo;
-			estate->es_result_relation_info = resultRelInfo;
+			if (saved_resultRelInfo)
+			{
+				resultRelInfo = saved_resultRelInfo;
+				estate->es_result_relation_info = resultRelInfo;
+			}
 		}
+#ifdef PGXC
+		}
+#endif
 	}
 
 	/* Flush any remaining buffered tuples */
@@ -2819,6 +2987,26 @@ CopyFrom(CopyState cstate)
 							resultRelInfo, myslot, bistate,
 							nBufferedTuples, bufferedTuples,
 							firstBufferedLineNo);
+
+#ifdef XCP
+	/*
+	 * Now if line buffer contains some data that is an EOF marker. We should
+	 * send it to all the participating datanodes
+	 */
+	if (cstate->line_buf.len > 0)
+	{
+		RemoteCopyData 	   *rcstate = cstate->remoteCopyState;
+		if (DataNodeCopyIn(cstate->line_buf.data,
+						   cstate->line_buf.len,
+						   getLocatorNodeCount(rcstate->locator),
+						   (PGXCNodeHandle **) getLocatorNodeMap(rcstate->locator),
+						   cstate->binary))
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_EXCEPTION),
+						 errmsg("Copy failed on a data node")));
+
+	}
+#endif
 
 	/* Done, clean up */
 	error_context_stack = errcallback.previous;
@@ -3044,6 +3232,11 @@ BeginCopyFrom(ParseState *pstate,
 	defmap = (int *) palloc(num_phys_attrs * sizeof(int));
 	defexprs = (ExprState **) palloc(num_phys_attrs * sizeof(ExprState *));
 
+#ifdef PGXC
+	/* Output functions are required to convert default values to output form */
+	cstate->out_functions = (FmgrInfo *) palloc(num_phys_attrs * sizeof(FmgrInfo));
+#endif
+
 	for (attnum = 1; attnum <= num_phys_attrs; attnum++)
 	{
 		/* We don't need info for dropped attributes */
@@ -3069,6 +3262,42 @@ BeginCopyFrom(ParseState *pstate,
 
 			if (defexpr != NULL)
 			{
+#ifdef PGXC
+				if (IS_PGXC_COORDINATOR)
+				{
+					/*
+					 * If default expr is shippable to Datanode, don't include
+					 * default values in the data row sent to the Datanode; let
+					 * the Datanode insert the default values.
+					 */
+					Expr *planned_defexpr = expression_planner((Expr *) defexpr);
+					defexpr = expression_planner(defexpr);
+
+					if (!pgxc_is_expr_shippable(planned_defexpr, NULL))
+					{
+						Oid    out_func_oid;
+						bool   isvarlena;
+						/* Initialize expressions in copycontext. */
+						defexprs[num_defaults] = ExecInitExpr(planned_defexpr, NULL);
+						defmap[num_defaults] = attnum - 1;
+						num_defaults++;
+
+						/*
+						 * Initialize output functions needed to convert default
+						 * values into output form before appending to data row.
+						 */
+						if (cstate->binary)
+							getTypeBinaryOutputInfo(attr[attnum - 1]->atttypid,
+													&out_func_oid, &isvarlena);
+						else
+							getTypeOutputInfo(attr[attnum - 1]->atttypid,
+											  &out_func_oid, &isvarlena);
+						fmgr_info(out_func_oid, &cstate->out_functions[attnum - 1]);
+					}
+				}
+				else
+				{
+#endif /* PGXC */
 				/* Run the expression through planner */
 				defexpr = expression_planner(defexpr);
 
@@ -3092,6 +3321,9 @@ BeginCopyFrom(ParseState *pstate,
 				 */
 				if (!volatile_defexprs)
 					volatile_defexprs = contain_volatile_functions_not_nextval((Node *) defexpr);
+#ifdef PGXC
+				}
+#endif
 			}
 		}
 	}
@@ -3205,6 +3437,36 @@ BeginCopyFrom(ParseState *pstate,
 						(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 						 errmsg("invalid COPY file header (wrong length)")));
 		}
+#ifdef PGXC
+		/* This is done at the beginning of COPY FROM from Coordinator to Datanodes */
+		if (IS_PGXC_COORDINATOR)
+		{
+			RemoteCopyData *remoteCopyState = cstate->remoteCopyState;
+
+			/* Empty buffer info and send header to all the backends involved in COPY */
+			resetStringInfo(&cstate->line_buf);
+
+			enlargeStringInfo(&cstate->line_buf, 19);
+			appendBinaryStringInfo(&cstate->line_buf, BinarySignature, 11);
+			tmp = 0;
+
+			if (cstate->oids)
+				tmp |= (1 << 16);
+			tmp = htonl(tmp);
+
+			appendBinaryStringInfo(&cstate->line_buf, (char *) &tmp, 4);
+			tmp = 0;
+			tmp = htonl(tmp);
+			appendBinaryStringInfo(&cstate->line_buf, (char *) &tmp, 4);
+
+			if (DataNodeCopyInBinaryForAll(cstate->line_buf.data, 19,
+					getLocatorNodeCount(remoteCopyState->locator),
+					(PGXCNodeHandle **) getLocatorNodeMap(remoteCopyState->locator)))
+				ereport(ERROR,
+							(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
+							 errmsg("invalid COPY file header (COPY SEND)")));
+		}
+#endif
 	}
 
 	if (cstate->file_has_oids && cstate->binary)
@@ -3436,6 +3698,19 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 
 		if (!CopyGetInt16(cstate, &fld_count))
 		{
+#ifdef PGXC
+			if (IS_PGXC_COORDINATOR)
+			{
+				/* Empty buffer */
+				resetStringInfo(&cstate->line_buf);
+
+				enlargeStringInfo(&cstate->line_buf, sizeof(uint16));
+				/* Receive field count directly from Datanodes */
+				fld_count = htons(fld_count);
+				appendBinaryStringInfo(&cstate->line_buf, (char *) &fld_count, sizeof(uint16));
+			}
+#endif
+
 			/* EOF detected (end of file, or protocol-level EOF) */
 			return false;
 		}
@@ -3456,6 +3731,19 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 			 */
 			char		dummy;
 
+#ifdef PGXC
+			if (IS_PGXC_COORDINATOR)
+			{
+				/* Empty buffer */
+				resetStringInfo(&cstate->line_buf);
+
+				enlargeStringInfo(&cstate->line_buf, sizeof(uint16));
+				/* Receive field count directly from Datanodes */
+				fld_count = htons(fld_count);
+				appendBinaryStringInfo(&cstate->line_buf, (char *) &fld_count, sizeof(uint16));
+			}
+#endif
+
 			if (cstate->copy_dest != COPY_OLD_FE &&
 				CopyGetData(cstate, &dummy, 1, 1) > 0)
 				ereport(ERROR,
@@ -3469,6 +3757,23 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 					(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 					 errmsg("row field count is %d, expected %d",
 							(int) fld_count, attr_count)));
+
+#ifdef PGXC
+		if (IS_PGXC_COORDINATOR)
+		{
+			/*
+			 * Include the default value count also, because we are going to
+			 * append default values to the user-supplied attributes.
+			 */
+			int16 total_fld_count = fld_count + num_defaults;
+			/* Empty buffer */
+			resetStringInfo(&cstate->line_buf);
+
+			enlargeStringInfo(&cstate->line_buf, sizeof(uint16));
+			total_fld_count = htons(total_fld_count);
+			appendBinaryStringInfo(&cstate->line_buf, (char *) &total_fld_count, sizeof(uint16));
+		}
+#endif
 
 		if (file_has_oids)
 		{
@@ -3527,8 +3832,93 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 										 &nulls[defmap[i]]);
 	}
 
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR)
+	{
+		/* Append default values to the data-row in output format. */
+		append_defvals(values, cstate);
+	}
+#endif
+
 	return true;
 }
+
+#ifdef PGXC
+/*
+ * append_defvals:
+ * Append default values in output form onto the data-row.
+ * 1. scans the default values with the help of defmap,
+ * 2. converts each default value into its output form,
+ * 3. then appends it into cstate->defval_buf buffer.
+ * This buffer would later be appended into the final data row that is sent to
+ * the Datanodes.
+ * So for e.g., for a table :
+ * tab (id1 int, v varchar, id2 default nextval('tab_id2_seq'::regclass), id3 )
+ * with the user-supplied data  : "2 | abcd",
+ * and the COPY command such as:
+ * copy tab (id1, v) FROM '/tmp/a.txt' (delimiter '|');
+ * Here, cstate->defval_buf will be populated with something like : "| 1"
+ * and the final data row will be : "2 | abcd | 1"
+ */
+static void
+append_defvals(Datum *values, CopyState cstate)
+{
+	CopyStateData new_cstate = *cstate;
+	int i;
+
+	new_cstate.fe_msgbuf = makeStringInfo();
+
+	for (i = 0; i < cstate->num_defaults; i++)
+	{
+		int attindex = cstate->defmap[i];
+		Datum defvalue = values[attindex];
+
+		if (!cstate->binary)
+			CopySendChar(&new_cstate, new_cstate.delim[0]);
+
+		/*
+		 * For using the values in their output form, it is not sufficient
+		 * to just call its output function. The format should match
+		 * that of COPY because after all we are going to send this value as
+		 * an input data row to the Datanode using COPY FROM syntax. So we call
+		 * exactly those functions that are used to output the values in case
+		 * of COPY TO. For instace, CopyAttributeOutText() takes care of
+		 * escaping, CopySendInt32 take care of byte ordering, etc. All these
+		 * functions use cstate->fe_msgbuf to copy the data. But this field
+		 * already has the input data row. So, we need to use a separate
+		 * temporary cstate for this purpose. All the COPY options remain the
+		 * same, so new cstate will have all the fields copied from the original
+		 * cstate, except fe_msgbuf.
+		 */
+		if (cstate->binary)
+		{
+			bytea	   *outputbytes;
+
+			outputbytes = SendFunctionCall(&cstate->out_functions[attindex], defvalue);
+			CopySendInt32(&new_cstate, VARSIZE(outputbytes) - VARHDRSZ);
+			CopySendData(&new_cstate, VARDATA(outputbytes),
+						 VARSIZE(outputbytes) - VARHDRSZ);
+		}
+		else
+		{
+			char *string;
+
+			string = OutputFunctionCall(&cstate->out_functions[attindex], defvalue);
+			if (cstate->csv_mode)
+				CopyAttributeOutCSV(&new_cstate, string,
+				                    false /* don't force quote */,
+									false /* there's at least one user-supplied attribute */ );
+			else
+				CopyAttributeOutText(&new_cstate, string);
+		}
+	}
+
+	/* Append the generated default values to the user-supplied data-row */
+	appendBinaryStringInfo(&cstate->line_buf, new_cstate.fe_msgbuf->data,
+	                                          new_cstate.fe_msgbuf->len);
+}
+#endif
+
 
 /*
  * Clean up storage and release resources for COPY FROM.
@@ -3536,6 +3926,17 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 void
 EndCopyFrom(CopyState cstate)
 {
+#ifdef PGXC
+	RemoteCopyData *remoteCopyState = cstate->remoteCopyState;
+
+	/* For PGXC related COPY, free also relation location data */
+	if (IS_PGXC_COORDINATOR && remoteCopyState->rel_loc)
+	{
+		DataNodeCopyFinish(getLocatorNodeCount(remoteCopyState->locator),
+				(PGXCNodeHandle **) getLocatorNodeMap(remoteCopyState->locator));
+		FreeRemoteCopyData(remoteCopyState);
+	}
+#endif
 	/* No COPY FROM related resources except memory. */
 
 	EndCopy(cstate);
@@ -4429,12 +4830,27 @@ CopyReadBinaryAttribute(CopyState cstate,
 						bool *isnull)
 {
 	int32		fld_size;
+	int32 		nSize;
 	Datum		result;
 
 	if (!CopyGetInt32(cstate, &fld_size))
 		ereport(ERROR,
 				(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 				 errmsg("unexpected EOF in COPY data")));
+
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR)
+	{
+		/* Add field size to the data row, unless it is invalid. */
+		if (fld_size >= -1) /* -1 is valid; it means NULL value */
+		{
+			nSize = htonl(fld_size);
+			appendBinaryStringInfo(&cstate->line_buf,
+			                       (char *) &nSize, sizeof(int32));
+		}
+	}
+#endif
+
 	if (fld_size == -1)
 	{
 		*isnull = true;
@@ -4457,6 +4873,13 @@ CopyReadBinaryAttribute(CopyState cstate,
 
 	cstate->attribute_buf.len = fld_size;
 	cstate->attribute_buf.data[fld_size] = '\0';
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR)
+	{
+		/* add the binary attribute value to the data row */
+		appendBinaryStringInfo(&cstate->line_buf, cstate->attribute_buf.data, fld_size);
+	}
+#endif
 
 	/* Call the column type's binary input converter */
 	result = ReceiveFunctionCall(flinfo, &cstate->attribute_buf,
@@ -4859,3 +5282,31 @@ CreateCopyDestReceiver(void)
 
 	return (DestReceiver *) self;
 }
+
+#ifdef PGXC
+static RemoteCopyOptions *
+GetRemoteCopyOptions(CopyState cstate)
+{
+	RemoteCopyOptions *res = makeRemoteCopyOptions();
+	Assert(cstate);
+
+	/* Then fill in structure */
+	res->rco_binary = cstate->binary;
+	res->rco_oids = cstate->oids;
+	res->rco_csv_mode = cstate->csv_mode;
+	if (cstate->delim)
+		res->rco_delim = pstrdup(cstate->delim);
+	if (cstate->null_print)
+		res->rco_null_print = pstrdup(cstate->null_print);
+	if (cstate->quote)
+		res->rco_quote = pstrdup(cstate->quote);
+	if (cstate->escape)
+		res->rco_escape = pstrdup(cstate->escape);
+	if (cstate->force_quote)
+		res->rco_force_quote = list_copy(cstate->force_quote);
+	if (cstate->force_notnull)
+		res->rco_force_notnull = list_copy(cstate->force_notnull);
+
+	return res;
+}
+#endif

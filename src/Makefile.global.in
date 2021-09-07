@@ -37,6 +37,7 @@ all:
 
 # PostgreSQL version number
 VERSION = @PACKAGE_VERSION@
+XLVERSION = @PACKAGE_XC_VERSION@
 MAJORVERSION = @PG_MAJORVERSION@
 VERSION_NUM = @PG_VERSION_NUM@
 
@@ -278,11 +279,13 @@ with_gnu_ld = @with_gnu_ld@
 # to rpathdir don't work right.  So we must NOT do LDFLAGS := something,
 # meaning this has to be done first and elsewhere we must only do LDFLAGS +=
 # something.
+# PGXC_BEGIN
 ifdef PGXS
   LDFLAGS = -L$(libdir)
 else
   LDFLAGS = -L$(top_builddir)/src/port -L$(top_builddir)/src/common
 endif
+# PGXC_END
 LDFLAGS += @LDFLAGS@
 
 LDFLAGS_EX = @LDFLAGS_EX@

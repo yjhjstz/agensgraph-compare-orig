@@ -18,6 +18,7 @@
 #include <limits.h>
 #include <math.h>
 
+#include "catalog/pg_namespace.h"
 #include "access/sysattr.h"
 #include "access/tsmapi.h"
 #include "catalog/pg_class.h"
@@ -42,6 +43,10 @@
 #include "optimizer/var.h"
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
+#ifdef PGXC
+#include "nodes/makefuncs.h"
+#include "miscadmin.h"
+#endif /* PGXC */
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
@@ -656,6 +661,9 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 			 * tuplestore cannot be shared, at least without more
 			 * infrastructure to support that.
 			 */
+			return;
+
+		case RTE_REMOTE_DUMMY:
 			return;
 	}
 
@@ -1805,6 +1813,10 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	Relids		required_outer;
 	pushdown_safety_info safetyInfo;
 	double		tuple_fraction;
+	PlannerInfo *subroot;
+#ifdef XCP
+	Distribution *distribution;
+#endif
 	RelOptInfo *sub_final_rel;
 	ListCell   *lc;
 
@@ -1963,10 +1975,41 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 											 subpath->pathkeys,
 											 make_tlist_from_pathtarget(subpath->pathtarget));
 
+		if (subpath->distribution && subpath->distribution->distributionExpr)
+		{
+			ListCell *lc;
+
+			/* FIXME Could we use pathtarget directly? */
+			List *targetlist = make_tlist_from_pathtarget(subpath->pathtarget);
+
+			/*
+			 * The distribution expression from the subplan's tlist, but it should
+			 * be from the rel, need conversion.
+			 */
+			distribution = makeNode(Distribution);
+			distribution->distributionType = subpath->distribution->distributionType;
+			distribution->nodes = bms_copy(subpath->distribution->nodes);
+			distribution->restrictNodes = bms_copy(subpath->distribution->restrictNodes);
+
+			foreach(lc, targetlist)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				if (equal(tle->expr, subpath->distribution->distributionExpr))
+				{
+					distribution->distributionExpr = (Node *)
+							makeVarFromTargetEntry(rel->relid, tle);
+					break;
+				}
+			}
+		}
+		else
+			distribution = subpath->distribution;
+
 		/* Generate outer path using this subpath */
 		add_path(rel, (Path *)
 				 create_subqueryscan_path(root, rel, subpath,
-										  pathkeys, required_outer));
+										  pathkeys, required_outer,
+										  distribution));
 	}
 }
 

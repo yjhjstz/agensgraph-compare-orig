@@ -40,6 +40,11 @@
 #include "utils/regproc.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#ifdef PGXC
+#include "pgxc/execRemote.h"
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#endif
 
 
 typedef struct
@@ -930,6 +935,16 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 			{
 				RawStmt    *parsetree = lfirst_node(RawStmt, lc);
 				List	   *querytree_sublist;
+
+				Assert(IsA(parsetree, RawStmt));
+
+#ifdef PGXC
+				/* Block CTAS in SQL functions */
+				if (IsA(parsetree->stmt, CreateTableAsStmt))
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							errmsg("In XC, SQL functions cannot contain utility statements")));
+#endif
 
 				querytree_sublist = pg_analyze_and_rewrite_params(parsetree,
 																  prosrc,

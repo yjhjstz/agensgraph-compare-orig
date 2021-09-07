@@ -44,6 +44,10 @@
 #include "parser/parse_coerce.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
+#ifdef PGXC
+#include "parser/parse_utilcmd.h"
+#include "pgxc/pgxc.h"
+#endif
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -557,6 +561,48 @@ DefineIndex(Oid relationId,
 
 	(void) index_reloptions(amoptions, reloptions, true);
 
+#ifdef PGXC
+	/* Make sure we can locally enforce the index */
+	if (IS_PGXC_COORDINATOR && (stmt->primary || stmt->unique))
+	{
+		ListCell *elem;
+		bool isSafe = false;
+
+		foreach(elem, stmt->indexParams)
+		{
+			IndexElem  *key = (IndexElem *) lfirst(elem);
+
+			if (rel->rd_locator_info == NULL)
+			{
+				isSafe = true;
+				break;
+			}
+
+			if (CheckLocalIndexColumn(rel->rd_locator_info->locatorType, 
+				rel->rd_locator_info->partAttrName, key->name))
+			{
+				isSafe = true;
+				break;
+			}
+		}
+		if (!isSafe)
+		{
+			if (loose_constraints)
+			{
+				ereport(WARNING,
+					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("Unique index of partitioned table must contain the hash/modulo distribution column.")));
+				/* create index still, just that it won't be unique */
+				stmt->unique = false;
+				stmt->isconstraint = false;
+			}
+			else
+				ereport(ERROR,
+					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("Unique index of partitioned table must contain the hash/modulo distribution column.")));
+		}
+	}
+#endif
 	/*
 	 * Prepare arguments for index_create, primarily an IndexInfo structure.
 	 * Note that ii_Predicate must be in implicit-AND format.

@@ -3578,6 +3578,28 @@ getObjectDescription(const ObjectAddress *object)
 		case OCLASS_LABEL:
 			getLabelDescription(&buffer, object->objectId);
 			break;
+		
+        case OCLASS_PGXC_NODE:
+			{
+				appendStringInfo(&buffer, _("node %s"),
+								 get_pgxc_nodename(object->objectId));
+				break;
+			}
+
+		case OCLASS_PGXC_GROUP:
+			{
+				appendStringInfo(&buffer, _("node group %s"),
+								 get_pgxc_groupname(object->objectId));
+				break;
+			}
+
+		/* XL: prefix the object with 'distributed' */
+		case OCLASS_PGXC_CLASS:
+			{
+				appendStringInfoString(&buffer, _("distributed "));
+				getRelationDescription(&buffer, object->objectId);
+				break;
+			}
 
 			/*
 			 * There's intentionally no default: case here; we want the
@@ -4085,6 +4107,17 @@ getObjectTypeDescription(const ObjectAddress *object)
 
 		case OCLASS_LABEL:
 			getLabelTypeDescription(&buffer, object->objectId);
+			break;
+		case OCLASS_PGXC_CLASS:
+			appendStringInfoString(&buffer, "pgxc_class");
+			break;
+
+		case OCLASS_PGXC_NODE:
+			appendStringInfoString(&buffer, "node");
+			break;
+
+		case OCLASS_PGXC_GROUP:
+			appendStringInfoString(&buffer, "node group");
 			break;
 
 			/*
@@ -5155,6 +5188,38 @@ getObjectIdentityParts(const ObjectAddress *object,
 		case OCLASS_LABEL:
 			getLabelIdentity(&buffer, object->objectId, objname);
 			break;
+       case OCLASS_PGXC_CLASS:
+			/* 
+			 * XXX PG10MERGE: ISTM that we don't record dependencies on
+			 * pgxc_class, pgxc_node and pgxc_group. So it's not clear if we
+			 * really need corresponding OCLASS_* either. We should check this
+			 * in more detail.
+			 */
+			break;
+
+		case OCLASS_PGXC_NODE:
+			{
+				char	   *nodename;
+
+				nodename = get_pgxc_nodename(object->objectId);
+				if (objname)
+					*objname = list_make1(nodename);
+				appendStringInfoString(&buffer,
+									   quote_identifier(nodename));
+				break;
+			}
+
+		case OCLASS_PGXC_GROUP:
+			{
+				char	   *groupname;
+
+				groupname = get_pgxc_groupname(object->objectId);
+				if (objname)
+					*objname = list_make1(groupname);
+				appendStringInfoString(&buffer,
+									   quote_identifier(groupname));
+				break;
+			}
 
 			/*
 			 * There's intentionally no default: case here; we want the

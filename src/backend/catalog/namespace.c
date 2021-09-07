@@ -2841,13 +2841,22 @@ LookupNamespaceNoError(const char *nspname)
 			InvokeNamespaceSearchHook(myTempNamespace, true);
 			return myTempNamespace;
 		}
-
+#ifdef XCP
+		/*
+		 * Try to find temporary namespace created by other backend of
+		 * the same distributed session. If not found myTempNamespace will
+		 * be InvalidOid, that is correct result.
+		 */
+		FindTemporaryNamespace();
+		return myTempNamespace;
+#else
 		/*
 		 * Since this is used only for looking up existing objects, there is
 		 * no point in trying to initialize the temp namespace here; and doing
 		 * so might create problems for some callers. Just report "not found".
 		 */
 		return InvalidOid;
+#endif
 	}
 
 	return get_namespace_oid(nspname, true);
@@ -2871,6 +2880,16 @@ LookupExplicitNamespace(const char *nspname, bool missing_ok)
 	{
 		if (OidIsValid(myTempNamespace))
 			return myTempNamespace;
+
+#ifdef XCP
+		/*
+		 * Try to find temporary namespace created by other backend of
+		 * the same distributed session.
+		 */
+		FindTemporaryNamespace();
+		if (OidIsValid(myTempNamespace))
+			return myTempNamespace;
+#endif
 
 		/*
 		 * Since this is used only for looking up existing objects, there is
@@ -3833,6 +3852,16 @@ InitTempTableNamespace(void)
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 				 errmsg("cannot create temporary tables during a parallel operation")));
 
+#ifdef XCP
+	/*
+	 * In case of distributed session use MyFirstBackendId for temp objects
+	 */
+	if (OidIsValid(MyCoordId))
+		snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d",
+				 MyFirstBackendId);
+	else
+	/* fallback to default */
+#endif
 	snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d", MyBackendId);
 
 	namespaceId = get_namespace_oid(namespaceName, true);
@@ -3865,6 +3894,16 @@ InitTempTableNamespace(void)
 	 * it. (We assume there is no need to clean it out if it does exist, since
 	 * dropping a parent table should make its toast table go away.)
 	 */
+#ifdef XCP
+	/*
+	 * In case of distributed session use MyFirstBackendId for temp objects
+	 */
+	if (OidIsValid(MyCoordId))
+		snprintf(namespaceName, sizeof(namespaceName), "pg_toast_temp_%d",
+				 MyFirstBackendId);
+	else
+	/* fallback to default */
+#endif
 	snprintf(namespaceName, sizeof(namespaceName), "pg_toast_temp_%d",
 			 MyBackendId);
 
@@ -3887,6 +3926,9 @@ InitTempTableNamespace(void)
 
 	/* It should not be done already. */
 	AssertState(myTempNamespaceSubID == InvalidSubTransactionId);
+#ifdef XCP
+	if (!OidIsValid(MyCoordId))
+#endif
 	myTempNamespaceSubID = GetCurrentSubTransactionId();
 
 	baseSearchPathValid = false;	/* need to rebuild list */
@@ -3909,7 +3951,20 @@ AtEOXact_Namespace(bool isCommit, bool parallel)
 	if (myTempNamespaceSubID != InvalidSubTransactionId && !parallel)
 	{
 		if (isCommit)
+#ifdef XCP
+		{
+			/*
+			 * During backend lifetime it may be assigned to different
+			 * distributed sessions, and each of them may create temp
+			 * namespace and set a callback. That may cause memory leak.
+			 * XXX is it ever possible to remove callbacks?
+			 */
+			if (!OidIsValid(MyCoordId))
+				before_shmem_exit(RemoveTempRelationsCallback, 0);
+		}
+#else
 			before_shmem_exit(RemoveTempRelationsCallback, 0);
+#endif
 		else
 		{
 			myTempNamespace = InvalidOid;
@@ -4043,11 +4098,23 @@ RemoveTempRelationsCallback(int code, Datum arg)
 	{
 		/* Need to ensure we have a usable transaction. */
 		AbortOutOfAnyTransaction();
+#ifdef PGXC
+		/*
+		 * When a backend closes, this insures that
+		 * transaction ID taken is unique in the cluster.
+		 */
+		if (IsConnFromCoord())
+			SetForceXidFromGTM(true);
+#endif
 		StartTransactionCommand();
 
 		RemoveTempRelations(myTempNamespace);
 
 		CommitTransactionCommand();
+#ifdef PGXC
+		if (IsConnFromCoord())
+			SetForceXidFromGTM(false);
+#endif
 	}
 }
 

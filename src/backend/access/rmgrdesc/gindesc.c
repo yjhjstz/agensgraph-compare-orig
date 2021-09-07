@@ -123,7 +123,7 @@ gin_desc(StringInfo buf, XLogReaderState *record)
 					else
 					{
 						ginxlogInsertDataInternal *insertData =
-							(ginxlogInsertDataInternal *) payload;
+						(ginxlogInsertDataInternal *) payload;
 
 						appendStringInfo(buf, " pitem: %u-%u/%u",
 										 PostingItemGetBlockNumber(&insertData->newitem),

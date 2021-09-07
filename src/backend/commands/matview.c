@@ -28,9 +28,15 @@
 #include "commands/matview.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
+#ifdef PGXC
+#include "commands/vacuum.h"
+#endif
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#ifdef PGXC
+#include "nodes/makefuncs.h"
+#endif
 #include "parser/parse_relation.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
