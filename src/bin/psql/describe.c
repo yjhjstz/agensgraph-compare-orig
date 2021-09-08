@@ -26,6 +26,12 @@
 #include "settings.h"
 #include "variables.h"
 
+#ifdef PGXC
+#define LOCATOR_TYPE_REPLICATED 'R'
+#define LOCATOR_TYPE_HASH 'H'
+#define LOCATOR_TYPE_RROBIN 'N'
+#define LOCATOR_TYPE_MODULO 'M'
+#endif /* PGXC */
 
 static bool describeOneTableDetails(const char *schemaname,
 						const char *relationname,
@@ -1382,6 +1388,8 @@ describeOneTableDetails(const char *schemaname,
 	int			i;
 	char	   *view_def = NULL;
 	char	   *headers[11];
+	char	  **seq_values = NULL;
+	char	  **ptr;
 	PQExpBufferData title;
 	PQExpBufferData tmpbuf;
 	int			cols;
@@ -1765,6 +1773,10 @@ describeOneTableDetails(const char *schemaname,
 				printfPQExpBuffer(&title, _("Materialized view \"%s.%s\""),
 								  schemaname, relationname);
 			break;
+		case RELKIND_SEQUENCE:
+			printfPQExpBuffer(&title, _("Sequence \"%s.%s\""),
+							  schemaname, relationname);
+			break;
 		case RELKIND_INDEX:
 			if (tableinfo.relpersistence == 'u')
 				printfPQExpBuffer(&title, _("Unlogged index \"%s.%s\""),
@@ -1822,6 +1834,9 @@ describeOneTableDetails(const char *schemaname,
 		headers[cols++] = gettext_noop("Default");
 		show_column_details = true;
 	}
+
+	if (tableinfo.relkind == RELKIND_SEQUENCE)
+		headers[cols++] = gettext_noop("Value");
 
 	if (tableinfo.relkind == RELKIND_INDEX)
 		headers[cols++] = gettext_noop("Definition");
@@ -1903,6 +1918,10 @@ describeOneTableDetails(const char *schemaname,
 
 			printTableAddCell(&cont, default_str, false, false);
 		}
+
+		/* Value: for sequences only */
+		if (tableinfo.relkind == RELKIND_SEQUENCE)
+			printTableAddCell(&cont, seq_values[i], false, false);
 
 		/* Expression for index column */
 		if (tableinfo.relkind == RELKIND_INDEX)
@@ -2112,6 +2131,55 @@ describeOneTableDetails(const char *schemaname,
 								  tableinfo.tablespace, true);
 		}
 
+		PQclear(result);
+	}
+	else if (tableinfo.relkind == RELKIND_SEQUENCE)
+	{
+		/* Footer information about a sequence */
+		PGresult   *result = NULL;
+
+		/* Get the column that owns this sequence */
+		printfPQExpBuffer(&buf, "SELECT pg_catalog.quote_ident(nspname) || '.' ||"
+						  "\n   pg_catalog.quote_ident(relname) || '.' ||"
+						  "\n   pg_catalog.quote_ident(attname),"
+						  "\n   d.deptype"
+						  "\nFROM pg_catalog.pg_class c"
+						  "\nINNER JOIN pg_catalog.pg_depend d ON c.oid=d.refobjid"
+						  "\nINNER JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace"
+						  "\nINNER JOIN pg_catalog.pg_attribute a ON ("
+						  "\n a.attrelid=c.oid AND"
+						  "\n a.attnum=d.refobjsubid)"
+						  "\nWHERE d.classid='pg_catalog.pg_class'::pg_catalog.regclass"
+						  "\n AND d.refclassid='pg_catalog.pg_class'::pg_catalog.regclass"
+						  "\n AND d.objid='%s'"
+						  "\n AND d.deptype IN ('a', 'i')",
+						  oid);
+
+		result = PSQLexec(buf.data);
+		if (!result)
+			goto error_return;
+		else if (PQntuples(result) == 1)
+		{
+			switch (PQgetvalue(result, 0, 1)[0])
+			{
+				case 'a':
+					printfPQExpBuffer(&buf, _("Owned by: %s"),
+									  PQgetvalue(result, 0, 0));
+					printTableAddFooter(&cont, buf.data);
+					break;
+				case 'i':
+					printfPQExpBuffer(&buf, _("Sequence for identity column: %s"),
+									  PQgetvalue(result, 0, 0));
+					printTableAddFooter(&cont, buf.data);
+					break;
+			}
+		}
+
+		/*
+		 * If we get no rows back, don't show anything (obviously). We should
+		 * never get more than one row back, but if we do, just ignore it and
+		 * don't print anything.
+		 */
 		PQclear(result);
 	}
 	else if (tableinfo.relkind == RELKIND_RELATION ||
@@ -2973,6 +3041,57 @@ describeOneTableDetails(const char *schemaname,
 		/* Tablespace info */
 		add_tablespace_footer(&cont, tableinfo.relkind, tableinfo.tablespace,
 							  true);
+#ifdef PGXC
+		/* print distribution information */
+		if (verbose && (tableinfo.relkind == 'r' || tableinfo.relkind == 'p'))
+		{
+			printfPQExpBuffer(&buf,
+						"SELECT CASE pclocatortype \n"
+							"WHEN '%c' THEN 'ROUND ROBIN' \n"
+							"WHEN '%c' THEN 'REPLICATION' \n"
+							"WHEN '%c' THEN 'HASH' \n"
+							"WHEN '%c' THEN 'MODULO' END || CASE pcattnum WHEN 0 THEN '' ELSE '('|| a.attname ||')' END as distype \n"
+							", CASE array_length(nodeoids, 1) \n"
+								"WHEN nc.dn_cn THEN 'ALL DATANODES' \n"
+								"ELSE array_to_string(ARRAY( \n"
+									"SELECT node_name FROM pg_catalog.pgxc_node \n"
+									"WHERE oid in (SELECT unnest(nodeoids) FROM pg_catalog.pgxc_class WHERE pcrelid = '%s') \n"
+								"), ', ') END as loc_nodes \n"
+						"FROM pg_catalog.pg_attribute a right join pg_catalog.pgxc_class c on a.attrelid = c.pcrelid and a.attnum = c.pcattnum, \n"
+						"(SELECT count(*) AS dn_cn FROM pg_catalog.pgxc_node WHERE node_type = 'D') as nc \n"
+						"WHERE pcrelid = '%s'"
+					, LOCATOR_TYPE_RROBIN
+					, LOCATOR_TYPE_REPLICATED
+					, LOCATOR_TYPE_HASH
+					, LOCATOR_TYPE_MODULO
+					, oid
+					, oid);
+			result = PSQLexec(buf.data);
+
+			if (!result)
+				goto error_return;
+			else
+				tuples = PQntuples(result);
+
+			if (tuples > 0)
+			{
+				const char *dist_by = _("Distribute By");
+				const char *loc_nodes = _("Location Nodes");
+
+				/* Print distribution method */
+				printfPQExpBuffer(&buf, "%s: %s", dist_by,
+									PQgetvalue(result, 0, 0));
+				printTableAddFooter(&cont, buf.data);
+
+				/* Print location nodes info */
+				printfPQExpBuffer(&buf, "%s: %s", loc_nodes,
+									PQgetvalue(result, 0, 1));
+				printTableAddFooter(&cont, buf.data);
+
+				PQclear(result);
+			}
+		}
+#endif /* PGXC */
 	}
 
 	/* reloptions, if verbose */
@@ -2997,6 +3116,13 @@ error_return:
 	termPQExpBuffer(&buf);
 	termPQExpBuffer(&title);
 	termPQExpBuffer(&tmpbuf);
+
+	if (seq_values)
+	{
+		for (ptr = seq_values; *ptr; ptr++)
+			free(*ptr);
+		free(seq_values);
+	}
 
 	if (view_def)
 		free(view_def);

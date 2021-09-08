@@ -444,6 +444,7 @@ extern char *shared_preload_libraries_string;
 extern char *local_preload_libraries_string;
 
 extern void CreateDataDirLockFile(bool amPostmaster);
+extern void ForgetLockFiles(void);
 extern void CreateSocketLockFile(const char *socketfile, bool amPostmaster,
 					 const char *socketDir);
 extern void TouchSocketLockFiles(void);

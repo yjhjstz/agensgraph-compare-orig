@@ -274,6 +274,8 @@ extern DijkstraPath *create_dijkstra_path(PlannerInfo *root, RelOptInfo *rel,
 										  Node *end_id, Node *edge_id,
 										  Node *source, Node *target,
 										  Node *limit);
+extern Path *create_remotesubplan_path(PlannerInfo *root, Path *subpath,
+									   Distribution *distribution);
 
 /*
  * prototypes for relnode.c

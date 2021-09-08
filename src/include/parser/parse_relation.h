@@ -131,5 +131,8 @@ extern bool isQueryUsingTempRelation(Query *query);
 
 extern void check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
 								 int location);
+#ifdef PGXC
+extern int	specialAttNum(const char *attname);
+#endif
 
 #endif							/* PARSE_RELATION_H */

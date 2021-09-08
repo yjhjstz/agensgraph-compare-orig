@@ -938,6 +938,21 @@ static const SchemaQuery Query_for_list_of_statistics = {
 "   FROM pg_catalog.pg_prepared_statements "\
 "  WHERE substring(pg_catalog.quote_ident(name),1,%d)='%s'"
 
+#define Query_for_list_of_available_nodenames \
+" SELECT NODE_NAME "\
+"  FROM PGXC_NODE"
+#define Query_for_list_of_available_coordinators \
+" SELECT NODE_NAME "\
+"  FROM PGXC_NODE" \
+"   WHERE NODE_TYPE = 'C'"
+#define Query_for_list_of_available_datanodes \
+" SELECT NODE_NAME "\
+"  FROM PGXC_NODE" \
+"   WHERE NODE_TYPE = 'D'"
+#define Query_for_list_of_available_nodegroup_names \
+" SELECT GROUP_NAME "\
+"  FROM PGXC_GROUP"
+
 #define Query_for_list_of_event_triggers \
 " SELECT pg_catalog.quote_ident(evtname) "\
 "   FROM pg_catalog.pg_event_trigger "\
@@ -1003,6 +1018,7 @@ typedef struct
 static const pgsql_thing_t words_after_create[] = {
 	{"ACCESS METHOD", NULL, NULL, THING_NO_ALTER},
 	{"AGGREGATE", NULL, &Query_for_list_of_aggregates},
+	{"BARRIER", NULL, NULL},	/* Comes barrier name next, so skip it */
 	{"CAST", NULL, NULL},		/* Casts have complex structures for names, so
 								 * skip it */
 	{"COLLATION", "SELECT pg_catalog.quote_ident(collname) FROM pg_catalog.pg_collation WHERE collencoding IN (-1, pg_catalog.pg_char_to_encoding(pg_catalog.getdatabaseencoding())) AND substring(pg_catalog.quote_ident(collname),1,%d)='%s'"},
@@ -1026,6 +1042,8 @@ static const pgsql_thing_t words_after_create[] = {
 	{"INDEX", NULL, &Query_for_list_of_indexes},
 	{"LANGUAGE", Query_for_list_of_languages},
 	{"LARGE OBJECT", NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
+	{"NODE", Query_for_list_of_available_nodenames},
+	{"NODE GROUP", Query_for_list_of_available_nodegroup_names},
 	{"MATERIALIZED VIEW", NULL, &Query_for_list_of_matviews},
 	{"OPERATOR", NULL, NULL},	/* Querying for this is probably not such a
 								 * good idea. */
@@ -1407,9 +1425,9 @@ psql_completion(const char *text, int start, int end)
 
 	/* Known command-starting keywords. */
 	static const char *const sql_commands[] = {
-		"ABORT", "ALTER", "ANALYZE", "BEGIN", "CHECKPOINT", "CLOSE", "CLUSTER",
+		"ABORT", "ALTER", "ANALYZE", "BEGIN", "CHECKPOINT", "CLEAN CONNECTION", "CLOSE", "CLUSTER",
 		"COMMENT", "COMMIT", "COPY", "CREATE", "DEALLOCATE", "DECLARE",
-		"DELETE FROM", "DISCARD", "DO", "DROP", "END", "EXECUTE", "EXPLAIN",
+		"DELETE FROM", "DISCARD", "DO", "DROP", "END", "EXECUTE", "EXECUTE DIRECT", "EXPLAIN",
 		"FETCH", "GRANT", "IMPORT", "INSERT", "LISTEN", "LOAD", "LOCK",
 		"MOVE", "NOTIFY", "PREPARE",
 		"REASSIGN", "REFRESH MATERIALIZED VIEW", "REINDEX", "RELEASE",
@@ -1531,6 +1549,18 @@ psql_completion(const char *text, int start, int end)
 		else
 			COMPLETE_WITH_FUNCTION_ARG(prev2_wd);
 	}
+
+	/* ALTER NODE */
+	else if (Matches2("ALTER", "NODE"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_nodenames);
+	else if (Matches2("ALTER", "NODE"))
+		COMPLETE_WITH_CONST("WITH");
+	else if (Matches3("ALTER", "NODE", "WITH"))
+		COMPLETE_WITH_CONST("(");
+	else if (Matches3("ALTER", "NODE", "WITH"))
+
+		COMPLETE_WITH_LIST5("TYPE", "HOST", "PORT", "PRIMARY", "PREFERRED");
+
 	/* ALTER PUBLICATION <name> */
 	else if (Matches3("ALTER", "PUBLICATION", MatchAny))
 		COMPLETE_WITH_LIST5("ADD TABLE", "DROP TABLE", "OWNER TO", "RENAME TO", "SET");
@@ -2139,6 +2169,24 @@ psql_completion(const char *text, int start, int end)
 /* RELEASE SAVEPOINT */
 	else if (Matches1("RELEASE"))
 		COMPLETE_WITH_CONST("SAVEPOINT");
+
+/* CLEAN CONNECTION */
+	else if (Matches2("CLEAN", "CONNECTION"))
+		COMPLETE_WITH_CONST("TO");
+	else if (Matches3("CLEAN", "CONNECTION", "TO"))
+	/* CLEAN CONNECTION TO */
+		COMPLETE_WITH_LIST3("ALL", "COORDINATOR", "NODE");
+	else if (Matches4("CLEAN", "CONNECTION", "TO", "ALL"))
+		COMPLETE_WITH_CONST("FORCE");
+	else if (Matches4("CLEAN", "CONNECTION", "TO", "COORDINATOR"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_coordinators);
+	else if (Matches4("CLEAN", "CONNECTION", "TO", "NODE"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_datanodes);
+	else if (Matches2("TO", "USER"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_roles);
+	else if (Matches2("FOR", "DATABASE"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_databases);
+
 /* ROLLBACK */
 	else if (Matches1("ROLLBACK"))
 		COMPLETE_WITH_LIST4("WORK", "TRANSACTION", "TO SAVEPOINT", "PREPARED");
@@ -2336,6 +2384,18 @@ psql_completion(const char *text, int start, int end)
 			 !TailMatches6("POLICY", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny) &&
 			 !TailMatches4("FOR", MatchAny, MatchAny, MatchAny))
 		COMPLETE_WITH_CONST("(");
+
+/* CREATE NODE */
+	else if (Matches2("CREATE", "NODE"))
+		COMPLETE_WITH_CONST("WITH");
+	else if (Matches3("CREATE", "NODE", "WITH"))
+		COMPLETE_WITH_CONST("(");
+	else if (Matches4("CREATE", "NODE", "WITH", "("))
+		COMPLETE_WITH_LIST5("TYPE", "HOST", "PORT", "PRIMARY", "PREFERRED");
+
+/* CREATE NODEGROUP */
+	else if (Matches3("CREATE", "NODE", "GROUP"))
+		COMPLETE_WITH_CONST("WITH");
 
 	/* CREATE POLICY */
 	/* Complete "CREATE POLICY <name> ON" */
@@ -2720,6 +2780,20 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH_CONST("BY");
 	else if (Matches3("DROP", "OWNED", "BY"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_roles);
+
+	/* DROP NODE */
+	else if (Matches2("DROP", "NODE"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_nodenames);	/* Should test this code if complesion is not confused with DROP NODE GROUP */
+
+	/* DROP NODE GROUP */
+	else if (Matches3("DROP", "NODE", "GROUP"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_nodegroup_names);
+
+	/* EXECUTE DIRECT */
+	else if (Matches2("EXECUTE", "DIRECT"))
+		COMPLETE_WITH_CONST("ON");
+	else if (Matches3("EXECUTE", "DIRECT", "ON"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_nodenames);
 
 	/* DROP TEXT SEARCH */
 	else if (Matches3("DROP", "TEXT", "SEARCH"))

@@ -47,6 +47,10 @@ CommitTsLock						39
 ReplicationOriginLock				40
 MultiXactTruncationLock				41
 OldSnapshotTimeMapLock				42
-BackendRandomLock					43
-LogicalRepWorkerLock				44
-CLogTruncationLock					45
+BarrierLock							43
+NodeTableLock						44
+SQueuesLock							45
+ClusterMonitorLock					46
+BackendRandomLock					47
+LogicalRepWorkerLock				48
+CLogTruncationLock					49

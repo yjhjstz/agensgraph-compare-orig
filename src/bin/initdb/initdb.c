@@ -141,7 +141,10 @@ static bool sync_only = false;
 static bool show_setting = false;
 static bool data_checksums = false;
 static char *xlog_dir = "";
-
+#ifdef PGXC
+/* Name of the PGXC node initialized */
+static char *nodename = NULL;
+#endif
 
 /* internal vars */
 static const char *progname;
@@ -193,7 +196,11 @@ static char *authwarning = NULL;
  * (no quoting to worry about).
  */
 static const char *boot_options = "-F";
-static const char *backend_options = "--single -F -O -j -c search_path=pg_catalog -c exit_on_error=true";
+static const char *backend_options = "--single "
+#ifdef PGXC
+	                                 "--localxid "
+#endif
+									 "-F -O -j -c search_path=pg_catalog -c exit_on_error=true";
 
 static const char *const subdirs[] = {
 	"global",
@@ -248,6 +255,9 @@ static void setup_auth(FILE *cmdfd);
 static void get_su_pwd(void);
 static void setup_depend(FILE *cmdfd);
 static void setup_sysviews(FILE *cmdfd);
+#ifdef PGXC
+static void setup_nodeself(FILE *cmdfd);
+#endif
 static void setup_description(FILE *cmdfd);
 static void setup_collation(FILE *cmdfd);
 static void setup_conversion(FILE *cmdfd);
@@ -1080,6 +1090,13 @@ setup_config(void)
 	conflines = replace_token(conflines,
 							  "#default_text_search_config = 'pg_catalog.simple'",
 							  repltok);
+#ifdef PGXC
+	/* Add Postgres-XC node name to configuration file */
+	snprintf(repltok, sizeof(repltok),
+			 "pgxc_node_name = '%s'",
+			 escape_quotes(nodename));
+	conflines = replace_token(conflines, "#pgxc_node_name = ''", repltok);
+#endif
 
 	default_timezone = select_default_timezone(share_path);
 	if (default_timezone)
@@ -1576,6 +1593,22 @@ setup_sysviews(FILE *cmdfd)
 	free(sysviews_setup);
 }
 
+#ifdef PGXC
+/*
+ * set up Postgres-XC cluster node catalog data with node self
+ * which is the node currently initialized.
+ */
+static void
+setup_nodeself(FILE *cmdfd)
+{
+	fputs(_("creating cluster information ... "), stdout);
+	fflush(stdout);
+
+	PG_CMD_PRINTF1("CREATE NODE %s WITH (type = 'coordinator');\n",
+				   nodename);
+}
+#endif
+
 /*
  * load description data
  */
@@ -1604,7 +1637,11 @@ setup_description(FILE *cmdfd)
 	PG_CMD_PRINTF1("COPY tmp_pg_shdescription FROM E'%s';\n\n",
 				   escape_quotes(shdesc_file));
 
+#ifdef XCP
+	PG_CMD_PUTS("INSERT INTO pg_catalog.pg_shdescription "
+#else
 	PG_CMD_PUTS("INSERT INTO pg_shdescription "
+#endif
 				" SELECT t.objoid, c.oid, t.description "
 				"  FROM tmp_pg_shdescription t, pg_class c "
 				"   WHERE c.relname = t.classname;\n\n");
@@ -1921,6 +1958,36 @@ load_plpgsql(FILE *cmdfd)
 	PG_CMD_PUTS("CREATE EXTENSION plpgsql;\n\n");
 }
 
+#ifdef PGXC
+/*
+ * Vacuum Freeze given database. This is required to prevent xid wraparound
+ * issues when a node is brought up with xids out-of-sync w.r.t. gtm xids.
+ */
+static void
+vacuumfreeze(char *dbname)
+{
+	PG_CMD_DECL;
+	char msg[MAXPGPATH];
+	snprintf(msg, sizeof(msg), "freezing database %s ... ", dbname);
+
+	fputs(_(msg), stdout);
+	fflush(stdout);
+
+	snprintf(cmd, sizeof(cmd),
+			 "\"%s\" %s %s >%s",
+			 backend_exec, backend_options, dbname,
+			 DEVNULL);
+
+	PG_CMD_OPEN;
+
+	PG_CMD_PUTS("VACUUM FREEZE;\n");
+
+	PG_CMD_CLOSE;
+
+	check_ok();
+}
+#endif /* PGXC */
+
 /*
  * clean everything up in template1
  */
@@ -1944,8 +2011,13 @@ make_template0(FILE *cmdfd)
 		/*
 		 * We use the OID of template0 to determine lastsysoid
 		 */
+#ifdef XCP
+		"UPDATE pg_catalog.pg_database SET datlastsysoid = "
+		"    (SELECT oid FROM pg_catalog.pg_database "
+#else
 		"UPDATE pg_database SET datlastsysoid = "
 		"    (SELECT oid FROM pg_database "
+#endif
 		"    WHERE datname = 'template0');\n\n",
 
 		/*
@@ -1961,7 +2033,8 @@ make_template0(FILE *cmdfd)
 		/*
 		 * Finally vacuum to clean up dead rows in pg_database
 		 */
-		"VACUUM pg_database;\n\n",
+		"VACUUM pg_catalog.pg_database;\n\n",
+
 		NULL
 	};
 
@@ -2272,12 +2345,15 @@ usage(const char *progname)
 {
 	printf(_("%s initializes a PostgreSQL database cluster.\n\n"), progname);
 	printf(_("Usage:\n"));
-	printf(_("  %s [OPTION]... [DATADIR]\n"), progname);
+	printf(_("  %s [OPTION]... [DATADIR] [NODENAME]\n"), progname);
 	printf(_("\nOptions:\n"));
 	printf(_("  -A, --auth=METHOD         default authentication method for local connections\n"));
 	printf(_("      --auth-host=METHOD    default authentication method for local TCP/IP connections\n"));
 	printf(_("      --auth-local=METHOD   default authentication method for local-socket connections\n"));
 	printf(_(" [-D, --pgdata=]DATADIR     location for this database cluster\n"));
+#ifdef PGXC
+	printf(_("      --nodename=NODENAME   name of Postgres-XL node initialized\n"));
+#endif
 	printf(_("  -E, --encoding=ENCODING   set default encoding for new databases\n"));
 	printf(_("      --locale=LOCALE       set default locale for new databases\n"));
 	printf(_("      --lc-collate=, --lc-ctype=, --lc-messages=LOCALE\n"
@@ -2928,6 +3004,10 @@ initialize_data_directory(void)
 
 	setup_sysviews(cmdfd);
 
+#ifdef PGXC
+	/* Initialize catalog information about the node self */
+	setup_nodeself(cmdfd);
+#endif
 	setup_description(cmdfd);
 
 	setup_collation(cmdfd);
@@ -2986,6 +3066,9 @@ main(int argc, char *argv[])
 		{"sync-only", no_argument, NULL, 'S'},
 		{"waldir", required_argument, NULL, 'X'},
 		{"data-checksums", no_argument, NULL, 'k'},
+#ifdef PGXC
+		{"nodename", required_argument, NULL, 12},
+#endif
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3118,6 +3201,11 @@ main(int argc, char *argv[])
 			case 'X':
 				xlog_dir = pg_strdup(optarg);
 				break;
+#ifdef PGXC
+			case 12:
+				nodename = pg_strdup(optarg);
+				break;
+#endif
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
@@ -3171,6 +3259,16 @@ main(int argc, char *argv[])
 		fprintf(stderr, _("%s: password prompt and password file cannot be specified together\n"), progname);
 		exit(1);
 	}
+
+#ifdef PGXC
+	if (!nodename)
+	{
+		fprintf(stderr, _("%s: Postgres-XL node name is mandatory\n"), progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+#endif
 
 	check_authmethod_unspecified(&authmethodlocal);
 	check_authmethod_unspecified(&authmethodhost);
@@ -3233,6 +3331,12 @@ main(int argc, char *argv[])
 	else
 		printf(_("\nSync to disk skipped.\nThe data directory might become corrupt if the operating system crashes.\n"));
 
+#ifdef PGXC
+	vacuumfreeze("template0");
+	vacuumfreeze("template1");
+	vacuumfreeze("postgres");
+#endif
+
 	if (authwarning != NULL)
 		fprintf(stderr, "%s", authwarning);
 
@@ -3259,9 +3363,27 @@ main(int argc, char *argv[])
 	/* translator: This is a placeholder in a shell command. */
 	appendPQExpBuffer(start_db_cmd, " -l %s start", _("logfile"));
 
+
+#ifdef PGXC
+	printf(_("\nSuccess.\n"));
+	{
+		char *pgxc_ctl_silent = getenv("PGXC_CTL_SILENT");
+		if (!pgxc_ctl_silent || !strlen(pgxc_ctl_silent))
+		{
+			printf(_("\nSuccess. You can now start the database server of the Postgres-XL coordinator using:\n\n"
+						"    %s -Z coordinator\n\n"
+						"or\n"
+						" You can now start the database server of the Postgres-XL datanode using:\n\n"
+						"    %s -Z datanode\n\n"),
+					start_db_cmd->data,
+					start_db_cmd->data);
+		}
+	}
+#else
 	printf(_("\nSuccess. You can now start the database server using:\n\n"
 			 "    %s\n\n"),
 		   start_db_cmd->data);
+#endif
 
 	destroyPQExpBuffer(start_db_cmd);
 

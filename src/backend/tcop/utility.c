@@ -1673,6 +1673,8 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 		case T_ClusterStmt:
 			/* we choose to allow this during "read only" transactions */
 			PreventCommandDuringRecovery("CLUSTER");
+			if (((ClusterStmt *) parsetree)->relation == NULL)
+				PreventTransactionChain(isTopLevel, "CLUSTER");
 			/* forbidden in parallel mode due to CommandIsReadOnly */
 			cluster((ClusterStmt *) parsetree, isTopLevel);
 			break;
@@ -1971,7 +1973,16 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 				DisableIndexCommand(stmt);
 				break;
 			}
-
+		case T_AlterNodeStmt:
+		case T_CreateNodeStmt:
+		case T_DropNodeStmt:
+		case T_CreateGroupStmt:
+		case T_DropGroupStmt:
+		case T_RemoteQuery:
+		case T_BarrierStmt:
+		case T_PauseClusterStmt:
+		case T_CleanConnStmt:
+			break;
 		default:
 			/* All other statement types have event trigger support */
 			ProcessUtilitySlow(pstate, pstmt, queryString,

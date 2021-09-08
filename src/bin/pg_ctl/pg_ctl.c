@@ -119,6 +119,9 @@ static pid_t postmasterPID = -1;
 #define postmasterProcess shutdownHandles[1]
 #endif
 
+#ifdef PGXC
+static char *pgxcCommand = NULL;
+#endif
 
 static void write_stderr(const char *fmt,...) pg_attribute_printf(1, 2);
 static void do_advice(void);
@@ -484,12 +487,23 @@ start_postmaster(void)
 	 * has the same PID as the current child process.
 	 */
 	if (log_file != NULL)
+#ifdef PGXC
+		snprintf(cmd, MAXPGPATH, "exec \"%s\" %s %s%s < \"%s\" >> \"%s\" 2>&1",
+				exec_path, pgxcCommand, pgdata_opt, post_opts,
+				DEVNULL, log_file);
+#else
 		snprintf(cmd, MAXPGPATH, "exec \"%s\" %s%s < \"%s\" >> \"%s\" 2>&1",
 				 exec_path, pgdata_opt, post_opts,
 				 DEVNULL, log_file);
+#endif
 	else
+#ifdef PGXC
+		snprintf(cmd, MAXPGPATH, "exec \"%s\" %s %s%s < \"%s\" 2>&1",
+				exec_path, pgxcCommand, pgdata_opt, post_opts, DEVNULL);
+#else
 		snprintf(cmd, MAXPGPATH, "exec \"%s\" %s%s < \"%s\" 2>&1",
 				 exec_path, pgdata_opt, post_opts, DEVNULL);
+#endif
 
 	(void) execl("/bin/sh", "/bin/sh", "-c", cmd, (char *) NULL);
 
@@ -2014,10 +2028,10 @@ do_help(void)
 	printf(_("%s is a utility to initialize, start, stop, or control a PostgreSQL server.\n\n"), progname);
 	printf(_("Usage:\n"));
 	printf(_("  %s init[db] [-D DATADIR] [-s] [-o OPTIONS]\n"), progname);
-	printf(_("  %s start    [-D DATADIR] [-l FILENAME] [-W] [-t SECS] [-s]\n"
+	printf(_("  %s start    [-D DATADIR] [-Z NODE-TYPE] [-l FILENAME] [-W] [-t SECS] [-s]\n"
 			 "                  [-o OPTIONS] [-p PATH] [-c]\n"), progname);
 	printf(_("  %s stop     [-D DATADIR] [-m SHUTDOWN-MODE] [-W] [-t SECS] [-s]\n"), progname);
-	printf(_("  %s restart  [-D DATADIR] [-m SHUTDOWN-MODE] [-W] [-t SECS] [-s]\n"
+	printf(_("  %s restart  [-D DATADIR] [-Z NODE-TYPE] [-m SHUTDOWN-MODE] [-W] [-t SECS] [-s]\n"
 			 "                  [-o OPTIONS] [-c]\n"), progname);
 	printf(_("  %s reload   [-D DATADIR] [-s]\n"), progname);
 	printf(_("  %s status   [-D DATADIR]\n"), progname);
@@ -2037,6 +2051,7 @@ do_help(void)
 	printf(_("  -s, --silent           only print errors, no informational messages\n"));
 	printf(_("  -t, --timeout=SECS     seconds to wait when using -w option\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
+	printf(_("  -Z NODE-TYPE           can be \"coordinator\" or \"datanode\" (Postgres-XL)\n"));
 	printf(_("  -w, --wait             wait until operation completes (default)\n"));
 	printf(_("  -W, --no-wait          do not wait until operation completes\n"));
 	printf(_("  -?, --help             show this help, then exit\n"));
@@ -2075,7 +2090,11 @@ do_help(void)
 	printf(_("  demand     start service on demand\n"));
 #endif
 
+#ifdef PGXC
+	printf(_("\nReport bugs to <postgres-xc-bugs@lists.sourceforge.net>.\n"));
+#else
 	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
+#endif
 }
 
 
@@ -2323,7 +2342,7 @@ main(int argc, char **argv)
 	/* process command-line options */
 	while (optind < argc)
 	{
-		while ((c = getopt_long(argc, argv, "cD:e:l:m:N:o:p:P:sS:t:U:wW",
+		while ((c = getopt_long(argc, argv, "cD:e:l:m:N:o:p:P:sS:t:U:wWZ:",
 								long_options, &option_index)) != -1)
 		{
 			switch (c)
@@ -2376,6 +2395,15 @@ main(int argc, char **argv)
 				case 'P':
 					register_password = pg_strdup(optarg);
 					break;
+#ifdef PGXC
+				case 'Z':
+					if (strcmp(optarg, "coordinator") == 0)
+						pgxcCommand = strdup("--coordinator");
+					else if (strcmp(optarg, "datanode") == 0)
+						pgxcCommand = strdup("--datanode");
+					else if (strcmp(optarg, "restoremode") == 0)
+						pgxcCommand = strdup("--restoremode");
+#endif
 				case 's':
 					silent_mode = true;
 					break;
@@ -2476,6 +2504,18 @@ main(int argc, char **argv)
 		do_advice();
 		exit(1);
 	}
+
+#ifdef PGXC
+	/* stop command does not need to have Coordinator or Datanode options */
+	if ((ctl_command == START_COMMAND || ctl_command == RESTART_COMMAND)
+		&& !pgxcCommand)
+	{
+		write_stderr(_("%s: Coordinator or Datanode option not specified (-Z)\n"),
+					progname);
+		do_advice();
+		exit(1);
+	}
+#endif
 
 	/* Note we put any -D switch into the env var above */
 	pg_config = getenv("PGDATA");
