@@ -1,1 +1,0 @@
-/home/work/agensgraph-compare-orig/src/backend/catalog/pg_rewrite_d.h

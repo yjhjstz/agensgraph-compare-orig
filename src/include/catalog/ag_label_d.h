@@ -1,1 +1,0 @@
-/home/work/agensgraph-compare-orig/src/backend/catalog/ag_label_d.h
