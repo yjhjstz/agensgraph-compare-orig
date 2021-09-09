@@ -84,9 +84,16 @@ static void outChar(StringInfo str, char c);
 #define WRITE_UINT_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
 
+#ifdef XCP
+/* Only allow output OIDs in not portable mode */
+#define WRITE_OID_FIELD(fldname) \
+	(AssertMacro(!portable_output), \
+	 appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname))
+#else
 /* Write an OID field (don't hard-wire assumption that OID is same as uint) */
 #define WRITE_OID_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
+#endif
 
 /* Write a long-integer field */
 #define WRITE_LONG_FIELD(fldname) \
@@ -1221,7 +1228,7 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 	for (i = 0; i < node->partNumCols; i++)
 		appendStringInfo(str, " %d", node->partColIdx[i]);
 
-	appendStringInfoString(str, " :partOperations");
+	appendStringInfoString(str, " :partOperators");
 	for (i = 0; i < node->partNumCols; i++)
 #ifdef XCP
 		if (portable_output)
@@ -1257,7 +1264,7 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 	for (i = 0; i < node->ordNumCols; i++)
 		appendStringInfo(str, " %d", node->ordColIdx[i]);
 
-	appendStringInfoString(str, " :ordOperations");
+	appendStringInfoString(str, " :ordOperators");
 	for (i = 0; i < node->ordNumCols; i++)
 #ifdef XCP
 		if (portable_output)
@@ -2998,6 +3005,7 @@ _outJoinPathInfo(StringInfo str, const JoinPath *node)
 	WRITE_NODE_FIELD(outerjoinpath);
 	WRITE_NODE_FIELD(innerjoinpath);
 	WRITE_NODE_FIELD(joinrestrictinfo);
+	WRITE_NODE_FIELD(movedrestrictinfo);
 	WRITE_INT_FIELD(minhops);
 	WRITE_INT_FIELD(maxhops);
 }
@@ -4398,7 +4406,6 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 	switch (node->rtekind)
 	{
 		case RTE_RELATION:
-			WRITE_OID_FIELD(relid);
 			WRITE_CHAR_FIELD(relkind);
 #ifdef XCP
 			if (portable_output)
@@ -5561,6 +5568,9 @@ outNode(StringInfo str, const void *obj)
 			case T_SQLValueFunction:
 				_outSQLValueFunction(str, obj);
 				break;
+			case T_NextValueExpr:
+				_outNextValueExpr(str, obj);
+				break;
 			case T_XmlExpr:
 				_outXmlExpr(str, obj);
 				break;
@@ -5581,9 +5591,6 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_CurrentOfExpr:
 				_outCurrentOfExpr(str, obj);
-				break;
-			case T_NextValueExpr:
-				_outNextValueExpr(str, obj);
 				break;
 			case T_InferenceElem:
 				_outInferenceElem(str, obj);

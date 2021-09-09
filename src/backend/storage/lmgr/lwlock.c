@@ -86,12 +86,15 @@
 #include "storage/proc.h"
 #include "storage/proclist.h"
 #include "storage/spin.h"
+#ifdef XCP
+#include "pgxc/nodemgr.h"
+#include "pgxc/squeue.h"
+#endif
 #include "utils/memutils.h"
 
 #ifdef LWLOCK_STATS
 #include "utils/hsearch.h"
 #endif
-
 
 /* We use the ShmemLock spinlock to protect LWLockCounter */
 extern slock_t *ShmemLock;
@@ -494,7 +497,9 @@ RegisterLWLockTranches(void)
 
 	if (LWLockTrancheArray == NULL)
 	{
-		LWLockTranchesAllocated = 64;
+		LWLockTranchesAllocated = 128; /* XXX PG10MERGE: Not sure why 64 is
+										  hardcoded in the PG10 branch. That
+										  causes assertion failure */
 		LWLockTrancheArray = (char **)
 			MemoryContextAllocZero(TopMemoryContext,
 								   LWLockTranchesAllocated * sizeof(char *));

@@ -24,7 +24,12 @@
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#ifdef PGXC
+#include "pgxc/nodemgr.h"
+#include "postmaster/clustermon.h"
+#endif
 #include "postmaster/autovacuum.h"
+#include "postmaster/clustermon.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
@@ -44,6 +49,11 @@
 #include "storage/procsignal.h"
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
+#ifdef XCP
+#include "pgxc/pgxc.h"
+#include "pgxc/squeue.h"
+#include "pgxc/pause.h"
+#endif
 #include "utils/backend_random.h"
 #include "utils/snapmgr.h"
 
@@ -144,14 +154,29 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, ReplicationOriginShmemSize());
 		size = add_size(size, WalSndShmemSize());
 		size = add_size(size, WalRcvShmemSize());
+#ifdef XCP
+		if (IS_PGXC_DATANODE)
+			size = add_size(size, SharedQueueShmemSize());
+		if (IS_PGXC_COORDINATOR)
+			size = add_size(size, ClusterLockShmemSize());
+		size = add_size(size, ClusterMonitorShmemSize());
+#endif
 		size = add_size(size, ApplyLauncherShmemSize());
 		size = add_size(size, SnapMgrShmemSize());
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
+#ifdef PGXC
+		size = add_size(size, NodeTablesShmemSize());
+#endif
+
 		size = add_size(size, BackendRandomShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
+#endif
+
+#ifdef USE_MODULE_MSGIDS
+		size = add_size(size, MsgModuleShmemSize());
 #endif
 
 		/* freeze the addin request size and include it */
@@ -262,6 +287,17 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	WalRcvShmemInit();
 	ApplyLauncherShmemInit();
 
+#ifdef XCP
+	/*
+	 * Set up distributed executor's shared queues
+	 */
+	if (IS_PGXC_DATANODE)
+		SharedQueuesInit();
+	if (IS_PGXC_COORDINATOR)
+		ClusterLockShmemInit();
+	ClusterMonitorShmemInit();
+#endif
+
 	/*
 	 * Set up other modules that need some shared memory space
 	 */
@@ -271,6 +307,11 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	AsyncShmemInit();
 	BackendRandomShmemInit();
 
+#ifdef PGXC
+	NodeTablesShmemInit();
+#endif
+
+
 #ifdef EXEC_BACKEND
 
 	/*
@@ -278,6 +319,10 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	 */
 	if (!IsUnderPostmaster)
 		ShmemBackendArrayAllocation();
+#endif
+
+#ifdef USE_MODULE_MSGIDS
+	MsgModuleShmemInit();
 #endif
 
 	/* Initialize dynamic shared memory facilities. */

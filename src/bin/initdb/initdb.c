@@ -2364,7 +2364,7 @@ usage(const char *progname)
 	printf(_("      --pwfile=FILE         read password for the new superuser from file\n"));
 	printf(_("  -T, --text-search-config=CFG\n"
 			 "                            default text search configuration\n"));
-	printf(_("  -U, --username=NAME       database superuser name\n"));
+	printf(_("  -U, --usernals me=NAME       database superuser name\n"));
 	printf(_("  -W, --pwprompt            prompt for a password for the new superuser\n"));
 	printf(_("  -X, --waldir=WALDIR       location for the write-ahead log directory\n"));
 	printf(_("\nLess commonly used options:\n"));
@@ -2996,7 +2996,6 @@ initialize_data_directory(void)
 	setup_auth(cmdfd);
 
 	setup_depend(cmdfd);
-
 	/*
 	 * Note that no objects created after setup_depend() will be "pinned".
 	 * They are all droppable at the whim of the DBA.
