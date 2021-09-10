@@ -374,11 +374,11 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
 		AddWaitEventToSet(set, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
 						  NULL, NULL);
 
-	if (wakeEvents & WL_SOCKET_MASK)
+	if (wakeEvents & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE))
 	{
 		int			ev;
 
-		ev = wakeEvents & WL_SOCKET_MASK;
+		ev = wakeEvents & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE);
 		AddWaitEventToSet(set, ev, sock, NULL, NULL);
 	}
 
@@ -390,7 +390,8 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
 	{
 		ret |= event.events & (WL_LATCH_SET |
 							   WL_POSTMASTER_DEATH |
-							   WL_SOCKET_MASK);
+							   WL_SOCKET_READABLE |
+							   WL_SOCKET_WRITEABLE);
 	}
 
 	FreeWaitEventSet(set);
@@ -687,7 +688,8 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 	}
 
 	/* waiting for socket readiness without a socket indicates a bug */
-	if (fd == PGINVALID_SOCKET && (events & WL_SOCKET_MASK))
+	if (fd == PGINVALID_SOCKET &&
+		(events & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE)))
 		elog(ERROR, "cannot wait on socket event without a socket");
 
 	event = &set->events[set->nevents];
@@ -1333,18 +1335,6 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		}
 	}
 
-	/* Reset any wait events that need it */
-	for (cur_event = set->events;
-		 cur_event < (set->events + set->nevents);
-		 cur_event++)
-	{
-		if (cur_event->reset)
-		{
-			WaitEventAdjustWin32(set, cur_event);
-			cur_event->reset = false;
-		}
-	}
-
 	/*
 	 * Sleep.
 	 *
@@ -1410,7 +1400,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			returned_events++;
 		}
 	}
-	else if (cur_event->events & WL_SOCKET_MASK)
+	else if (cur_event->events & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE))
 	{
 		WSANETWORKEVENTS resEvents;
 		HANDLE		handle = set->handles[cur_event->pos + 1];
@@ -1447,16 +1437,13 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			/* writeable */
 			occurred_events->events |= WL_SOCKET_WRITEABLE;
 		}
-		if ((cur_event->events & WL_SOCKET_CONNECTED) &&
-			(resEvents.lNetworkEvents & FD_CONNECT))
-		{
-			/* connected */
-			occurred_events->events |= WL_SOCKET_CONNECTED;
-		}
 		if (resEvents.lNetworkEvents & FD_CLOSE)
 		{
-			/* EOF/error, so signal all caller-requested socket flags */
-			occurred_events->events |= (cur_event->events & WL_SOCKET_MASK);
+			/* EOF */
+			if (cur_event->events & WL_SOCKET_READABLE)
+				occurred_events->events |= WL_SOCKET_READABLE;
+			if (cur_event->events & WL_SOCKET_WRITEABLE)
+				occurred_events->events |= WL_SOCKET_WRITEABLE;
 		}
 
 		if (occurred_events->events != 0)
