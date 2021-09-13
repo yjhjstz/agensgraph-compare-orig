@@ -90,7 +90,10 @@ Oid
 GraphCreate(CreateGraphStmt *stmt, const char *queryString,
 			int stmt_location, int stmt_len)
 {
+
 	const char *graphName = stmt->graphname;
+	ereport(LOG, (errmsg("graph \"%s\" createing",
+							graphName)));
 	CreateSchemaStmt *schemaStmt;
 	Oid			schemaoid;
 	Datum		values[Natts_ag_graph];
@@ -133,7 +136,7 @@ GraphCreate(CreateGraphStmt *stmt, const char *queryString,
 	schemaStmt->if_not_exists = stmt->if_not_exists;
 	schemaStmt->schemaElts = NIL;
 
-	schemaoid = CreateSchemaCommand(schemaStmt, queryString, false,
+	schemaoid = CreateSchemaCommand(schemaStmt, queryString, true,
 									stmt_location, stmt_len);
 
 	/* initialize nulls and values */

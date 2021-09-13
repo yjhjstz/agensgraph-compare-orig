@@ -43,6 +43,11 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#endif
+
 static ObjectAddress DefineLabel(CreateStmt *stmt, char labkind,
 								 const char *queryString);
 static void GetSuperOids(List *supers, char labkind, List **supOids);
@@ -51,9 +56,10 @@ static void SetMaxStatisticsTarget(Oid laboid);
 
 /* See ProcessUtilitySlow() case T_CreateSchemaStmt */
 void
-CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString,
+CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString, bool sentToRemote,
 				   int stmt_location, int stmt_len)
 {
+	elog(INFO, "CreateGraphCommand");
 	Oid			graphid;
 	List	   *parsetree_list;
 	ListCell   *parsetree_item;
@@ -65,6 +71,16 @@ CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString,
 	CommandCounterIncrement();
 
 	parsetree_list = transformCreateGraphStmt(stmt);
+
+#ifdef PGXC
+	/*
+	 * Add a RemoteQuery node for a query at top level on a remote Coordinator,
+	 * if not done already.
+	 */
+	if (!sentToRemote)
+		parsetree_list = AddRemoteQueryNode(parsetree_list, queryString,
+											EXEC_ON_ALL_NODES);
+#endif
 
 	foreach(parsetree_item, parsetree_list)
 	{
@@ -78,15 +94,22 @@ CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString,
 		wrapper->stmt_location = stmt_location;
 		wrapper->stmt_len = stmt_len;
 
+		elog(INFO, " node type: %d",
+					 (int) nodeTag(stmt));
+
 		ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,
-					   NULL, NULL, None_Receiver, false, NULL);
+					   NULL, NULL, None_Receiver, 
+#ifdef PGXC
+					   true,
+#endif /* PGXC */
+					   NULL);
 
 		CommandCounterIncrement();
 	}
 
-	if (graph_path == NULL || strcmp(graph_path, "") == 0)
-		SetConfigOption("graph_path", stmt->graphname,
-						PGC_USERSET, PGC_S_SESSION);
+	// if (graph_path == NULL || strcmp(graph_path, "") == 0)
+	// 	SetConfigOption("graph_path", stmt->graphname,
+	// 					PGC_USERSET, PGC_S_SESSION);
 }
 
 void

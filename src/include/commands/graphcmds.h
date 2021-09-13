@@ -12,7 +12,7 @@
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
 
-extern void CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString,
+extern void CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString, bool sentToRemote,
 							   int stmt_location, int stmt_len);
 extern void RemoveGraphById(Oid graphid);
 extern ObjectAddress RenameGraph(const char *oldname, const char *newname);

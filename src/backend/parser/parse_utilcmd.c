@@ -4578,18 +4578,20 @@ transformCreateGraphStmt(CreateGraphStmt *stmt)
 					   makeDefElem("cycle", (Node *) makeInteger(TRUE), -1));
 	labseq->ownerId = InvalidOid;
 	labseq->if_not_exists = false;
+	labseq->is_serial = false;
 
-	vertex = makeNode(CreateLabelStmt);
-	vertex->labelKind = LABEL_VERTEX;
-	vertex->relation = makeRangeVar(stmt->graphname, AG_VERTEX, -1);
-	vertex->inhRelations = NIL;
+	// vertex = makeNode(CreateLabelStmt);
+	// vertex->labelKind = LABEL_VERTEX;
+	// vertex->relation = makeRangeVar(stmt->graphname, AG_VERTEX, -1);
+	// vertex->inhRelations = NIL;
 
-	edge = makeNode(CreateLabelStmt);
-	edge->labelKind = LABEL_EDGE;
-	edge->relation = makeRangeVar(stmt->graphname, AG_EDGE, -1);
-	edge->inhRelations = NIL;
+	// edge = makeNode(CreateLabelStmt);
+	// edge->labelKind = LABEL_EDGE;
+	// edge->relation = makeRangeVar(stmt->graphname, AG_EDGE, -1);
+	// edge->inhRelations = NIL;
 
-	return list_make3(labseq, vertex, edge);
+	//return list_make3(labseq, vertex, edge);
+	return list_make1(labseq);
 }
 
 /*

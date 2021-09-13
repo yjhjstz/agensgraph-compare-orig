@@ -799,6 +799,8 @@ ProcessUtilityPre(PlannedStmt *pstmt,
 		case T_CreateSeqStmt:
 		case T_AlterSeqStmt:
 		case T_CreateTableAsStmt:
+		case T_CreateLabelStmt:
+		case T_CreateGraphStmt:
 			break;
 
 		case T_RefreshMatViewStmt:
@@ -975,6 +977,8 @@ ProcessUtilityPost(PlannedStmt *pstmt,
 		case T_AlterSubscriptionStmt:
 		case T_DropSubscriptionStmt:
 		case T_AlterCollationStmt:
+		case T_CreateGraphStmt:
+		case T_CreateLabelStmt:
 			break;
 
 		case T_CreateTableSpaceStmt:
@@ -2817,6 +2821,7 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_CreateGraphStmt:
 				CreateGraphCommand((CreateGraphStmt *) parsetree, queryString,
+									sentToRemote,
 									pstmt->stmt_location, pstmt->stmt_len);
 				commandCollected = true;
 				break;
