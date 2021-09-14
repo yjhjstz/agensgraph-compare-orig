@@ -2828,6 +2828,7 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_CreateLabelStmt:
 				CreateLabelCommand((CreateLabelStmt *) parsetree, queryString,
+									sentToRemote,
 								   pstmt->stmt_location, pstmt->stmt_len,
 								   params);
 				/* stashed internally */

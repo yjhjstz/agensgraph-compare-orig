@@ -888,8 +888,6 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 			flags |= FD_READ;
 		if (event->events & WL_SOCKET_WRITEABLE)
 			flags |= FD_WRITE;
-		if (event->events & WL_SOCKET_CONNECTED)
-			flags |= FD_CONNECT;
 
 		if (*handle == WSA_INVALID_EVENT)
 		{

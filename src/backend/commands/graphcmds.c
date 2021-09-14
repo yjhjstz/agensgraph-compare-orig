@@ -59,7 +59,6 @@ void
 CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString, bool sentToRemote,
 				   int stmt_location, int stmt_len)
 {
-	elog(INFO, "CreateGraphCommand");
 	Oid			graphid;
 	List	   *parsetree_list;
 	ListCell   *parsetree_item;
@@ -185,9 +184,10 @@ RenameGraph(const char *oldname, const char *newname)
 
 /* See ProcessUtilitySlow() case T_CreateStmt */
 void
-CreateLabelCommand(CreateLabelStmt *labelStmt, const char *queryString,
+CreateLabelCommand(CreateLabelStmt *labelStmt, const char *queryString, bool sentToRemote,
 				   int stmt_location, int stmt_len, ParamListInfo params)
 {
+	elog(INFO, "CreateLabelCommand");
 	char		labkind;
 	List	   *stmts;
 	ListCell   *l;
@@ -198,6 +198,16 @@ CreateLabelCommand(CreateLabelStmt *labelStmt, const char *queryString,
 		labkind = LABEL_KIND_EDGE;
 
 	stmts = transformCreateLabelStmt(labelStmt, queryString);
+
+#ifdef PGXC
+	/*
+	 * Add a RemoteQuery node for a query at top level on a remote Coordinator,
+	 * if not done already.
+	 */
+	if (!sentToRemote)
+		stmts = AddRemoteQueryNode(stmts, queryString,
+											EXEC_ON_ALL_NODES);
+#endif
 	foreach(l, stmts)
 	{
 		Node *stmt = (Node *) lfirst(l);
@@ -223,7 +233,7 @@ CreateLabelCommand(CreateLabelStmt *labelStmt, const char *queryString,
 			wrapper->stmt_len = stmt_len;
 
 			ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,
-						   params, NULL, None_Receiver, false, NULL);
+						   params, NULL, None_Receiver, true, NULL);
 		}
 
 		CommandCounterIncrement();

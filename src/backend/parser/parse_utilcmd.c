@@ -4590,7 +4590,7 @@ transformCreateGraphStmt(CreateGraphStmt *stmt)
 	// edge->relation = makeRangeVar(stmt->graphname, AG_EDGE, -1);
 	// edge->inhRelations = NIL;
 
-	//return list_make3(labseq, vertex, edge);
+	// return list_make3(labseq, vertex, edge);
 	return list_make1(labseq);
 }
 
@@ -4697,7 +4697,8 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 			char *name;
 
 			name = (labelStmt->labelKind == LABEL_VERTEX ? AG_VERTEX : AG_EDGE);
-			stmt->inhRelations = list_make1(makeRangeVar(graphname, name, -1));
+			//stmt->inhRelations = list_make1(makeRangeVar(graphname, name, -1));
+			stmt->inhRelations = NIL;
 		}
 		/* user requested inherit option */
 		else
@@ -4763,7 +4764,7 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 														  : "CREATE ELABEL";
 	cxt.relation = stmt->relation;
 	cxt.rel = NULL;
-	cxt.inhRelations = stmt->inhRelations;
+	cxt.inhRelations = NIL;
 	cxt.isforeign = false;
 	cxt.isalter = false;
 	cxt.hasoids = false;
@@ -4775,9 +4776,30 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 	cxt.blist = NIL;
 	cxt.alist = NIL;
 	cxt.pkey = NULL;
+#ifdef PGXC
+	cxt.fallback_source = FBS_NONE;
+	cxt.fallback_dist_cols = NIL;
+	//cxt.distributeby = stmt->distributeby;
+	cxt.subcluster = stmt->subcluster;
+#endif
 	cxt.ispartitioned = stmt->partspec != NULL;
 	cxt.partbound = stmt->partbound;
 	cxt.ofType = (stmt->ofTypename != NULL);
+
+	if (IS_PGXC_COORDINATOR)
+	{
+		stmt->distributeby = makeNode(DistributeBy);
+		cxt.distributeby = stmt->distributeby;
+		stmt->distributeby->disttype = DISTTYPE_HASH;
+
+		if (labelStmt->labelKind == LABEL_VERTEX) {
+			elog(INFO , "rel1 id %s", qname);
+			stmt->distributeby->colname = AG_ELEM_LOCAL_ID;
+		} else {
+			elog(INFO , "rel2 start %s", qname);
+			stmt->distributeby->colname = AG_START_ID;
+		}
+	}
 
 	foreach(elements, stmt->tableElts)
 	{
@@ -4799,23 +4821,7 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 		}
 	}
 
-	/* make descriptions for label and table */
-	if (strcmp(stmt->relation->relname, AG_VERTEX) == 0)
-	{
-		snprintf(descbuf, sizeof(descbuf), "base vertex label of graph %s",
-				 graphname);
-		labdesc = pstrdup(descbuf);
-		comment = makeComment(OBJECT_VLABEL, stmt->relation, labdesc);
-		cxt.alist = lappend(cxt.alist, comment);
-	}
-	else if (strcmp(labelStmt->relation->relname, AG_EDGE) == 0)
-	{
-		snprintf(descbuf, sizeof(descbuf), "base edge label of graph %s",
-				 graphname);
-		labdesc = pstrdup(descbuf);
-		comment = makeComment(OBJECT_ELABEL, stmt->relation, labdesc);
-		cxt.alist = lappend(cxt.alist, comment);
-	}
+
 	qname = quote_qualified_identifier(graphname, stmt->relation->relname);
 	snprintf(descbuf, sizeof(descbuf), "base table for graph label %s", qname);
 	tabdesc = pstrdup(descbuf);
@@ -4849,7 +4855,64 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 	result = lappend(cxt.blist, stmt);
 	result = list_concat(result, cxt.alist);
 	result = list_concat(result, save_alist);
+#ifdef PGXC
+	/*
+	 * If the user did not specify any distribution clause and there is no
+	 * inherits clause, try and use PK or unique index
+	 */
+	if (IS_PGXC_COORDINATOR && !stmt->distributeby)
+	{
+		/*
+		 * In restore-mode, the distribution clause should either be derived
+		 * from the parent table or it must have been included in the table
+		 * schema dump. Otherwise we risk deriving a different distribution
+		 * strategy when dump is loaded on a new node.
+		 */
+		//Assert(!isRestoreMode);
 
+		/* always apply suggested subcluster */
+		stmt->subcluster = copyObject(cxt.subcluster);
+		if (cxt.distributeby)
+		{
+			stmt->distributeby = copyObject(cxt.distributeby);
+			return result;
+		}
+		/*
+		 * If constraints require replicated table set it replicated
+		 */
+		stmt->distributeby = makeNode(DistributeBy);
+		if (cxt.fallback_source == FBS_REPLICATE)
+		{
+			stmt->distributeby->disttype = DISTTYPE_REPLICATION;
+			stmt->distributeby->colname = NULL;
+		}
+		/*
+		 * If there are columns suitable for hash distribution distribute on
+		 * first of them.
+		 */
+		else if (cxt.fallback_dist_cols)
+		{
+			stmt->distributeby->disttype = DISTTYPE_HASH;
+			stmt->distributeby->colname = (char *) linitial(cxt.fallback_dist_cols);
+		}
+		/*
+		 * If none of above applies distribute by round robin
+		 */
+		else
+		{
+			//stmt->distributeby->disttype = DISTTYPE_ROUNDROBIN;
+			stmt->distributeby->disttype = DISTTYPE_HASH;
+			
+			if (labelStmt->labelKind == LABEL_VERTEX) {
+				elog(INFO , "rel1 %s", qname);
+				stmt->distributeby->colname = AG_ELEM_LOCAL_ID;
+			} else {
+				elog(INFO , "rel2 %s", qname);
+				stmt->distributeby->colname = AG_START_ID;
+			}
+		}
+	}
+#endif
 	return result;
 }
 

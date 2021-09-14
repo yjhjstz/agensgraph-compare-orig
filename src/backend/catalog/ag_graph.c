@@ -27,7 +27,7 @@
 #include "utils/syscache.h"
 
 /* a global variable for the GUC variable */
-char *graph_path = NULL;
+char *graph_path = "NULL";
 bool enableGraphDML = false;
 
 /* check_hook: validate new graph_path value */
@@ -92,8 +92,8 @@ GraphCreate(CreateGraphStmt *stmt, const char *queryString,
 {
 
 	const char *graphName = stmt->graphname;
-	ereport(LOG, (errmsg("graph \"%s\" createing",
-							graphName)));
+	// ereport(LOG, (errmsg("graph \"%s\" createing",
+	// 						graphName)));
 	CreateSchemaStmt *schemaStmt;
 	Oid			schemaoid;
 	Datum		values[Natts_ag_graph];

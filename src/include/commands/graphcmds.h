@@ -18,7 +18,7 @@ extern void RemoveGraphById(Oid graphid);
 extern ObjectAddress RenameGraph(const char *oldname, const char *newname);
 
 extern void CreateLabelCommand(CreateLabelStmt *labelStmt,
-							   const char *queryString, int stmt_location,
+							   const char *queryString, bool sentToRemote, int stmt_location,
 							   int stmt_len, ParamListInfo params);
 extern ObjectAddress RenameLabel(RenameStmt *stmt);
 extern void CheckLabelType(ObjectType type, Oid laboid, const char *command);

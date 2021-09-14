@@ -752,6 +752,8 @@ hash_func_ptr(Oid dataType)
 			return hash_numeric;
 		case UUIDOID:
 			return uuid_hash;
+		case GRAPHIDOID:
+			return graphid_locid;
 		default:
 			return NULL;
 	}

@@ -37,6 +37,7 @@
 #include "utils/nabstime.h"
 #include  "pgxc/locator.h"
 #endif
+#include "utils/graph.h"
 
 /*
  * Datatype-specific hash functions.
@@ -86,6 +87,7 @@ hashint8(PG_FUNCTION_ARGS)
 
 	return hash_uint32(lohalf);
 }
+
 
 Datum
 hashoid(PG_FUNCTION_ARGS)
@@ -557,6 +559,11 @@ compute_hash(Oid type, Datum value, char locator)
 			if (locator == LOCATOR_TYPE_HASH)
 				return DirectFunctionCall1(hashint8, value);
 			return tmp64;
+		case GRAPHIDOID:
+			tmp64 = DatumGetGraphid(value);
+			if (locator == LOCATOR_TYPE_HASH)
+				return DirectFunctionCall1(graphid_locid, value);
+			return tmp64;
 		case INT2OID:
 			tmp16 = DatumGetInt16(value);
 			if (locator == LOCATOR_TYPE_HASH)
@@ -654,6 +661,10 @@ get_compute_hash_function(Oid type, char locator)
 		case INT8OID:
 			if (locator == LOCATOR_TYPE_HASH)
 				return "hashint8";
+			return NULL;
+		case GRAPHIDOID:
+			if (locator == LOCATOR_TYPE_HASH)
+				return "graphid_locid";
 			return NULL;
 		case INT2OID:
 			if (locator == LOCATOR_TYPE_HASH)
