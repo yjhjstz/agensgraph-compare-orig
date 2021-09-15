@@ -738,6 +738,7 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 Query *
 transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 {
+	elog(DEBUG2, "transformCypherCreateClause %s", pstate->p_sourcetext);
 	CypherCreateClause *detail;
 	CypherPath *cpath;
 	Query	   *qry;
@@ -786,7 +787,12 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 													 FVR_DONT_RESOLVE);
 	markTargetListOrigins(pstate, qry->targetList);
 
+	// add by young
+	markRTEs(pstate, pstate->p_target_labels);
+
 	qry->rtable = pstate->p_rtable;
+	qry->resultRelation = 1; //list_length(pstate->p_rtable); person & knows
+
 	qry->jointree = makeFromExpr(pstate->p_joinlist, pstate->p_resolved_qual);
 
 	qry->hasSubLinks = pstate->p_hasSubLinks;

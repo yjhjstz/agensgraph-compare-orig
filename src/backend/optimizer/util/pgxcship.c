@@ -116,7 +116,7 @@ static bool pgxc_query_has_distcolgrouping(Query *query);
 /* Manipulation of shippability reason */
 static bool pgxc_test_shippability_reason(Shippability_context *context,
 										  ShippabilityStat reason);
-static void pgxc_set_shippability_reason(Shippability_context *context,
+static inline void pgxc_set_shippability_reason(Shippability_context *context,
 										 ShippabilityStat reason);
 static void pgxc_reset_shippability_reason(Shippability_context *context,
 										   ShippabilityStat reason);
@@ -147,9 +147,9 @@ static ExecNodes *pgxc_FQS_datanodes_for_rtr(Index varno, Query *query);
  * Set the given reason in Shippability_context indicating why the query can not be
  * shipped directly to remote nodes.
  */
-static void
+static inline void
 pgxc_set_shippability_reason(Shippability_context *context, ShippabilityStat reason)
-{
+{	
 	context->sc_shippability = bms_add_member(context->sc_shippability, reason);
 }
 
@@ -250,8 +250,10 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids)
 {
 	List		*query_rtable = query->rtable;
 
-	if (!node)
+	if (!node) {
+		elog(DEBUG2, "node null");
 		return NULL;
+	}
 
 	switch(nodeTag(node))
 	{
@@ -408,6 +410,7 @@ pgxc_FQS_find_datanodes(Query *query)
 	 */
 	exec_nodes = pgxc_FQS_find_datanodes_recurse((Node *)query->jointree,
 														query, &relids);
+	elog(DEBUG2, "exec_nodes %p", exec_nodes);
 	bms_free(relids);
 	relids = NULL;
 
@@ -474,6 +477,7 @@ pgxc_FQS_get_relation_nodes(RangeTblEntry *rte, Index varno, Query *query)
 			break;
 
 		case CMD_INSERT:
+		case CMD_GRAPHWRITE:
 			rel_access = RELATION_ACCESS_INSERT;
 			break;
 
@@ -485,8 +489,10 @@ pgxc_FQS_get_relation_nodes(RangeTblEntry *rte, Index varno, Query *query)
 
 	rel_loc_info = GetRelationLocInfo(rte->relid);
 	/* If we don't know about the distribution of relation, bail out */
-	if (!rel_loc_info)
+	if (!rel_loc_info) {
+		elog(DEBUG2, "rel_loc_info null");
 		return NULL;
+	}
 
 	/*
 	 * Find out the datanodes to execute this query on.
@@ -544,6 +550,7 @@ retry_pools:
 			return NULL;
 		}
 	}
+	// todo
 	if (list_length(query->rtable) == 1)
 		rel_exec_nodes = GetRelationNodesByQuals(rte->relid, rel_loc_info, varno,
 												 query->jointree->quals, rel_access);
@@ -551,14 +558,17 @@ retry_pools:
 		rel_exec_nodes = GetRelationNodes(rel_loc_info, (Datum) 0,
 										  true, rel_access);
 
-	if (!rel_exec_nodes)
+	if (!rel_exec_nodes) {
+		elog(DEBUG2, "rel_exec_nodes null");
 		return NULL;
+	}	
 
 	if (rel_access == RELATION_ACCESS_INSERT &&
 			 IsRelationDistributedByValue(rel_loc_info))
 	{
 		ListCell *lc;
 		TargetEntry *tle;
+		char* info = GetRelationDistribColumn(rel_loc_info);
 		/*
 		 * If the INSERT is happening on a table distributed by value of a
 		 * column, find out the
@@ -570,15 +580,21 @@ retry_pools:
 		foreach(lc, query->targetList)
 		{
 			tle = (TargetEntry *) lfirst(lc);
-
+			elog(DEBUG2, "cmp %s, %s", tle->resname, info);
 			if (tle->resjunk)
 				continue;
-			if (strcmp(tle->resname, GetRelationDistribColumn(rel_loc_info)) == 0)
+			if (query->hasGraphwriteClause) {
+				break;
+			}
+			if (strcmp(tle->resname, info) == 0)
 				break;
 		}
 		/* Not found, bail out */
-		if (!lc)
+		if (!lc) {
+			elog(DEBUG2, "bail out");
 			return NULL;
+
+		}	
 
 		Assert(tle);
 		/* We found the TargetEntry for the partition column */
@@ -659,6 +675,11 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 	{
 		/* Constants are always shippable */
 		case T_Const:
+		case T_CypherMapExpr:
+		case T_CypherTypeCast:
+		case T_CypherListCompExpr:
+		case T_CypherListCompVar:
+		case T_CypherAccessExpr:
 			pgxc_set_exprtype_shippability(exprType(node), sc_context);
 			break;
 
@@ -682,15 +703,22 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			if (tle->expr)
 			{
 				char typtype = get_typtype(exprType((Node *)tle->expr));
-				if (!typtype || typtype == TYPTYPE_PSEUDO)
+				if (!typtype || typtype == TYPTYPE_PSEUDO) {
 					pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+					ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSHIPPABLE_EXPR)));
+				}
+				
+
 			}
 		}
 		break;
 
 		case T_SortGroupClause:
-			if (sc_context->sc_for_expr)
+			if (sc_context->sc_for_expr) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
+			}
+			
 			break;
 
 		case T_CoerceViaIO:
@@ -708,8 +736,11 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * the datanode, those won't be accepted. Hence such casts are
 			 * unshippable. Since it will be shown as an explicit cast.
 			 */
-			if (!can_coerce_type(1, &input_type, &output_type, cc))
+			if (!can_coerce_type(1, &input_type, &output_type, cc)){
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
+			}
+			
 			pgxc_set_exprtype_shippability(exprType(node), sc_context);
 		}
 		break;
@@ -770,6 +801,7 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * for now default values can not be shipped to the Datanodes
 			 */
 			pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
+			ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
 			pgxc_set_exprtype_shippability(exprType(node), sc_context);
 			break;
 
@@ -790,8 +822,11 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 		{
 			Param *param = (Param *)node;
 			/* PGXCTODO: Can we handle internally generated parameters? */
-			if (param->paramkind != PARAM_EXTERN)
+			if (param->paramkind != PARAM_EXTERN) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
+			}
+			
 			pgxc_set_exprtype_shippability(exprType(node), sc_context);
 		}
 		break;
@@ -822,6 +857,7 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * datanode.
 			 */
 			pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+			ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
 			break;
 
 		case T_Aggref:
@@ -865,16 +901,24 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * functions to the Datanode. We need a better way to see what
 			 * can be shipped to the Datanode and what can not be.
 			 */
-			if (!pgxc_is_func_shippable(funcexpr->funcid))
+			if (!pgxc_is_func_shippable(funcexpr->funcid)) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+				ereport(LOG, (errmsg("set shipped funcid \"%d\" ", funcexpr->funcid)));
+				// if (Log_error_verbosity >= PGERROR_VERBOSE) 
+				// 	memset(0, 0 , 100);
+			}
+			
 
 			/*
 			 * If this is a stand alone expression and the function returns a
 			 * set of rows, we need to handle it along with the final result of
 			 * other expressions. So, it can not be shippable.
 			 */
-			if (funcexpr->funcretset && sc_context->sc_for_expr)
+			if (funcexpr->funcretset && sc_context->sc_for_expr){
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSHIPPABLE_EXPR)));
+			}
+			
 
 			pgxc_set_exprtype_shippability(exprType(node), sc_context);
 		}
@@ -893,8 +937,10 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			Oid		opfuncid = OidIsValid(op_expr->opfuncid) ?
 				op_expr->opfuncid : get_opcode(op_expr->opno);
 			if (!OidIsValid(opfuncid) ||
-				!pgxc_is_func_shippable(opfuncid))
+				!pgxc_is_func_shippable(opfuncid)) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSHIPPABLE_EXPR)));
+			}
 
 			pgxc_set_exprtype_shippability(exprType(node), sc_context);
 		}
@@ -910,8 +956,11 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			Oid		opfuncid = OidIsValid(sao_expr->opfuncid) ?
 				sao_expr->opfuncid : get_opcode(sao_expr->opno);
 			if (!OidIsValid(opfuncid) ||
-				!pgxc_is_func_shippable(opfuncid))
+				!pgxc_is_func_shippable(opfuncid)) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSHIPPABLE_EXPR)));
+			}
+				
 		}
 		break;
 
@@ -940,6 +989,7 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			/* A stand-alone expression containing Query is not shippable */
 			if (sc_context->sc_for_expr)
 			{
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSHIPPABLE_EXPR)));
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
 				break;
 			}
@@ -976,9 +1026,13 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * pgxc_FQS_get_relation_nodes appropriately.
 			 * For now DMLs with single rtable entry are candidates for FQS
 			 */
-			if (query->commandType != CMD_SELECT && list_length(query->rtable) > 1)
+			if (query->commandType != CMD_SELECT && list_length(query->rtable) > 1 \
+				&& query->hasGraphwriteClause == false)
 				pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
-
+			// todo(yang)
+			if (query->hasGraphwriteClause) {
+				//
+			}
 			/*
 			 * In following conditions query is shippable when there is only one
 			 * Datanode involved
@@ -1065,8 +1119,11 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * not SQL representation for such quals.
 			 */
 			if (sc_context->sc_query->commandType == CMD_INSERT &&
-				((FromExpr *)node)->quals)
+				((FromExpr *)node)->quals) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
+				ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
+			}
+				
 
 		}
 		break;
@@ -1368,8 +1425,10 @@ pgxc_is_query_shippable(Query *query, int query_level)
 	 * If the planner was not able to find the Datanodes to the execute the
 	 * query, the query is not completely shippable. So, return NULL
 	 */
-	if (!exec_nodes)
+	if (!exec_nodes) {
+		elog(DEBUG2, "exec_nodes null");
 		return NULL;
+	}
 
 	/* Copy the shippability reasons. We modify the copy for easier handling.
 	 * The original can be saved away */
@@ -1388,8 +1447,10 @@ pgxc_is_query_shippable(Query *query, int query_level)
 		 * can't tell how many nodes the query will be executed on, hence treat
 		 * that as multiple nodes.
 		 */
-		if (list_length(exec_nodes->nodeList) != 1)
+		if (list_length(exec_nodes->nodeList) != 1) {
+			elog(DEBUG2, "nodeList 2");
 			canShip = false;
+		}
 
 		/* We handled the reason here, reset it */
 		shippability = bms_del_member(shippability, SS_NEED_SINGLENODE);
@@ -1402,8 +1463,10 @@ pgxc_is_query_shippable(Query *query, int query_level)
 	shippability = bms_del_member(shippability, SS_HAS_AGG_EXPR);
 
 	/* Can not ship the query for some reason */
-	if (!bms_is_empty(shippability))
+	if (!bms_is_empty(shippability)){
+		elog(DEBUG2, "bms_is_empty 2");
 		canShip = false;
+	}
 
 	/* Always keep this at the end before checking canShip and return */
 	if (!canShip && exec_nodes)
@@ -1413,6 +1476,8 @@ pgxc_is_query_shippable(Query *query, int query_level)
 
 	bms_free(shippability);
 	shippability = NULL;
+
+	elog(DEBUG2, "exec_nodes canShip %d", canShip);
 
 	return exec_nodes;
 }
@@ -1474,6 +1539,10 @@ pgxc_is_expr_shippable(Expr *node, bool *has_aggs)
 static bool
 pgxc_is_func_shippable(Oid funcid)
 {
+	if (funcid == 7009 || funcid == 1574 || funcid == 3274) {
+		elog(DEBUG2, "graph_labid shipped");
+		return true;
+	}
 	/*
 	 * For the time being a function is thought as shippable
 	 * only if it is immutable.

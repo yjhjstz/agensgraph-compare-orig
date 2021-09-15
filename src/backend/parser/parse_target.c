@@ -13,6 +13,7 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include "postgres_ext.h"
 
 #include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
@@ -69,6 +70,25 @@ static List *ExpandRowReference(ParseState *pstate, Node *expr,
 				   bool make_target_entry);
 static int	FigureColnameInternal(Node *node, char **name);
 
+void
+markRTEs(ParseState *pstate, List *oidlist)
+{
+	ListCell   *l;
+	Oid id = InvalidOid;
+	RangeTblEntry *rte;
+	foreach(l, oidlist) {
+		id = lfirst_oid(l);
+		Relation rel = RelationIdGetRelation(id);
+		rte = addRangeTableEntryForRelation(pstate,
+										rel,
+										NULL,
+										false,
+										false);
+		RelationClose(rel);
+	}
+	return;
+	
+}
 
 /*
  * transformTargetEntry()
