@@ -767,6 +767,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	qry->commandType = CMD_GRAPHWRITE;
 	qry->graph.writeOp = GWROP_CREATE;
 	qry->graph.last = (pstate->parentParseState == NULL);
+	qry->graph.sql_statement = pstrdup(pstate->p_sourcetext);
 
 	if (clause->prev != NULL)
 	{
@@ -4153,9 +4154,10 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 	char	   *varname = getCypherName(cnode->variable);
 	int			varloc = getCypherNameLoc(cnode->variable);
 	bool		create;
-	Oid			relid = InvalidOid;
+	Oid			relid = InvalidOid, seqid;
 	TargetEntry	*te;
 	GraphVertex	*gvertex;
+	int64 tid;
 
 	te = findTarget(*targetList, varname);
 	if (te != NULL &&
@@ -4172,7 +4174,7 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 		char	   *labname = getCypherName(cnode->label);
 		Relation 	relation;
 		Node	   *vertex;
-
+		
 		if (labname == NULL)
 		{
 			labname = AG_VERTEX;
@@ -4188,6 +4190,7 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 						 parser_errposition(pstate, labloc)));
 
 			createVertexLabelIfNotExist(pstate, labname, labloc);
+			elog(DEBUG2, "labname %s", labname);
 		}
 
 		/* lock the relation of the label and return it */
@@ -4196,6 +4199,11 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 		/* make vertex expression for result plan */
 		vertex = makeNewVertex(pstate, relation, cnode->prop_map);
 		relid = RelationGetRelid(relation);
+
+		//seqid = getOwnedSequence(relid, 0);
+
+		//tid = nextval_internal(seqid, false);
+		//elog(DEBUG2, "cur tid %lld", tid);
 
 		/* keep the lock */
 		heap_close(relation, NoLock);

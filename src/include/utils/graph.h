@@ -72,6 +72,9 @@ extern Datum graphid_send(PG_FUNCTION_ARGS);
 extern Datum graphid_labid(PG_FUNCTION_ARGS);
 extern Datum graphid_locid(PG_FUNCTION_ARGS);
 extern Datum graph_labid(PG_FUNCTION_ARGS);
+
+extern Datum set_graph_path(PG_FUNCTION_ARGS);
+
 /* graphid - comparison */
 extern Datum graphid_eq(PG_FUNCTION_ARGS);
 extern Datum graphid_ne(PG_FUNCTION_ARGS);

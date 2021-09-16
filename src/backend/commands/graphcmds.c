@@ -93,7 +93,7 @@ CreateGraphCommand(CreateGraphStmt *stmt, const char *queryString, bool sentToRe
 		wrapper->stmt_location = stmt_location;
 		wrapper->stmt_len = stmt_len;
 
-		elog(INFO, " node type: %d",
+		elog(DEBUG1, " node type: %d",
 					 (int) nodeTag(stmt));
 
 		ProcessUtility(wrapper, queryString, PROCESS_UTILITY_SUBCOMMAND,

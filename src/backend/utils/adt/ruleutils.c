@@ -5258,7 +5258,9 @@ get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 		case CMD_UTILITY:
 			get_utility_query_def(query, &context);
 			break;
-
+		// case CMD_GRAPHWRITE:
+		// 	//todo
+		// 	break;
 		default:
 			elog(ERROR, "unrecognized query command type: %d",
 				 query->commandType);

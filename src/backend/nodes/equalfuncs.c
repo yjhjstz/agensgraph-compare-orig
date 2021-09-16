@@ -1126,6 +1126,7 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(graph.pattern);
 	COMPARE_NODE_FIELD(graph.exprs);
 	COMPARE_NODE_FIELD(graph.sets);
+	//COMPARE_STRING_FIELD(graph.sql_statement);
 
 	return true;
 }

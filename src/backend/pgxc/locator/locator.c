@@ -214,7 +214,7 @@ compute_modulo(uint64 numerator, uint64 denominator)
 char *
 GetRelationDistColumn(RelationLocInfo * rel_loc_info)
 {
-char *pColName;
+	char *pColName;
 
 	pColName = NULL;
 
@@ -701,6 +701,7 @@ modulo_value_len(Oid dataType)
 		case DATEOID:
 			return 4;
 		case INT8OID:
+		case GRAPHIDOID:
 			return 8;
 		default:
 			return -1;
@@ -1165,6 +1166,7 @@ locate_hash_insert(Locator *self, Datum value, bool isnull,
 
 		index = compute_modulo(hash32, self->nodeCount);
 	}
+	elog(DEBUG2, "choose index %d", index);
 	switch (self->listType)
 	{
 		case LOCATOR_LIST_NONE:
@@ -1447,6 +1449,7 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol,
 	Locator		*locator;
 	Oid typeOfValueForDistCol = InvalidOid;
 
+	elog(DEBUG2, "dist value %d", DatumGetInt32(valueForDistCol));
 	if (rel_loc_info == NULL)
 		return NULL;
 
@@ -1540,11 +1543,13 @@ GetRelationNodesByQuals(Oid reloid, RelationLocInfo *rel_loc_info,
 		Const *const_expr = (Const *)distcol_expr;
 		distcol_value = const_expr->constvalue;
 		distcol_isnull = const_expr->constisnull;
+		elog(DEBUG2, "const path");
 	}
 	else
 	{
 		distcol_value = (Datum) 0;
 		distcol_isnull = true;
+		elog(DEBUG2, "zero path");
 	}
 
 	exec_nodes = GetRelationNodes(rel_loc_info, distcol_value,

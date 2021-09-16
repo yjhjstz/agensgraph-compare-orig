@@ -551,7 +551,8 @@ retry_pools:
 		}
 	}
 	// todo
-	if (list_length(query->rtable) == 1)
+
+	if (list_length(query->rtable) >= 1)
 		rel_exec_nodes = GetRelationNodesByQuals(rte->relid, rel_loc_info, varno,
 												 query->jointree->quals, rel_access);
 	else
@@ -580,7 +581,7 @@ retry_pools:
 		foreach(lc, query->targetList)
 		{
 			tle = (TargetEntry *) lfirst(lc);
-			elog(DEBUG2, "cmp %s, %s", tle->resname, info);
+			elog(DEBUG2, "rel %s , cmp %s, %s", rte->relname, tle->resname, info);
 			if (tle->resjunk)
 				continue;
 			if (query->hasGraphwriteClause) {
@@ -903,9 +904,6 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 */
 			if (!pgxc_is_func_shippable(funcexpr->funcid)) {
 				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
-				ereport(LOG, (errmsg("set shipped funcid \"%d\" ", funcexpr->funcid)));
-				// if (Log_error_verbosity >= PGERROR_VERBOSE) 
-				// 	memset(0, 0 , 100);
 			}
 			
 
@@ -1448,7 +1446,6 @@ pgxc_is_query_shippable(Query *query, int query_level)
 		 * that as multiple nodes.
 		 */
 		if (list_length(exec_nodes->nodeList) != 1) {
-			elog(DEBUG2, "nodeList 2");
 			canShip = false;
 		}
 
@@ -1464,7 +1461,7 @@ pgxc_is_query_shippable(Query *query, int query_level)
 
 	/* Can not ship the query for some reason */
 	if (!bms_is_empty(shippability)){
-		elog(DEBUG2, "bms_is_empty 2");
+		elog(DEBUG2, "not bms_is_empty");
 		canShip = false;
 	}
 
@@ -1540,7 +1537,7 @@ static bool
 pgxc_is_func_shippable(Oid funcid)
 {
 	if (funcid == 7009 || funcid == 1574 || funcid == 3274) {
-		elog(DEBUG2, "graph_labid shipped");
+		elog(DEBUG2, "funcid shipped %d", funcid);
 		return true;
 	}
 	/*

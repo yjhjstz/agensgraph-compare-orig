@@ -4274,6 +4274,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_NODE_FIELD(graph.pattern);
 	WRITE_NODE_FIELD(graph.exprs);
 	WRITE_NODE_FIELD(graph.sets);
+	//WRITE_STRING_FIELD(graph.sql_statement);
 }
 
 static void

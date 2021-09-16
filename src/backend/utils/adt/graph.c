@@ -33,6 +33,7 @@
 #include "utils/regproc.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+#include "utils/guc.h"
 
 #define GRAPHID_FMTSTR			"%hu." UINT64_FORMAT
 #define GRAPHID_BUFLEN			32	/* "65535.281474976710655" */
@@ -191,8 +192,9 @@ Datum
 graphid_locid(PG_FUNCTION_ARGS)
 {
 	Graphid id = PG_GETARG_GRAPHID(0);
-
-	PG_RETURN_INT64(GraphidGetLocid(id));
+	uint64 t = GraphidGetLocid(id);
+	//elog(DEBUG2, "locid %llu", t);
+	PG_RETURN_INT64(t);
 }
 
 Datum
@@ -210,6 +212,18 @@ graph_labid(PG_FUNCTION_ARGS)
 	labid = get_labname_labid(rv->relname, graphoid);
 
 	PG_RETURN_INT32((int32) labid);
+}
+
+
+Datum
+set_graph_path(PG_FUNCTION_ARGS)
+{
+	char	   *path = PG_GETARG_CSTRING(0);
+	Assert(path);
+	SetConfigOption("graph_path", path,
+						PGC_USERSET, PGC_S_SESSION);
+
+	PG_RETURN_INT32(0);
 }
 
 static int

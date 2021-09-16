@@ -375,14 +375,20 @@ pgxc_FQS_create_remote_plan(Query *query, ExecNodes *exec_nodes, bool is_exec_di
 	/* Deparse query tree to get step query. */
 	if (query_step->sql_statement == NULL)
 	{
-		initStringInfo(&buf);
-		/*
-		 * We always finalise aggregates on datanodes for FQS.
-		 * Use the expressions for ORDER BY or GROUP BY clauses.
-		 */
-		deparse_query(query, &buf, NIL, true, false);
-		query_step->sql_statement = pstrdup(buf.data);
-		pfree(buf.data);
+		if (query->hasGraphwriteClause) {
+			query_step->sql_statement = query->graph.sql_statement;
+			Assert(query_step->sql_statement);
+		} else {
+			initStringInfo(&buf);
+			/*
+			 * We always finalise aggregates on datanodes for FQS.
+			 * Use the expressions for ORDER BY or GROUP BY clauses.
+			 */
+			deparse_query(query, &buf, NIL, true, false);
+			query_step->sql_statement = pstrdup(buf.data);
+			pfree(buf.data);
+		}
+		
 	}
 
 	/* Optimize multi-node handling */

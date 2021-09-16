@@ -4791,7 +4791,7 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 		stmt->distributeby = makeNode(DistributeBy);
 		cxt.distributeby = stmt->distributeby;
 		stmt->distributeby->disttype = DISTTYPE_HASH;
-
+		//stmt->distributeby->disttype = DISTTYPE_MODULO;
 		if (labelStmt->labelKind == LABEL_VERTEX) {
 			elog(INFO , "rel1 id %s", qname);
 			stmt->distributeby->colname = AG_ELEM_LOCAL_ID;
@@ -4935,6 +4935,7 @@ makeVertexElements(void)
 	id->is_local = true;
 	id->constraints = list_make1(pk);
 	id->location = -1;
+	//id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
 
 	notnull->contype = CONSTR_NOTNULL;
 	notnull->location = -1;
@@ -4977,6 +4978,7 @@ makeEdgeElements(void)
 	id->is_local = true;
 	id->constraints = copyObject(constrs);
 	id->location = -1;
+	id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
 
 	start->colname = AG_START_ID;
 	start->typeName = makeTypeName("graphid");

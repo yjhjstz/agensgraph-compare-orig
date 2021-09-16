@@ -3381,6 +3381,7 @@ _copyQuery(const Query *from)
 	COPY_NODE_FIELD(graph.pattern);
 	COPY_NODE_FIELD(graph.exprs);
 	COPY_NODE_FIELD(graph.sets);
+	//COPY_STRING_FIELD(graph.sql_statement);
 
 	return newnode;
 }

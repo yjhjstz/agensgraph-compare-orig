@@ -5552,6 +5552,8 @@ DESCR("less-equal-greater");
 /* Hash for graphid */
 DATA(insert OID = 7097 ( graphid_hash	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 23 "7002" _null_ _null_ _null_ _null_ _null_ graphid_hash _null_ _null_ _null_ ));
 DESCR("hash");
+DATA(insert OID = 7099 ( set_graph_path	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 23 "2275" _null_ _null_ _null_ _null_ _null_ set_graph_path _null_ _null_ _null_ ));
+DESCR("I/O config");
 /* GIN (as BTree) for graphid */
 DATA(insert OID = 7100 ( gin_extract_value_graphid	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 2281 "7002 2281 2281" _null_ _null_ _null_ _null_ _null_ gin_extract_value_graphid _null_ _null_ _null_ ));
 DESCR("GIN graphid support");

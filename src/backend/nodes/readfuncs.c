@@ -559,6 +559,7 @@ _readQuery(void)
 	READ_NODE_FIELD(graph.pattern);
 	READ_NODE_FIELD(graph.exprs);
 	READ_NODE_FIELD(graph.sets);
+	//READ_STRING_FIELD(graph.sql_statement);
 
 	READ_DONE();
 }
