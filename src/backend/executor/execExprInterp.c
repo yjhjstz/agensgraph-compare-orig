@@ -2160,6 +2160,9 @@ ExecEvalNextValueExpr(ExprState *state, ExprEvalStep *op)
 		case INT8OID:
 			*op->resvalue = Int64GetDatum((int64) newval);
 			break;
+		case GRAPHIDOID:
+			*op->resvalue = Int64GetDatum((int64) newval);
+			break;
 		default:
 			elog(ERROR, "unsupported sequence type %u",
 				 op->d.nextvalueexpr.seqtypid);

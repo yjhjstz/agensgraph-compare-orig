@@ -1124,7 +1124,7 @@ build_column_default(Relation rel, int attrno)
 	Node	   *expr = NULL;
 	Oid			exprtype;
 
-	elog(DEBUG2, "build_column_default %s", att_tup->attidentity);
+	elog(DEBUG2, "build_column_default %c", att_tup->attidentity);
 	if (att_tup->attidentity)
 	{
 		NextValueExpr *nve = makeNode(NextValueExpr);

@@ -4935,7 +4935,7 @@ makeVertexElements(void)
 	id->is_local = true;
 	id->constraints = list_make1(pk);
 	id->location = -1;
-	//id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
+	id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
 
 	notnull->contype = CONSTR_NOTNULL;
 	notnull->location = -1;

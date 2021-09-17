@@ -857,8 +857,9 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			 * distribution key and it should get mapped to the correct
 			 * datanode.
 			 */
-			pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
-			ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSUPPORTED_EXPR)));
+			if (!sc_context->sc_query->hasGraphwriteClause)
+				pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+			//ereport(LOG, (errmsg("set shipped \"%d\" ", SS_UNSHIPPABLE_EXPR)));
 			break;
 
 		case T_Aggref:

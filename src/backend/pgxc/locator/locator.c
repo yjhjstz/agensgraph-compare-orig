@@ -1288,6 +1288,7 @@ locate_modulo_insert(Locator *self, Datum value, bool isnull,
 			val = 0;
 
 		index = compute_modulo(val, self->nodeCount);
+		elog(DEBUG2, "modulo index %d", index);
 	}
 	switch (self->listType)
 	{
