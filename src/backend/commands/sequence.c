@@ -696,6 +696,7 @@ nextval_oid(PG_FUNCTION_ARGS)
 int64
 nextval_internal(Oid relid, bool check_permissions)
 {
+
 	SeqTable	elm;
 	Relation	seqrel;
 	Buffer		buf;
@@ -1020,6 +1021,8 @@ nextval_internal(Oid relid, bool check_permissions)
 	UnlockReleaseBuffer(buf);
 
 	relation_close(seqrel, NoLock);
+
+	ereport(LOG, (errmsg("nextval oid %d, result %lld", relid, result)));
 
 	return result;
 }

@@ -4791,8 +4791,8 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 	{
 		stmt->distributeby = makeNode(DistributeBy);
 		cxt.distributeby = stmt->distributeby;
-		//stmt->distributeby->disttype = DISTTYPE_HASH;
-		stmt->distributeby->disttype = DISTTYPE_ROUNDROBIN;
+		stmt->distributeby->disttype = DISTTYPE_HASH;
+		//stmt->distributeby->disttype = DISTTYPE_ROUNDROBIN;
 		if (labelStmt->labelKind == LABEL_VERTEX) {
 			elog(INFO , "rel1 id %s", qname);
 			stmt->distributeby->colname = AG_ELEM_LOCAL_ID;

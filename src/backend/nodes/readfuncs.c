@@ -3756,7 +3756,12 @@ _readGraphVertex(void)
 
 	READ_INT_FIELD(resno);
 	READ_BOOL_FIELD(create);
-	READ_OID_FIELD(relid);
+	if (portable_input) {
+		READ_RELID_FIELD(relid);
+	} else {
+		READ_OID_FIELD(relid);
+	}
+	
 	READ_NODE_FIELD(expr);
 
 	READ_DONE();
@@ -3769,7 +3774,11 @@ _readGraphEdge(void)
 
 	READ_INT_FIELD(direction);
 	READ_INT_FIELD(resno);
-	READ_OID_FIELD(relid);
+	if (portable_input) {
+		READ_RELID_FIELD(relid);
+	} else {
+		READ_OID_FIELD(relid);
+	}
 	READ_NODE_FIELD(expr);
 
 	READ_DONE();
@@ -3817,8 +3826,10 @@ static CypherTypeCast *
 _readCypherTypeCast(void)
 {
 	READ_LOCALS(CypherTypeCast);
-
-	READ_OID_FIELD(type);
+	if (portable_input)
+		READ_TYPID_FIELD(type);
+	else
+		READ_OID_FIELD(type);
 	READ_ENUM_FIELD(cform, CoercionForm);
 	READ_ENUM_FIELD(cctx, CoercionContext);
 	READ_CHAR_FIELD(typcategory);
@@ -3898,6 +3909,31 @@ _readCypherIndices(void)
 	READ_DONE();
 }
 
+static ModifyGraph *
+_readModifyGraph(void)
+{
+	READ_LOCALS(ModifyGraph);
+	ReadCommonPlan(&local_node->plan);
+
+	READ_ENUM_FIELD(operation, GraphWriteOp);
+	READ_BOOL_FIELD(last);
+	if (portable_input)
+		READ_RELID_LIST_FIELD(targets);
+	else
+		READ_NODE_FIELD(targets);
+	READ_NODE_FIELD(subplan);
+	READ_UINT_FIELD(nr_modify);
+	READ_BOOL_FIELD(detach);
+	READ_BOOL_FIELD(eagerness);
+	READ_NODE_FIELD(pattern);
+	READ_NODE_FIELD(exprs);
+	READ_NODE_FIELD(sets);
+	READ_INT_FIELD(ert_base_index);
+	READ_INT_FIELD(ert_rtes_added);
+
+
+	READ_DONE();
+}
 /*
  * _readRemoteSubplan
  */
@@ -4416,6 +4452,8 @@ parseNodeString(void)
 		return_value = _readCypherAccessExpr();
 	else if (MATCH("CYPHERINDICES", 13))
 		return_value = _readCypherIndices();
+	else if (MATCH("MODIFYGRAPH", 11))
+		return_value = _readModifyGraph();
 	else
 	{
 		elog(ERROR, "badly formatted node string \"%.32s\"...", token);

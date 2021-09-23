@@ -252,6 +252,7 @@ ExecCheckTIDVisible(EState *estate,
  *		Returns RETURNING result if any, otherwise NULL.
  * ----------------------------------------------------------------
  */
+extern uint32			PGXCNodeIdentifier;
 static TupleTableSlot *
 ExecInsert(ModifyTableState *mtstate,
 		   TupleTableSlot *slot,
@@ -268,6 +269,7 @@ ExecInsert(ModifyTableState *mtstate,
 	List	   *recheckIndexes = NIL;
 	TupleTableSlot *result = NULL;
 
+	ereport(LOG, (errmsg("pxid insert %d", (int)PGXCNodeIdentifier)));
 	/*
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy

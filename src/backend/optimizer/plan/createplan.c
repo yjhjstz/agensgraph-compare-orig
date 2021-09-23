@@ -2664,11 +2664,13 @@ create_remotescan_plan(PlannerInfo *root,
 							  best_path->subpath->distribution,
 							  best_path->path.pathkeys);
 
+
 	copy_generic_path_info(&plan->scan.plan, (Path *) best_path);
 
 	/* restore current restrict */
 	bms_free(root->curOuterRestrict);
 	root->curOuterRestrict = saverestrict;
+	ereport(LOG, (errmsg("create_remotescan_plan %d", numsortkeys)));
 
 	return plan;
 }

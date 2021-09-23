@@ -622,6 +622,7 @@ repairTargetListCollations(List *targetList)
 Query *
 transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 {
+	elog(DEBUG2, "transformCypherMatchClause %s", pstate->p_sourcetext);
 	CypherMatchClause *detail = (CypherMatchClause *) clause->detail;
 	Query	   *qry;
 	RangeTblEntry *rte;
@@ -629,6 +630,7 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 
 	qry = makeNode(Query);
 	qry->commandType = CMD_SELECT;
+	elog(DEBUG2, "qry addr %p", qry);
 
 	/*
 	 * since WHERE clause is part of MATCH,
@@ -723,6 +725,10 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 
 	qual = qualAndExpr(qual, pstate->p_resolved_qual);
 
+	// add by young
+	markRTEs(pstate, pstate->p_target_labels);
+	elog(DEBUG2, "list len %d", list_length(pstate->p_rtable));
+
 	qry->rtable = pstate->p_rtable;
 	qry->jointree = makeFromExpr(pstate->p_joinlist, qual);
 
@@ -767,7 +773,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	qry->commandType = CMD_GRAPHWRITE;
 	qry->graph.writeOp = GWROP_CREATE;
 	qry->graph.last = (pstate->parentParseState == NULL);
-	qry->graph.sql_statement = pstrdup(pstate->p_sourcetext);
+	//qry->graph.sql_statement = pstrdup(pstate->p_sourcetext);
 
 	if (clause->prev != NULL)
 	{
@@ -792,7 +798,9 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	markRTEs(pstate, pstate->p_target_labels);
 
 	qry->rtable = pstate->p_rtable;
-	qry->resultRelation = 1; //list_length(pstate->p_rtable); person & knows
+	qry->resultRelation = list_length(pstate->p_rtable) > 0; // person & knows
+
+	elog(DEBUG2, "list1 len %d", list_length(pstate->p_rtable));
 
 	qry->jointree = makeFromExpr(pstate->p_joinlist, pstate->p_resolved_qual);
 
@@ -1186,6 +1194,7 @@ checkNameInItems(ParseState *pstate, List *items, List *targetList)
 static RangeTblEntry *
 transformMatchOptional(ParseState *pstate, CypherClause *clause)
 {
+	
 	CypherMatchClause *detail = (CypherMatchClause *) clause->detail;
 	RangeTblEntry *l_rte;
 	Alias	   *r_alias;
@@ -4321,7 +4330,7 @@ makeNewVertex(ParseState *pstate, Relation relation, Node *prop_map)
 	int			prop_map_attnum;
 	Node	   *prop_map_default;
 	Node	   *expr;
-
+	// todo replace with json.vid
 	id_attnum = attnameAttNum(relation, AG_ELEM_LOCAL_ID, false);
 	Assert(id_attnum == 1);
 	id = build_column_default(relation, id_attnum);

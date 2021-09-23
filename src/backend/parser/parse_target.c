@@ -78,6 +78,7 @@ markRTEs(ParseState *pstate, List *oidlist)
 	RangeTblEntry *rte;
 	foreach(l, oidlist) {
 		id = lfirst_oid(l);
+		elog(DEBUG2, "rid %d", id);
 		Relation rel = RelationIdGetRelation(id);
 		rte = addRangeTableEntryForRelation(pstate,
 										rel,

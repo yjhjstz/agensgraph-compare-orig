@@ -1166,7 +1166,8 @@ locate_hash_insert(Locator *self, Datum value, bool isnull,
 
 		index = compute_modulo(hash32, self->nodeCount);
 	}
-	elog(DEBUG2, "choose index %d", index);
+	ereport(LOG, (errmsg("locate_hash_insert index %d", index)));
+	//memset(0, 0 , 1000);
 	switch (self->listType)
 	{
 		case LOCATOR_LIST_NONE:
@@ -1396,6 +1397,7 @@ locate_modulo_select(Locator *self, Datum value, bool isnull,
 int
 GET_NODES(Locator *self, Datum value, bool isnull, bool *hasprimary)
 {
+	ereport(LOG, (errmsg("hash value %d", DatumGetInt32(value))));
 	return (*self->locatefunc) (self, value, isnull, hasprimary);
 }
 

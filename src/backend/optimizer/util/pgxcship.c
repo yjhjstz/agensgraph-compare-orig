@@ -269,6 +269,7 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids)
 			 * For INSERT commands, we won't have any entries in the from list.
 			 * Get the datanodes using the resultRelation index.
 			 */
+			
 			if (query->commandType != CMD_SELECT && !from_expr->fromlist)
 			{
 				*relids = bms_make_singleton(query->resultRelation);
@@ -1537,10 +1538,10 @@ pgxc_is_expr_shippable(Expr *node, bool *has_aggs)
 static bool
 pgxc_is_func_shippable(Oid funcid)
 {
-	if (funcid == 7009 || funcid == 1574 || funcid == 3274) {
-		elog(DEBUG2, "funcid shipped %d", funcid);
-		return true;
-	}
+	// if (funcid == 7009 || funcid == 1574 || funcid == 3274) {
+	// 	elog(DEBUG2, "funcid shipped %d", funcid);
+	// 	return true;
+	// }
 	/*
 	 * For the time being a function is thought as shippable
 	 * only if it is immutable.

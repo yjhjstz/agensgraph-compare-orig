@@ -1568,7 +1568,10 @@ _outModifyGraph(StringInfo str, const ModifyGraph *node)
 
 	WRITE_ENUM_FIELD(operation, GraphWriteOp);
 	WRITE_BOOL_FIELD(last);
-	WRITE_NODE_FIELD(targets);
+	if (portable_output) 
+		WRITE_RELID_LIST_FIELD(targets);
+	else
+		WRITE_NODE_FIELD(targets);
 	WRITE_NODE_FIELD(subplan);
 	WRITE_UINT_FIELD(nr_modify);
 	WRITE_BOOL_FIELD(detach);
@@ -5230,7 +5233,11 @@ _outGraphVertex(StringInfo str, const GraphVertex *node)
 
 	WRITE_INT_FIELD(resno);
 	WRITE_BOOL_FIELD(create);
-	WRITE_OID_FIELD(relid);
+	if (portable_output) {
+		WRITE_RELID_FIELD(relid);
+	} else {
+		WRITE_OID_FIELD(relid);
+	}
 	WRITE_NODE_FIELD(expr);
 }
 
@@ -5241,7 +5248,11 @@ _outGraphEdge(StringInfo str, const GraphEdge *node)
 
 	WRITE_INT_FIELD(direction);
 	WRITE_INT_FIELD(resno);
-	WRITE_OID_FIELD(relid);
+	if (portable_output) {
+		WRITE_RELID_FIELD(relid);
+	} else {
+		WRITE_OID_FIELD(relid);
+	}
 	WRITE_NODE_FIELD(expr);
 }
 
@@ -6080,6 +6091,8 @@ nodeToString(const void *obj)
 	/* see stringinfo.h for an explanation of this maneuver */
 	initStringInfo(&str);
 	outNode(&str, obj);
+	ereport(LOG, (errmsg("nodeToString %s", str.data)));
+
 	return str.data;
 }
 
