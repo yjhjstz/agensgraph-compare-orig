@@ -2670,7 +2670,6 @@ create_remotescan_plan(PlannerInfo *root,
 	/* restore current restrict */
 	bms_free(root->curOuterRestrict);
 	root->curOuterRestrict = saverestrict;
-	ereport(LOG, (errmsg("create_remotescan_plan %d", numsortkeys)));
 
 	return plan;
 }
@@ -4547,6 +4546,10 @@ create_modifygraph_plan(PlannerInfo *root, ModifyGraphPath *best_path)
 
 	subplan = create_plan_recurse(root, best_path->subpath, CP_EXACT_TLIST);
 
+	ereport(LOG, (errmsg("subplan %s", nodeToString(subplan))));
+
+	ereport(LOG, (errmsg("root %s", nodeToString(root))));
+
 	apply_tlist_labeling(subplan->targetlist, root->processed_tlist);
 
 	plan = make_modifygraph(root, best_path->operation,
@@ -5856,6 +5859,7 @@ make_remotesubplan(PlannerInfo *root,
 				   Distribution *execDistribution,
 				   List *pathkeys)
 {
+
 	RemoteSubplan *node = makeNode(RemoteSubplan);
 	Plan	   *plan = &node->scan.plan;
 	Bitmapset  *tmpset;
@@ -5865,10 +5869,13 @@ make_remotesubplan(PlannerInfo *root,
 	Assert(!equal(resultDistribution, execDistribution));
 	Assert(!IsA(lefttree, RemoteSubplan));
 
+	ereport(LOG, (errmsg("make_remotesubplan %p", resultDistribution)));
+
 	if (resultDistribution)
 	{
 		node->distributionType = resultDistribution->distributionType;
 		node->distributionKey = InvalidAttrNumber;
+		ereport(LOG, (errmsg("distributionExpr %p", resultDistribution->distributionExpr)));
 		if (resultDistribution->distributionExpr)
 		{
 			ListCell   *lc;
@@ -5881,6 +5888,7 @@ make_remotesubplan(PlannerInfo *root,
 				expr = (Expr *) resultDistribution->distributionExpr;
 
 			/* Find distribution expression in the target list */
+			// todo yang
 			foreach(lc, lefttree->targetlist)
 			{
 				TargetEntry *tle = (TargetEntry *) lfirst(lc);
@@ -5890,7 +5898,16 @@ make_remotesubplan(PlannerInfo *root,
 					node->distributionKey = tle->resno;
 					break;
 				}
+				if(IsA(tle->expr, RowExpr)) {
+					if (equal(linitial(((RowExpr *) tle->expr)->args), expr)) {
+						node->distributionKey = tle->resno;
+						break;
+					}
+				}
+
 			}
+
+			ereport(LOG, (errmsg("distributionKey1 %d", node->distributionKey)));
 
 			if (node->distributionKey == InvalidAttrNumber)
 			{
@@ -5916,6 +5933,7 @@ make_remotesubplan(PlannerInfo *root,
 				}
 
 				node->distributionKey = newtle->resno;
+				ereport(LOG, (errmsg("distributionKey2 %d", node->distributionKey)));
 			}
 		}
 		/*

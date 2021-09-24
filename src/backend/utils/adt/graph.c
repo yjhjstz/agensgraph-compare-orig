@@ -193,7 +193,6 @@ graphid_locid(PG_FUNCTION_ARGS)
 {
 	Graphid id = PG_GETARG_GRAPHID(0);
 	uint64 t = GraphidGetLocid(id);
-	//elog(DEBUG2, "locid %llu", t);
 	PG_RETURN_INT64(t);
 }
 

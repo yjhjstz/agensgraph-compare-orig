@@ -148,13 +148,20 @@ preprocess_targetlist(PlannerInfo *root)
 				 * For INSERT and UPDATE plan tlist is matching the target table
 				 * layout
 				 */
-				if (command_type == CMD_INSERT || command_type == CMD_UPDATE)
+				if (command_type == CMD_INSERT || command_type == CMD_UPDATE || command_type == CMD_GRAPHWRITE)
 				{
 					TargetEntry *keyTle;
 					keyTle = (TargetEntry *) list_nth(tlist,
 											  rel_loc_info->partAttrNum - 1);
 
 					distribution->distributionExpr = (Node *) keyTle->expr;
+
+					if (command_type == CMD_GRAPHWRITE) {
+						if (IsA(keyTle->expr, RowExpr)) {
+							distribution->distributionExpr = (Node *)linitial(((RowExpr *) keyTle->expr)->args);
+							ereport(LOG, (errmsg("distributionExpr set id %d", 1111)));
+						}
+					}
 
 					/*
 					 * We can restrict the distribution if the expression

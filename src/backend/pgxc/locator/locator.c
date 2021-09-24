@@ -755,6 +755,8 @@ hash_func_ptr(Oid dataType)
 			return uuid_hash;
 		case GRAPHIDOID:
 			return graphid_locid;
+		case VERTEXOID:
+			return graphid_locid;
 		default:
 			return NULL;
 	}
@@ -973,9 +975,10 @@ createLocator(char locatorType, RelationAccessType accessType,
 			}
 
 			locator->hashfunc = hash_func_ptr(dataType);
-			if (locator->hashfunc == NULL)
+			if (locator->hashfunc == NULL) {
 				ereport(ERROR, (errmsg("Error: unsupported data type for HASH locator: %d\n",
 								   dataType)));
+			}
 			break;
 		case LOCATOR_TYPE_MODULO:
 			if (accessType == RELATION_ACCESS_INSERT)

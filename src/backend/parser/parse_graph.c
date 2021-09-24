@@ -630,7 +630,6 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 
 	qry = makeNode(Query);
 	qry->commandType = CMD_SELECT;
-	elog(DEBUG2, "qry addr %p", qry);
 
 	/*
 	 * since WHERE clause is part of MATCH,
@@ -727,7 +726,6 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 
 	// add by young
 	markRTEs(pstate, pstate->p_target_labels);
-	elog(DEBUG2, "list len %d", list_length(pstate->p_rtable));
 
 	qry->rtable = pstate->p_rtable;
 	qry->jointree = makeFromExpr(pstate->p_joinlist, qual);
@@ -773,7 +771,6 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	qry->commandType = CMD_GRAPHWRITE;
 	qry->graph.writeOp = GWROP_CREATE;
 	qry->graph.last = (pstate->parentParseState == NULL);
-	//qry->graph.sql_statement = pstrdup(pstate->p_sourcetext);
 
 	if (clause->prev != NULL)
 	{
@@ -799,8 +796,6 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 
 	qry->rtable = pstate->p_rtable;
 	qry->resultRelation = list_length(pstate->p_rtable) > 0; // person & knows
-
-	elog(DEBUG2, "list1 len %d", list_length(pstate->p_rtable));
 
 	qry->jointree = makeFromExpr(pstate->p_joinlist, pstate->p_resolved_qual);
 
@@ -3901,7 +3896,7 @@ resolve_future_vertex_mutator(Node *node, resolve_future_vertex_context *ctx)
 		if ((int) var->varlevelsup != ctx->sublevels_up)
 			return node;
 
-		if (exprType(node) != VERTEXOID)
+		if ((exprTypenode) != VERTEXOID)
 			return node;
 
 		fv = findFutureVertex(ctx->pstate, var->varno, var->varattno, 0);
@@ -4199,7 +4194,6 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 						 parser_errposition(pstate, labloc)));
 
 			createVertexLabelIfNotExist(pstate, labname, labloc);
-			elog(DEBUG2, "labname %s", labname);
 		}
 
 		/* lock the relation of the label and return it */
@@ -4208,11 +4202,6 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 		/* make vertex expression for result plan */
 		vertex = makeNewVertex(pstate, relation, cnode->prop_map);
 		relid = RelationGetRelid(relation);
-
-		//seqid = getOwnedSequence(relid, 0);
-
-		//tid = nextval_internal(seqid, false);
-		//elog(DEBUG2, "cur tid %lld", tid);
 
 		/* keep the lock */
 		heap_close(relation, NoLock);

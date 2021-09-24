@@ -1924,6 +1924,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		 */
 		current_rel = query_planner(root, tlist,
 									standard_qp_callback, &qp_extra);
+		// Get the Result Path
 
 		/*
 		 * Convert the query's result tlist into PathTarget format.
@@ -2290,6 +2291,8 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 
 		if (parse->commandType == CMD_GRAPHWRITE && !inheritance_update)
 		{
+			path = adjust_path_distribution(root, parse, path);
+
 			path = (Path *) create_modifygraph_path(root, final_rel,
 													parse->graph.writeOp,
 													parse->graph.last,
@@ -7196,9 +7199,10 @@ adjust_path_distribution(PlannerInfo *root, Query *parse, Path *path)
 		 */
 		if (!(IsA(path, ResultPath) && /* FIXME missing (result_plan->lefttree == NULL) condition */
 			((root->distribution->distributionType == 'H' && bms_num_members(root->distribution->restrictNodes) == 1) ||
-			 (root->distribution->distributionType == 'R' && !contain_mutable_functions((Node *)parse->targetList)))))
-
+			 (root->distribution->distributionType == 'R' && !contain_mutable_functions((Node *)parse->targetList))))) {
 			path = create_remotesubplan_path(root, path, root->distribution);
+		}
+
 	}
 
 	return path;
