@@ -146,6 +146,7 @@ extern int GET_NODES(Locator *self, Datum value, bool isnull, bool *hasprimary);
 extern void *getLocatorResults(Locator *self);
 extern void *getLocatorNodeMap(Locator *self);
 extern int getLocatorNodeCount(Locator *self);
+extern Oid getLocatorDataType(Locator* self);
 
 /* Extern variables related to locations */
 extern Oid primary_data_node;

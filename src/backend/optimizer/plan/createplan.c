@@ -5899,10 +5899,19 @@ make_remotesubplan(PlannerInfo *root,
 					break;
 				}
 				if(IsA(tle->expr, RowExpr)) {
-					if (equal(linitial(((RowExpr *) tle->expr)->args), expr)) {
-						node->distributionKey = tle->resno;
+					if (((RowExpr *) tle->expr)->row_typeid == VERTEXOID && equal(linitial(((RowExpr *) tle->expr)->args), expr)) {
+						node->distributionKey = 1;
 						break;
 					}
+					else if (((RowExpr *) tle->expr)->row_typeid == EDGEOID && equal(lsecond(((RowExpr *) tle->expr)->args), expr)) {
+						node->distributionKey = 1;
+						break;
+					}
+
+					// if (equal(linitial(((RowExpr *) tle->expr)->args), expr)) {
+					// 	node->distributionKey = tle->resno;
+					// 	break;
+					// }
 				}
 
 			}

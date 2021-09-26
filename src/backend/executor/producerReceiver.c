@@ -20,6 +20,7 @@
 #include "pgxc/nodemgr.h"
 #include "tcop/pquery.h"
 #include "utils/tuplestore.h"
+#include "catalog/pg_type.h"
 
 typedef struct
 {
@@ -86,9 +87,17 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 		value = (Datum) 0;
 		isnull = true;
 	}
-	else
+	else{
 		value = slot_getattr(slot, myState->distKey, &isnull);
+		if (getLocatorDataType(myState->locator) == VERTEXOID)
+			value = getVertexIdDatum(value);
+		else if (getLocatorDataType(myState->locator) == EDGEOID)
+			value = getEdgeStartDatum(value);
+	}
+
 	ncount = GET_NODES(myState->locator, value, isnull, NULL);
+
+
 
 	myState->tcount++;
 	/* Dispatch the tuple */

@@ -1424,6 +1424,11 @@ getLocatorNodeCount(Locator *self)
 {
 	return self->nodeCount;
 }
+
+Oid getLocatorDataType(Locator* self)
+{
+	return self->dataType;
+}
 #endif
 
 /*
@@ -1455,7 +1460,6 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol,
 	Locator		*locator;
 	Oid typeOfValueForDistCol = InvalidOid;
 
-	elog(DEBUG2, "dist value %d", DatumGetInt32(valueForDistCol));
 	if (rel_loc_info == NULL)
 		return NULL;
 
@@ -1549,13 +1553,11 @@ GetRelationNodesByQuals(Oid reloid, RelationLocInfo *rel_loc_info,
 		Const *const_expr = (Const *)distcol_expr;
 		distcol_value = const_expr->constvalue;
 		distcol_isnull = const_expr->constisnull;
-		elog(DEBUG2, "const path");
 	}
 	else
 	{
 		distcol_value = (Datum) 0;
 		distcol_isnull = true;
-		elog(DEBUG2, "zero path");
 	}
 
 	exec_nodes = GetRelationNodes(rel_loc_info, distcol_value,

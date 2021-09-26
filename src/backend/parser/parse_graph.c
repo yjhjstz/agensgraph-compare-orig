@@ -3896,7 +3896,7 @@ resolve_future_vertex_mutator(Node *node, resolve_future_vertex_context *ctx)
 		if ((int) var->varlevelsup != ctx->sublevels_up)
 			return node;
 
-		if ((exprTypenode) != VERTEXOID)
+		if (exprType(node) != VERTEXOID)
 			return node;
 
 		fv = findFutureVertex(ctx->pstate, var->varno, var->varattno, 0);
@@ -4158,10 +4158,9 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 	char	   *varname = getCypherName(cnode->variable);
 	int			varloc = getCypherNameLoc(cnode->variable);
 	bool		create;
-	Oid			relid = InvalidOid, seqid;
+	Oid			relid = InvalidOid;
 	TargetEntry	*te;
 	GraphVertex	*gvertex;
-	int64 tid;
 
 	te = findTarget(*targetList, varname);
 	if (te != NULL &&

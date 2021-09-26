@@ -158,8 +158,10 @@ preprocess_targetlist(PlannerInfo *root)
 
 					if (command_type == CMD_GRAPHWRITE) {
 						if (IsA(keyTle->expr, RowExpr)) {
-							distribution->distributionExpr = (Node *)linitial(((RowExpr *) keyTle->expr)->args);
-							ereport(LOG, (errmsg("distributionExpr set id %d", 1111)));
+							if (((RowExpr *) keyTle->expr)->row_typeid == VERTEXOID)
+								distribution->distributionExpr = (Node *)linitial(((RowExpr *) keyTle->expr)->args);
+							else if (((RowExpr *) keyTle->expr)->row_typeid == EDGEOID)
+								distribution->distributionExpr = (Node *)lsecond(((RowExpr *) keyTle->expr)->args);
 						}
 					}
 
