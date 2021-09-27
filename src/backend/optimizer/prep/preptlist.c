@@ -95,8 +95,10 @@ preprocess_targetlist(PlannerInfo *root)
 		 * Sanity check: it'd better be a real relation not, say, a subquery.
 		 * Else parser or rewriter messed up.
 		 */
-		if (target_rte->rtekind != RTE_RELATION)
+		if (target_rte->rtekind != RTE_RELATION) {
+			ereport(LOG, (errmsg("result_relation %d, %d", result_relation, list_length(range_table))));
 			elog(ERROR, "result relation must be a regular relation");
+		}
 
 		target_relation = heap_open(target_rte->relid, NoLock);
 	}

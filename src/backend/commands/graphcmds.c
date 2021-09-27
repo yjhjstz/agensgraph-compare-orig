@@ -42,6 +42,8 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/fmgroids.h"
+#include "utils/tqual.h"
 
 #ifdef PGXC
 #include "pgxc/pgxc.h"
@@ -495,6 +497,68 @@ CheckLabelType(ObjectType type, Oid laboid, const char *command)
 				 errmsg("%s base edge label is prohibited", command)));
 
 	ReleaseSysCache(tuple);
+}
+
+
+int
+GetRtableResult(ObjectType type, List *rtable)
+{
+	HeapTuple tuple;
+	Form_ag_label labtup;
+	ListCell   *rt;
+	int result = 1;
+	Relation	ag_label_desc;
+	ScanKeyData skey;
+	SysScanDesc sscan;
+	bool find = false;
+	ereport(LOG, (errmsg("GetRtableResult b %d", list_length(rtable))));
+
+	ag_label_desc = heap_open(LabelRelationId, AccessShareLock);
+
+	foreach(rt, rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(rt);
+
+		ereport(LOG, (errmsg("rte->rtekind %d, oid %d", rte->rtekind, rte->relid)));
+#if 1		
+		if (rte->rtekind != RTE_RELATION) {
+			result++;
+			continue;
+		}
+		ScanKeyInit(&skey,
+				Anum_ag_label_relid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(rte->relid));
+
+		sscan = systable_beginscan(ag_label_desc, LabelRelidIndexId, true,
+						   SnapshotSelf, 1, &skey);
+
+		tuple = systable_getnext(sscan);
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "could not find tuple for database %u", rte->relid);
+
+		labtup = (Form_ag_label) GETSTRUCT(tuple);
+
+		if (type == OBJECT_VLABEL && labtup->labkind == LABEL_KIND_VERTEX) {
+			find = true;
+		}
+		if (type == OBJECT_ELABEL && labtup->labkind == LABEL_KIND_EDGE) {
+			find = true;
+		}
+		systable_endscan(sscan);
+		if (find) {
+			break;
+		}
+		result++;
+		
+#endif
+	}
+	ereport(LOG, (errmsg("GetRtableResult r= %d", result)));
+
+	heap_close(ag_label_desc, AccessShareLock);
+
+	//return find ? result: -1;	
+	return result;
 }
 
 void

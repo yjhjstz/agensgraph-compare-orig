@@ -53,6 +53,9 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+#include "commands/graphcmds.h"
+
+
 #define CYPHER_SUBQUERY_ALIAS	"_"
 #define CYPHER_OPTMATCH_ALIAS	"_o"
 #define CYPHER_MERGEMATCH_ALIAS	"_m"
@@ -728,6 +731,7 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 	markRTEs(pstate, pstate->p_target_labels);
 
 	qry->rtable = pstate->p_rtable;
+
 	qry->jointree = makeFromExpr(pstate->p_joinlist, qual);
 
 	qry->hasSubLinks = pstate->p_hasSubLinks;
@@ -795,7 +799,8 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	markRTEs(pstate, pstate->p_target_labels);
 
 	qry->rtable = pstate->p_rtable;
-	qry->resultRelation = list_length(pstate->p_rtable) > 0; // person & knows
+	qry->resultRelation = GetRtableResult(OBJECT_VLABEL, qry->rtable);
+	ereport(LOG, (errmsg("resultRelation2-- %d", qry->resultRelation)));
 
 	qry->jointree = makeFromExpr(pstate->p_joinlist, pstate->p_resolved_qual);
 
@@ -905,6 +910,7 @@ transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 Query *
 transformCypherSetClause(ParseState *pstate, CypherClause *clause)
 {
+	elog(DEBUG2, "transformCypherSetClause %s", pstate->p_sourcetext);
 	CypherSetClause *detail = (CypherSetClause *) clause->detail;
 	Query	   *qry;
 	RangeTblEntry *rte;
@@ -967,6 +973,7 @@ transformCypherSetClause(ParseState *pstate, CypherClause *clause)
 Query *
 transformCypherMergeClause(ParseState *pstate, CypherClause *clause)
 {
+	elog(DEBUG2, "transformCypherMergeClause %s", pstate->p_sourcetext);
 	CypherMergeClause *detail = (CypherMergeClause *) clause->detail;
 	Query	   *qry;
 	RangeTblEntry *rte;
