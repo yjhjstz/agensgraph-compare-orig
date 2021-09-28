@@ -1317,7 +1317,7 @@ addRangeTableEntryForRelation(ParseState *pstate,
 {
 	RangeTblEntry *rte = makeNode(RangeTblEntry);
 	char	   *refname = alias ? alias->aliasname : RelationGetRelationName(rel);
-
+	ereport(LOG, (errmsg("addRangeTableEntryForRelation %s", refname)));
 	Assert(pstate != NULL);
 
 	rte->rtekind = RTE_RELATION;
@@ -1376,7 +1376,7 @@ addRangeTableEntryForSubquery(ParseState *pstate,
 	int			numaliases;
 	int			varattno;
 	ListCell   *tlistitem;
-
+	ereport(LOG, (errmsg("addRangeTableEntryForSubquery %s", refname)));
 	Assert(pstate != NULL);
 
 	rte->rtekind = RTE_SUBQUERY;

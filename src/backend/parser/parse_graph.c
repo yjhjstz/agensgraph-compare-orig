@@ -728,7 +728,7 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 	qual = qualAndExpr(qual, pstate->p_resolved_qual);
 
 	// add by young
-	markRTEs(pstate, pstate->p_target_labels);
+	//markRTEs(pstate, pstate->p_target_labels);
 
 	qry->rtable = pstate->p_rtable;
 
@@ -794,13 +794,10 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 													 (Node *) qry->targetList,
 													 FVR_DONT_RESOLVE);
 	markTargetListOrigins(pstate, qry->targetList);
-
 	// add by young
-	markRTEs(pstate, pstate->p_target_labels);
+	//markRTEs(pstate, pstate->p_target_labels);
 
 	qry->rtable = pstate->p_rtable;
-	qry->resultRelation = GetRtableResult(OBJECT_VLABEL, qry->rtable);
-	ereport(LOG, (errmsg("resultRelation2-- %d", qry->resultRelation)));
 
 	qry->jointree = makeFromExpr(pstate->p_joinlist, pstate->p_resolved_qual);
 

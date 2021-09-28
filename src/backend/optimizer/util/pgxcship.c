@@ -251,7 +251,6 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids)
 	List		*query_rtable = query->rtable;
 
 	if (!node) {
-		elog(DEBUG2, "node null");
 		return NULL;
 	}
 

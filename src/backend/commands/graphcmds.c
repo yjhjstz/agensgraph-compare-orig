@@ -520,7 +520,7 @@ GetRtableResult(ObjectType type, List *rtable)
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(rt);
 
 		ereport(LOG, (errmsg("rte->rtekind %d, oid %d", rte->rtekind, rte->relid)));
-#if 1		
+		
 		if (rte->rtekind != RTE_RELATION) {
 			result++;
 			continue;
@@ -535,7 +535,7 @@ GetRtableResult(ObjectType type, List *rtable)
 
 		tuple = systable_getnext(sscan);
 		if (!HeapTupleIsValid(tuple))
-			elog(ERROR, "could not find tuple for database %u", rte->relid);
+			elog(ERROR, "could not find tuple for rel %u", rte->relid);
 
 		labtup = (Form_ag_label) GETSTRUCT(tuple);
 
@@ -550,15 +550,12 @@ GetRtableResult(ObjectType type, List *rtable)
 			break;
 		}
 		result++;
-		
-#endif
 	}
 	ereport(LOG, (errmsg("GetRtableResult r= %d", result)));
 
 	heap_close(ag_label_desc, AccessShareLock);
 
-	//return find ? result: -1;	
-	return result;
+	return find ? result: 0;
 }
 
 void

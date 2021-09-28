@@ -55,7 +55,7 @@
 #include "parser/parse_coerce.h"
 #include "rewrite/rewriteHandler.h"
 #include "utils/rel.h"
-
+#include "commands/graphcmds.h"
 
 static List *expand_targetlist(List *tlist, int command_type,
 				  Index result_relation, Relation rel);
@@ -96,14 +96,17 @@ preprocess_targetlist(PlannerInfo *root)
 		 * Else parser or rewriter messed up.
 		 */
 		if (target_rte->rtekind != RTE_RELATION) {
-			ereport(LOG, (errmsg("result_relation %d, %d", result_relation, list_length(range_table))));
 			elog(ERROR, "result relation must be a regular relation");
 		}
 
 		target_relation = heap_open(target_rte->relid, NoLock);
 	}
-	else
+	else {
 		Assert(command_type == CMD_SELECT || command_type == CMD_GRAPHWRITE);
+		if (command_type == CMD_GRAPHWRITE) {
+			result_relation = GetRtableResult(OBJECT_VLABEL, range_table);
+		}
+	}
 
 	/*
 	 * For UPDATE/DELETE, add any junk column(s) needed to allow the executor
