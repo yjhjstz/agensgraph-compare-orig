@@ -269,7 +269,7 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids)
 			 * Get the datanodes using the resultRelation index.
 			 */
 			
-			if (query->commandType != CMD_SELECT && !from_expr->fromlist)
+			if (query->commandType != CMD_SELECT && !from_expr->fromlist && query->resultRelation)
 			{
 				*relids = bms_make_singleton(query->resultRelation);
 				return pgxc_FQS_datanodes_for_rtr(query->resultRelation,
