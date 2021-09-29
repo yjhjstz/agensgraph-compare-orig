@@ -736,6 +736,7 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 
 	qry->hasSubLinks = pstate->p_hasSubLinks;
 
+	pstate->p_hasGraphwriteClause = true;
 	qry->hasGraphwriteClause = pstate->p_hasGraphwriteClause;
 
 	assign_query_collations(pstate, qry);

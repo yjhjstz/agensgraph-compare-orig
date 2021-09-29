@@ -5869,8 +5869,6 @@ make_remotesubplan(PlannerInfo *root,
 	Assert(!equal(resultDistribution, execDistribution));
 	Assert(!IsA(lefttree, RemoteSubplan));
 
-	ereport(LOG, (errmsg("make_remotesubplan %p", resultDistribution)));
-
 	if (resultDistribution)
 	{
 		node->distributionType = resultDistribution->distributionType;
@@ -5893,11 +5891,6 @@ make_remotesubplan(PlannerInfo *root,
 			{
 				TargetEntry *tle = (TargetEntry *) lfirst(lc);
 
-				if (equal(tle->expr, expr))
-				{
-					node->distributionKey = tle->resno;
-					break;
-				}
 				if(IsA(tle->expr, RowExpr)) {
 					if (((RowExpr *) tle->expr)->row_typeid == VERTEXOID && equal(linitial(((RowExpr *) tle->expr)->args), expr)) {
 						node->distributionKey = 1;
@@ -5912,6 +5905,12 @@ make_remotesubplan(PlannerInfo *root,
 					// 	node->distributionKey = tle->resno;
 					// 	break;
 					// }
+				}
+				if (equal(tle->expr, expr) && !root->parse->hasGraphwriteClause)
+				{
+					node->distributionKey = tle->resno;
+					ereport(LOG, (errmsg("set dkey %d", tle->resno)));
+					break;
 				}
 
 			}
