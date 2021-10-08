@@ -618,12 +618,16 @@ ExecInitGraphDelExprs(List *exprs, ModifyGraphState *mgstate)
 	return exprs;
 }
 
+extern uint32			PGXCNodeIdentifier;
+
 static TupleTableSlot *
 ExecCreateGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 {
 	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	ListCell   *lp;
+
+	ereport(LOG, (errmsg("ExecCreateGraph pxid insert %d", (int)PGXCNodeIdentifier)));
 
 	ResetExprContext(econtext);
 
@@ -1989,8 +1993,9 @@ getResultRelInfo(ModifyGraphState *mgstate, Oid relid)
 		resultRelInfo++;
 	}
 
-	if (i >= mgstate->numResultRelations)
+	if (i >= mgstate->numResultRelations) {
 		elog(ERROR, "invalid object ID %u for the target label", relid);
+	}
 
 	return resultRelInfo;
 }

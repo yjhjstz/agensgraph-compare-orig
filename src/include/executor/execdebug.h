@@ -70,7 +70,8 @@
 #define NL_nodeDisplay(l)				nodeDisplay(l)
 #define NL_printf(s)					printf(s)
 #define NL1_printf(s, a)				printf(s, a)
-#define ENL1_printf(message)			printf("ExecNestLoop: %s\n", message)
+//#define ENL1_printf(message)			printf("ExecNestLoop: %s\n", message)
+#define ENL1_printf(message)            ereport(LOG, (errmsg("ExecNestLoop %s\n", message)));
 #else
 #define NL_nodeDisplay(l)
 #define NL_printf(s)
@@ -86,7 +87,8 @@
 #define NLV_nodeDisplay(l)				nodeDisplay(l)
 #define NLV_printf(s)					printf(s)
 #define NLV1_printf(s, a)				printf(s, a)
-#define ENLV1_printf(message)			printf("ExecNestLoopVLE: %s\n", message)
+//#define ENLV1_printf(message)			printf("ExecNestLoopVLE: %s\n", message)
+#define ENLV1_printf(message)           ereport(LOG, (errmsg("ExecNestLoopVLE %s\n", message)));
 #else
 #define NLV_nodeDisplay(l)
 #define NLV_printf(s)

@@ -269,13 +269,12 @@ ExecInsert(ModifyTableState *mtstate,
 	List	   *recheckIndexes = NIL;
 	TupleTableSlot *result = NULL;
 
-	ereport(LOG, (errmsg("pxid insert %d", (int)PGXCNodeIdentifier)));
+	ereport(LOG, (errmsg("ExecInsert pxid insert %d", (int)PGXCNodeIdentifier)));
 	/*
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
 	tuple = ExecMaterializeSlot(slot);
-
 	/*
 	 * get information on the (current) result relation
 	 */

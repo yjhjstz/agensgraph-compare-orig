@@ -6064,7 +6064,9 @@ outNode(StringInfo str, const void *obj)
 			case T_GraphDelElem:
 				_outGraphDelElem(str, obj);
 				break;
-
+			case T_RemoteSubPath:
+				//todo(young)
+				break;
 			default:
 
 				/*

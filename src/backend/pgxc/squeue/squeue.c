@@ -957,7 +957,7 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 	LWLockRelease(clwlock);
 }
 
-extern uint32			PGXCNodeIdentifier;
+//extern uint32			PGXCNodeIdentifier;
 /*
  * SharedQueueRead
  *    Read one data row from the specified queue into the provided tupleslot.
@@ -976,7 +976,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 	int 		datalen;
 
 	Assert(cstate->cs_qlength > 0);
-	ereport(LOG, (errmsg("pxid %d", (int)PGXCNodeIdentifier)));
+	//ereport(LOG, (errmsg("SharedQueueRead pxid %d", (int)PGXCNodeIdentifier)));
 	/*
 	 * If we run out of produced data while reading, we would like to wake up
 	 * and tell the producer to produce more. But in order to ensure that the
