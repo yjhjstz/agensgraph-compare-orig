@@ -2282,8 +2282,8 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 	ParseNamespaceItem *nsitem;
 	Node	   *qual;
 
-	if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
-		elog(ERROR, "DML query to graph objects is not allowed");
+	// if (RangeVarIsLabel(stmt->relation) && !enableGraphDML)
+	// 	elog(ERROR, "DML query to graph objects is not allowed");
 
 	qry->commandType = CMD_UPDATE;
 	pstate->p_is_insert = false;

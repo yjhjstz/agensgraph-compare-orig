@@ -1178,11 +1178,12 @@ parserOpenTable(ParseState *pstate, const RangeVar *relation, int lockmode)
 	rel = heap_openrv_extended(relation, lockmode, true);
 	if (rel == NULL)
 	{
-		if (relation->schemaname)
+		if (relation->schemaname) {
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_TABLE),
 					 errmsg("relation \"%s.%s\" does not exist",
 							relation->schemaname, relation->relname)));
+		}
 		else
 		{
 			/*
