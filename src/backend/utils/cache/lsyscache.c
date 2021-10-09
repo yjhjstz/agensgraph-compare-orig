@@ -35,6 +35,7 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_type.h"
+#include "catalog/indexing.h"
 #ifdef PGXC
 #include "catalog/pgxc_class.h"
 #include "catalog/pgxc_node.h"
@@ -3683,6 +3684,48 @@ get_labid_relid(Oid graphid, uint16 labid)
 	{
 		return InvalidOid;
 	}
+}
+
+Oid
+get_labid_relid_scan(Oid graphid, char labkind)
+{
+	HeapTuple tuple;
+	Form_ag_label labtup;
+	Relation	ag_label;
+	ScanKeyData skey[2];
+	SysScanDesc sscan;
+	Oid relid;
+
+	ag_label = heap_open(LabelRelationId, AccessShareLock);
+
+	ScanKeyInit(&skey[0],
+			Anum_ag_label_graphid,
+			BTEqualStrategyNumber, F_OIDEQ,
+			ObjectIdGetDatum(graphid));
+	ScanKeyInit(&skey[1],
+			Anum_ag_label_labkind,
+			BTEqualStrategyNumber, F_CHAREQ,
+			CharGetDatum(labkind));
+
+	sscan = systable_beginscan(ag_label, InvalidOid, false,
+					   SnapshotSelf, 2, &skey[0]);
+
+	tuple = systable_getnext(sscan);
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "could not find tuple for rel %u, %c", graphid, labkind);
+
+	labtup = (Form_ag_label) GETSTRUCT(tuple);
+	
+	if (labtup->labkind == labkind) {
+		relid = labtup->relid;
+	} else {
+		elog(ERROR, "could not find label for rel %u, %c", graphid, labkind);
+	}
+	
+	systable_endscan(sscan);
+	heap_close(ag_label, AccessShareLock);
+
+	return relid;
 }
 
 bool

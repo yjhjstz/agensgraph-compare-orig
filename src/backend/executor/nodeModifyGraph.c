@@ -14,6 +14,7 @@
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/ag_graph_fn.h"
+#include "catalog/ag_label.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "executor/nodeModifyGraph.h"
@@ -41,6 +42,7 @@ bool		auto_gather_graphmeta = false;
 typedef struct ModifiedElemEntry
 {
 	Graphid		key;
+	Oid		elemtype;
 	union
 	{
 		Datum			elem;	/* modified graph element */
@@ -99,7 +101,7 @@ static Datum createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge,
 							 Graphid start, Graphid end, TupleTableSlot *slot);
 
 /* eager */
-static void enterSetPropTable(ModifyGraphState *mgstate, Datum gid,
+static void enterSetPropTable(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 							  Datum newelem);
 static void enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type);
 static Datum getVertexFinal(ModifyGraphState *mgstate, Datum origin);
@@ -1155,7 +1157,7 @@ ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 		MemoryContextSwitchTo(oldmctx);
 
 		if (mgstate->elemTable)
-			enterSetPropTable(mgstate, gid, newelem);
+			enterSetPropTable(mgstate, elemtype, gid, newelem);
 		else
 			updateElemProp(mgstate, elemtype, gid, newelem);
 
@@ -1254,9 +1256,11 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	LockTupleMode lockmode;
 	HTSU_Result	result;
 	HeapUpdateFailureData hufd;
+	char labkind = (elemtype == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
 
-	relid = get_labid_relid(mgstate->graphid,
-							GraphidGetLabid(DatumGetGraphid(gid)));
+	//relid = get_labid_relid_scan(mgstate->graphid,
+	//						GraphidGetLabid(DatumGetGraphid(gid)));
+	relid = get_labid_relid_scan(mgstate->graphid, labkind);
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1641,7 +1645,7 @@ createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 }
 
 static void
-enterSetPropTable(ModifyGraphState *mgstate, Datum gid, Datum newelem)
+enterSetPropTable(ModifyGraphState *mgstate, Oid elemtype, Datum gid, Datum newelem)
 {
 	ModifiedElemEntry *entry;
 	bool		found;
@@ -1660,6 +1664,7 @@ enterSetPropTable(ModifyGraphState *mgstate, Datum gid, Datum newelem)
 	}
 
 	entry->data.elem = datumCopy(newelem, false, -1);
+	entry->elemtype = elemtype;
 }
 
 static void
@@ -1942,10 +1947,10 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 	while ((entry = hash_seq_search(&seq)) != NULL)
 	{
 		Datum	gid = PointerGetDatum(entry->key);
-		Oid		type;
+		Oid		type = entry->elemtype;
 
-		type = get_labid_typeoid(mgstate->graphid,
-								 GraphidGetLabid(DatumGetGraphid(gid)));
+		// type = get_labid_typeoid(mgstate->graphid,
+		// 						 GraphidGetLabid(DatumGetGraphid(gid)));
 
 		/* write the object to heap */
 		if (plan->operation == GWROP_DELETE)

@@ -4449,6 +4449,7 @@ transformSetProp(ParseState *pstate, RangeTblEntry *rte, CypherSetProp *sp,
 	elem = transformCypherMapForSet(pstate, sp->prop, &pathelems, &varname);
 	if (pathelems != NIL)
 		path = makeArrayExpr(TEXTARRAYOID, TEXTOID, pathelems);
+	ereport(LOG, (errmsg("transformSetProp oid %d", rte->relid)));
 
 	/*
 	 * Get the original property map of the element.
