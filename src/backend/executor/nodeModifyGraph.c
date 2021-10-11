@@ -229,7 +229,6 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 			int			index = 1;
 			/* open relation in Executor context */
 			Relation	relation = heap_open(relid, RowExclusiveLock);
-
 			/* Switch to the memory context for building RTEs */
 			MemoryContext oldmctx = MemoryContextSwitchTo(rtemctx);
 
@@ -1007,9 +1006,13 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
 	Relation	resultRelationDesc;
 	HTSU_Result	result;
 	HeapUpdateFailureData hufd;
+	// relid = get_labid_relid(mgstate->graphid,
+	// 						GraphidGetLabid(DatumGetGraphid(gid)));
+	char labkind = (type == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
 
-	relid = get_labid_relid(mgstate->graphid,
-							GraphidGetLabid(DatumGetGraphid(gid)));
+	relid = get_labid_relid_scan(mgstate->graphid, labkind);
+	//ereport(LOG, (errmsg("type oid %d, rel %u", type, relid)));
+
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1259,7 +1262,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	char labkind = (elemtype == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
 
 	//relid = get_labid_relid_scan(mgstate->graphid,
-	//						GraphidGetLabid(DatumGetGraphid(gid)));
+	//                                              GraphidGetLabid(DatumGetGraphid(gid)));
 	relid = get_labid_relid_scan(mgstate->graphid, labkind);
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
@@ -1790,6 +1793,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 	{
 		elog(ERROR, "unexpected graph type %d", type);
 	}
+	entry->elemtype = type;
 }
 
 static Datum
