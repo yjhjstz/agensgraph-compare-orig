@@ -4580,18 +4580,18 @@ transformCreateGraphStmt(CreateGraphStmt *stmt)
 	labseq->if_not_exists = false;
 	labseq->is_serial = false;
 
-	// vertex = makeNode(CreateLabelStmt);
-	// vertex->labelKind = LABEL_VERTEX;
-	// vertex->relation = makeRangeVar(stmt->graphname, AG_VERTEX, -1);
-	// vertex->inhRelations = NIL;
+	vertex = makeNode(CreateLabelStmt);
+	vertex->labelKind = LABEL_VERTEX;
+	vertex->relation = makeRangeVar(stmt->graphname, AG_VERTEX, -1);
+	vertex->inhRelations = NIL;
 
-	// edge = makeNode(CreateLabelStmt);
-	// edge->labelKind = LABEL_EDGE;
-	// edge->relation = makeRangeVar(stmt->graphname, AG_EDGE, -1);
-	// edge->inhRelations = NIL;
+	edge = makeNode(CreateLabelStmt);
+	edge->labelKind = LABEL_EDGE;
+	edge->relation = makeRangeVar(stmt->graphname, AG_EDGE, -1);
+	edge->inhRelations = NIL;
 
-	// return list_make3(labseq, vertex, edge);
-	return list_make1(labseq);
+	return list_make3(labseq, vertex, edge);
+	//return list_make1(labseq);
 }
 
 /*
@@ -4617,7 +4617,7 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 	char		descbuf[256];
 	char	   *labdesc;
 	char	   *tabdesc;
-	char	   *qname;
+	char	   *qname = NULL;
 	CommentStmt *comment;
 	List	   *save_alist;
 	List	   *result;
@@ -4697,8 +4697,8 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 			char *name;
 
 			name = (labelStmt->labelKind == LABEL_VERTEX ? AG_VERTEX : AG_EDGE);
-			//stmt->inhRelations = list_make1(makeRangeVar(graphname, name, -1));
-			stmt->inhRelations = NIL;
+			stmt->inhRelations = list_make1(makeRangeVar(graphname, name, -1));
+			//stmt->inhRelations = NIL;
 		}
 		/* user requested inherit option */
 		else
@@ -4764,7 +4764,7 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 														  : "CREATE ELABEL";
 	cxt.relation = stmt->relation;
 	cxt.rel = NULL;
-	cxt.inhRelations = NIL;
+	cxt.inhRelations = stmt->inhRelations;
 	cxt.isforeign = false;
 	cxt.isalter = false;
 	cxt.hasoids = false;
@@ -4792,10 +4792,10 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 		cxt.distributeby = stmt->distributeby;
 		stmt->distributeby->disttype = DISTTYPE_HASH;
 		if (labelStmt->labelKind == LABEL_VERTEX) {
-			elog(INFO , "hash id %s", qname);
+			elog(INFO , "hash id ");
 			stmt->distributeby->colname = AG_ELEM_LOCAL_ID;
 		} else {
-			elog(INFO , "hash start %s", qname);
+			elog(INFO , "hash start ");
 			stmt->distributeby->colname = AG_START_ID;
 		}
 	}
@@ -4820,7 +4820,23 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 		}
 	}
 
-
+	/* make descriptions for label and table */
+	if (strcmp(stmt->relation->relname, AG_VERTEX) == 0)
+	{
+		snprintf(descbuf, sizeof(descbuf), "base vertex label of graph %s",
+				 graphname);
+		labdesc = pstrdup(descbuf);
+		comment = makeComment(OBJECT_VLABEL, stmt->relation, labdesc);
+		cxt.alist = lappend(cxt.alist, comment);
+	}
+	else if (strcmp(labelStmt->relation->relname, AG_EDGE) == 0)
+	{
+		snprintf(descbuf, sizeof(descbuf), "base edge label of graph %s",
+				 graphname);
+		labdesc = pstrdup(descbuf);
+		comment = makeComment(OBJECT_ELABEL, stmt->relation, labdesc);
+		cxt.alist = lappend(cxt.alist, comment);
+	}
 	qname = quote_qualified_identifier(graphname, stmt->relation->relname);
 	snprintf(descbuf, sizeof(descbuf), "base table for graph label %s", qname);
 	tabdesc = pstrdup(descbuf);
