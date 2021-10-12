@@ -1377,7 +1377,7 @@ addRangeTableEntryForSubquery(ParseState *pstate,
 	int			numaliases;
 	int			varattno;
 	ListCell   *tlistitem;
-	//ereport(LOG, (errmsg("addRangeTableEntryForSubquery %s", refname)));
+	//ereport(LOG, (errmsg("addRangeTableEntryForSubquery %d", lateral)));
 	Assert(pstate != NULL);
 
 	rte->rtekind = RTE_SUBQUERY;

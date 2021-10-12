@@ -6093,7 +6093,7 @@ nodeToString(const void *obj)
 	/* see stringinfo.h for an explanation of this maneuver */
 	initStringInfo(&str);
 	outNode(&str, obj);
-	ereport(LOG, (errmsg("nodeToString %s", str.data)));
+	//ereport(LOG, (errmsg("nodeToString %s", str.data)));
 
 	return str.data;
 }

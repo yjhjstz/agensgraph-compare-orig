@@ -217,6 +217,7 @@ extern char *get_labid_labname(Oid graphid, uint16 labid);
 extern Oid	get_labid_relid(Oid graphid, uint16 labid);
 extern Oid	get_labid_relid_scan(Oid graphid, char labkind);
 extern bool labid_exists(Oid graphid, uint16 labid);
+extern Oid  get_base_relid(const char *labname, Oid graphid);
 extern Oid	get_labname_laboid(const char *labname, Oid graphid);
 extern uint16 get_labname_labid(const char *labname, Oid graphid);
 extern Oid	get_laboid_relid(Oid laboid);

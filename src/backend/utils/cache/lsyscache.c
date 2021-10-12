@@ -15,6 +15,7 @@
  */
 #include "postgres.h"
 
+#include "ag_const.h"
 #include "access/hash.h"
 #include "access/htup_details.h"
 #include "bootstrap/bootstrap.h"
@@ -52,6 +53,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+
 
 /* Hook for plugins to get control in get_attavgwidth() */
 get_attavgwidth_hook_type get_attavgwidth_hook = NULL;
@@ -3710,22 +3712,54 @@ get_labid_relid_scan(Oid graphid, char labkind)
 	sscan = systable_beginscan(ag_label, InvalidOid, false,
 					   SnapshotSelf, 2, &skey[0]);
 
-	tuple = systable_getnext(sscan);
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "could not find tuple for rel %u, %c", graphid, labkind);
+	while (HeapTupleIsValid(tuple = systable_getnext(sscan))) {
+		labtup = (Form_ag_label) GETSTRUCT(tuple);
+	
+		if (strcmp(NameStr(labtup->labname), AG_VERTEX) == 0 && labtup->labkind == 'v') {
+			continue;
+		}
 
-	labtup = (Form_ag_label) GETSTRUCT(tuple);
-	
-	if (labtup->labkind == labkind) {
-		relid = labtup->relid;
-	} else {
-		elog(ERROR, "could not find label for rel %u, %c", graphid, labkind);
+		if (strcmp(NameStr(labtup->labname), AG_EDGE) == 0 && labtup->labkind == 'e') {
+			continue;
+		}
+
+		if (labtup->labkind == labkind) {
+			relid = labtup->relid;
+			break;
+		} else {
+			elog(ERROR, "could not find label for rel %u, %c", graphid, labkind);
+		}
 	}
-	
+
 	systable_endscan(sscan);
 	heap_close(ag_label, AccessShareLock);
 
 	return relid;
+}
+
+
+Oid
+get_base_relid(const char *labname, Oid graphid)
+{
+	HeapTuple tp;
+
+	tp = SearchSysCache2(LABELNAMEGRAPH,
+						 PointerGetDatum(labname),
+						 ObjectIdGetDatum(graphid));
+
+	if (HeapTupleIsValid(tp))
+	{
+		Form_ag_label labtup = (Form_ag_label) GETSTRUCT(tp);
+		Oid relid;
+
+		relid = labtup->relid;
+		ReleaseSysCache(tp);
+		return relid;
+	}
+	else
+	{
+		return InvalidOid;
+	}
 }
 
 bool

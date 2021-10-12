@@ -1210,7 +1210,6 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	 * code on the subquery ones too.)
 	 */
 	parse->rtable = list_concat(parse->rtable, subquery->rtable);
-
 	/*
 	 * Pull up any FOR UPDATE/SHARE markers, too.  (OffsetVarNodes already
 	 * adjusted the marker rtindexes, so just concat the lists.)

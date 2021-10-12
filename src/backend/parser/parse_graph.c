@@ -817,6 +817,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 Query *
 transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 {
+	elog(DEBUG2, "transformCypherDeleteClause %s", pstate->p_sourcetext);
 	CypherDeleteClause *detail = (CypherDeleteClause *) clause->detail;
 	RangeTblEntry *rte;
 	ListCell   *le;
@@ -887,6 +888,7 @@ transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 	qry->targetList = (List *) resolve_future_vertex(pstate,
 													 (Node *) qry->targetList,
 													 FVR_DONT_RESOLVE);
+
 
 	qry->rtable = pstate->p_rtable;
 	qry->jointree = makeFromExpr(pstate->p_joinlist, NULL);

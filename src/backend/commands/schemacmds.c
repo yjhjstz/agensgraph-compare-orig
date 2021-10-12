@@ -56,7 +56,7 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 					bool sentToRemote,
 					int stmt_location, int stmt_len)
 {
-	elog(INFO , "sentToRemote %d", sentToRemote);
+	//elog(INFO , "sentToRemote %d", sentToRemote);
 	const char *schemaName = stmt->schemaname;
 	Oid			namespaceId;
 	OverrideSearchPath *overridePath;

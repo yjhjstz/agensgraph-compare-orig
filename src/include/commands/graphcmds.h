@@ -38,5 +38,6 @@ extern Oid DisableIndexCommand(DisableIndexStmt *disableStmt);
 extern bool isEmptyLabel(char *label_name);
 extern void deleteRelatedEdges(const char *vlab);
 extern int GetRtableResult(ObjectType type, List *rtable);
+extern int GetRtableFromTargets(ObjectType type, List *rtable);
 
 #endif	/* GRAPHCMDS_H */

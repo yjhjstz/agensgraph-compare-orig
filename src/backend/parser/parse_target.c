@@ -84,6 +84,7 @@ markRTEs(ParseState *pstate, List *oidlist)
 										NULL,
 										false,
 										false);
+
 		RelationClose(rel);
 	}
 	return;

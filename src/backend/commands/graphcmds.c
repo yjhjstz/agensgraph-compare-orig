@@ -37,6 +37,7 @@
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
 #include "parser/parse_utilcmd.h"
+#include "parser/parsetree.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -505,7 +506,7 @@ GetRtableResult(ObjectType type, List *rtable)
 {
 	HeapTuple tuple;
 	Form_ag_label labtup;
-	ListCell   *rt;
+	ListCell   *rt, *rt1, *sub;
 	int result = 1;
 	Relation	ag_label_desc;
 	ScanKeyData skey;
@@ -515,11 +516,24 @@ GetRtableResult(ObjectType type, List *rtable)
 
 	ag_label_desc = heap_open(LabelRelationId, AccessShareLock);
 
+#if 0
+	foreach(rt1, rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(rt1);
+		if (rte->rtekind == RTE_SUBQUERY) {
+			foreach(sub, rte->subquery->rtable) {
+				RangeTblEntry *r = (RangeTblEntry *) lfirst(sub);
+				ereport(LOG, (errmsg("sub rtekind %d, oid %d", r->rtekind, r->relid)));
+
+			}
+		}
+	}
+#endif
 	foreach(rt, rtable)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(rt);
 
-		ereport(LOG, (errmsg("rte->rtekind %d, oid %d", rte->rtekind, rte->relid)));
+		ereport(LOG, (errmsg("rte.rtekind %d, oid %d", rte->rtekind, rte->relid)));
 		
 		if (rte->rtekind != RTE_RELATION) {
 			result++;
@@ -552,6 +566,60 @@ GetRtableResult(ObjectType type, List *rtable)
 		result++;
 	}
 	ereport(LOG, (errmsg("GetRtableResult r= %d", result)));
+
+	heap_close(ag_label_desc, AccessShareLock);
+
+	return find ? result: 0;
+}
+
+int
+GetRtableFromTargets(ObjectType type, List *rtable)
+{
+	HeapTuple tuple;
+	Form_ag_label labtup;
+	ListCell   *lc;
+	int result = 1;
+	Relation	ag_label_desc;
+	ScanKeyData skey;
+	SysScanDesc sscan;
+	bool find = false;
+	ereport(LOG, (errmsg("GetRtableFromTargets b %d", list_length(rtable))));
+
+	ag_label_desc = heap_open(LabelRelationId, AccessShareLock);
+
+	foreach(lc, rtable)
+	{
+		Oid	relid = lfirst_oid(lc);
+
+		ereport(LOG, (errmsg("oid %d" , relid)));
+
+		ScanKeyInit(&skey,
+				Anum_ag_label_relid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+
+		sscan = systable_beginscan(ag_label_desc, LabelRelidIndexId, true,
+						   SnapshotSelf, 1, &skey);
+
+		tuple = systable_getnext(sscan);
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "could not find tuple for rel %u", relid);
+
+		labtup = (Form_ag_label) GETSTRUCT(tuple);
+
+		if (type == OBJECT_VLABEL && labtup->labkind == LABEL_KIND_VERTEX) {
+			find = true;
+		}
+		if (type == OBJECT_ELABEL && labtup->labkind == LABEL_KIND_EDGE) {
+			find = true;
+		}
+		systable_endscan(sscan);
+		if (find) {
+			break;
+		}
+		result++;
+	}
+	ereport(LOG, (errmsg("GetRtableFromTargets r= %d", result)));
 
 	heap_close(ag_label_desc, AccessShareLock);
 
