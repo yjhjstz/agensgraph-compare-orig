@@ -5906,7 +5906,7 @@ make_remotesubplan(PlannerInfo *root,
 					// 	break;
 					// }
 				}
-				if (equal(tle->expr, expr) && !root->parse->hasGraphwriteClause)
+				if (equal(tle->expr, expr))
 				{
 					node->distributionKey = tle->resno;
 					ereport(LOG, (errmsg("set dkey %d", tle->resno)));

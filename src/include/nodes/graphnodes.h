@@ -59,6 +59,7 @@ typedef struct GraphSetProp
 	Node	   *expr;			/* expression of value */
 	ExprState  *es_elem;
 	ExprState  *es_expr;
+	Oid			relid;
 } GraphSetProp;
 
 typedef struct GraphDelElem
@@ -67,6 +68,7 @@ typedef struct GraphDelElem
 	char	   *variable;
 	Node	   *elem;
 	ExprState  *es_elem;
+	Oid			relid;
 } GraphDelElem;
 
 #endif	/* GRAPHNODES_H */

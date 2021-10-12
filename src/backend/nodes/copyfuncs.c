@@ -5349,6 +5349,7 @@ _copyGraphSetProp(const GraphSetProp *from)
 	COPY_STRING_FIELD(variable);
 	COPY_NODE_FIELD(elem);
 	COPY_NODE_FIELD(expr);
+	COPY_SCALAR_FIELD(relid);
 
 	return newnode;
 }
@@ -5360,6 +5361,7 @@ _copyGraphDelElem(const GraphDelElem *from)
 
 	COPY_STRING_FIELD(variable);
 	COPY_NODE_FIELD(elem);
+	COPY_SCALAR_FIELD(relid);
 
 	return newnode;
 }

@@ -3793,7 +3793,11 @@ _readGraphSetProp(void)
 	READ_STRING_FIELD(variable);
 	READ_NODE_FIELD(elem);
 	READ_NODE_FIELD(expr);
-
+	if (portable_input) {
+		READ_RELID_FIELD(relid);
+	} else {
+		READ_OID_FIELD(relid);
+	}
 	READ_DONE();
 }
 
@@ -3804,7 +3808,11 @@ _readGraphDelElem(void)
 
 	READ_STRING_FIELD(variable);
 	READ_NODE_FIELD(elem);
-
+	if (portable_input) {
+		READ_RELID_FIELD(relid);
+	} else {
+		READ_OID_FIELD(relid);
+	}
 	READ_DONE();
 }
 

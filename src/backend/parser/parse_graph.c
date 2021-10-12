@@ -5450,9 +5450,10 @@ findAllModifiedLabels(Query *qry)
 		foreach(lc, qry->graph.exprs)
 		{
 			GraphDelElem *gde = lfirst(lc);
-
+			Oid relid = find_target_label(gde->elem, qry);
 			label_oids = lappend_oid(label_oids,
-									 find_target_label(gde->elem, qry));
+									 relid);
+			gde->relid = relid;
 		}
 	}
 
@@ -5462,9 +5463,10 @@ findAllModifiedLabels(Query *qry)
 		foreach(lc, qry->graph.sets)
 		{
 			GraphSetProp *gsp = lfirst(lc);
-
+			Oid relid = find_target_label(gsp->elem, qry);
 			label_oids = lappend_oid(label_oids,
-									 find_target_label(gsp->elem, qry));
+									 relid);
+			gsp->relid = relid;
 		}
 	}
 

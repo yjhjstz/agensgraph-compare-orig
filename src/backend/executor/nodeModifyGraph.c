@@ -43,6 +43,7 @@ typedef struct ModifiedElemEntry
 {
 	Graphid		key;
 	Oid		elemtype;
+	Oid     relid;
 	union
 	{
 		Datum			elem;	/* modified graph element */
@@ -73,7 +74,7 @@ static TupleTableSlot *ExecDeleteGraph(ModifyGraphState *mgstate,
 static bool isDetachRequired(ModifyGraphState *mgstate);
 static bool isEdgeArrayOfPath(List *exprs, char *variable);
 static void deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid,
-					   Oid type);
+					   Oid type, Oid relid);
 
 /* SET */
 static TupleTableSlot *ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind,
@@ -84,7 +85,7 @@ static void findAndReflectNewestValue(ModifyGraphState *mgstate,
 									  TupleTableSlot *slot,
 									  bool free_slot);
 static ItemPointer updateElemProp(ModifyGraphState *mgstate, Oid elemtype,
-								  Datum gid, Datum elem_datum);
+								  Datum gid, Datum elem_datum, Oid relid);
 static Datum makeModifiedElem(Datum elem, Oid elemtype,
 							  Datum id, Datum prop_map, Datum tid);
 
@@ -102,8 +103,8 @@ static Datum createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge,
 
 /* eager */
 static void enterSetPropTable(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
-							  Datum newelem);
-static void enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type);
+							  Datum newelem, Oid relid);
+static void enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid);
 static Datum getVertexFinal(ModifyGraphState *mgstate, Datum origin);
 static Datum getEdgeFinal(ModifyGraphState *mgstate, Datum origin);
 static Datum getPathFinal(ModifyGraphState *node, Datum origin);
@@ -943,7 +944,7 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		 * NOTE: After all the graph elements to be removed are collected,
 		 *       they will be removed.
 		 */
-		enterDelPropTable(mgstate, elem, type);
+		enterDelPropTable(mgstate, elem, type, gde->relid);
 
 		/*
 		 * The graphpath must be passed to the next plan for deleting
@@ -997,10 +998,10 @@ isDetachRequired(ModifyGraphState *mgstate)
 }
 
 static void
-deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
+deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid relid)
 {
 	EState	   *estate = mgstate->ps.state;
-	Oid			relid;
+	//Oid			relid;
 	ResultRelInfo *resultRelInfo;
 	ResultRelInfo *savedResultRelInfo;
 	Relation	resultRelationDesc;
@@ -1008,9 +1009,9 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
 	HeapUpdateFailureData hufd;
 	// relid = get_labid_relid(mgstate->graphid,
 	// 						GraphidGetLabid(DatumGetGraphid(gid)));
-	char labkind = (type == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
+	//char labkind = (type == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
 
-	relid = get_labid_relid_scan(mgstate->graphid, labkind);
+	//relid = get_labid_relid_scan(mgstate->graphid, labkind);
 	//ereport(LOG, (errmsg("type oid %d, rel %u", type, relid)));
 
 	resultRelInfo = getResultRelInfo(mgstate, relid);
@@ -1106,6 +1107,7 @@ ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 		Datum		tid;
 		Datum		newelem;
 		MemoryContext oldmctx;
+		Oid 		relid = gsp->relid;
 
 		if (gsp->kind != kind)
 		{
@@ -1160,9 +1162,9 @@ ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 		MemoryContextSwitchTo(oldmctx);
 
 		if (mgstate->elemTable)
-			enterSetPropTable(mgstate, elemtype, gid, newelem);
+			enterSetPropTable(mgstate, elemtype, gid, newelem, relid);
 		else
-			updateElemProp(mgstate, elemtype, gid, newelem);
+			updateElemProp(mgstate, elemtype, gid, newelem, relid);
 
 		setSlotValueByName(result, newelem, gsp->variable);
 		/*
@@ -1246,11 +1248,11 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
 /* See ExecUpdate() */
 static ItemPointer
 updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
-			   Datum elem_datum)
+			   Datum elem_datum, Oid relid)
 {
 	EState	   *estate = mgstate->ps.state;
 	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
-	Oid			relid;
+	//Oid			relid;
 	ItemPointer	ctid;
 	HeapTuple	tuple;
 	ResultRelInfo *resultRelInfo;
@@ -1259,11 +1261,11 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	LockTupleMode lockmode;
 	HTSU_Result	result;
 	HeapUpdateFailureData hufd;
-	char labkind = (elemtype == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
+	//char labkind = (elemtype == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
 
 	//relid = get_labid_relid_scan(mgstate->graphid,
 	//                                              GraphidGetLabid(DatumGetGraphid(gid)));
-	relid = get_labid_relid_scan(mgstate->graphid, labkind);
+	//relid = get_labid_relid_scan(mgstate->graphid, labkind);
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1648,7 +1650,7 @@ createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 }
 
 static void
-enterSetPropTable(ModifyGraphState *mgstate, Oid elemtype, Datum gid, Datum newelem)
+enterSetPropTable(ModifyGraphState *mgstate, Oid elemtype, Datum gid, Datum newelem, Oid relid)
 {
 	ModifiedElemEntry *entry;
 	bool		found;
@@ -1668,10 +1670,12 @@ enterSetPropTable(ModifyGraphState *mgstate, Oid elemtype, Datum gid, Datum newe
 
 	entry->data.elem = datumCopy(newelem, false, -1);
 	entry->elemtype = elemtype;
+	entry->relid = relid;
+
 }
 
 static void
-enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
+enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 {
 	Datum		gid;
 	bool		found;
@@ -1794,6 +1798,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 		elog(ERROR, "unexpected graph type %d", type);
 	}
 	entry->elemtype = type;
+	entry->relid = relid;
 }
 
 static Datum
@@ -1952,18 +1957,18 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 	{
 		Datum	gid = PointerGetDatum(entry->key);
 		Oid		type = entry->elemtype;
-
+		Oid 	relid = entry->relid;
 		// type = get_labid_typeoid(mgstate->graphid,
 		// 						 GraphidGetLabid(DatumGetGraphid(gid)));
 
 		/* write the object to heap */
 		if (plan->operation == GWROP_DELETE)
-			deleteElem(mgstate, gid, &entry->data.tid, type);
+			deleteElem(mgstate, gid, &entry->data.tid, type, relid);
 		else
 		{
 			ItemPointer	ctid;
 
-			ctid = updateElemProp(mgstate, type, gid, entry->data.elem);
+			ctid = updateElemProp(mgstate, type, gid, entry->data.elem, relid);
 
 			if (mgstate->eagerness)
 			{

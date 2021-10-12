@@ -5265,6 +5265,11 @@ _outGraphSetProp(StringInfo str, const GraphSetProp *node)
 	WRITE_STRING_FIELD(variable);
 	WRITE_NODE_FIELD(elem);
 	WRITE_NODE_FIELD(expr);
+	if (portable_output) {
+		WRITE_RELID_FIELD(relid);
+	} else {
+		WRITE_OID_FIELD(relid);
+	}
 }
 
 static void
@@ -5274,6 +5279,11 @@ _outGraphDelElem(StringInfo str, const GraphDelElem *node)
 
 	WRITE_STRING_FIELD(variable);
 	WRITE_NODE_FIELD(elem);
+	if (portable_output) {
+		WRITE_RELID_FIELD(relid);
+	} else {
+		WRITE_OID_FIELD(relid);
+	}
 }
 
 /*
