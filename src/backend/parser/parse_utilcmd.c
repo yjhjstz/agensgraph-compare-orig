@@ -4935,25 +4935,25 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 static List *
 makeVertexElements(void)
 {
-	Constraint *pk = makeNode(Constraint);
+	//Constraint *pk = makeNode(Constraint);
 	ColumnDef  *id = makeNode(ColumnDef);
 	Constraint *notnull = makeNode(Constraint);
 	Constraint *jsonb_empty_obj = makeNode(Constraint);
 	List	   *constrs;
 	ColumnDef  *prop_map = makeNode(ColumnDef);
 
-	pk->contype = CONSTR_PRIMARY;
-	pk->location = -1;
+	// pk->contype = CONSTR_PRIMARY;
+	// pk->location = -1;
 
-	// notnull->contype = CONSTR_NOTNULL;
-	// notnull->location = -1;
+	notnull->contype = CONSTR_NOTNULL;
+	notnull->location = -1;
 
-	// constrs = list_make1(notnull);
+	constrs = list_make1(notnull);
 
 	id->colname = AG_ELEM_LOCAL_ID;
 	id->typeName = makeTypeName("graphid");
 	id->is_local = true;
-	id->constraints = list_make1(pk);
+	id->constraints = copyObject(constrs);//list_make1(pk);
 	id->location = -1;
 	//id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
 
