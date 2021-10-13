@@ -81,7 +81,7 @@ preprocess_targetlist(PlannerInfo *root)
 	Relation	target_relation = NULL;
 	List	   *tlist;
 	ListCell   *lc;
-	Relation   rel;
+	Relation   rel = NULL;
 	/*
 	 * If there is a result relation, open it so we can look for missing
 	 * columns and so on.  We assume that previous code already acquired at
@@ -100,6 +100,7 @@ preprocess_targetlist(PlannerInfo *root)
 		}
 
 		target_relation = heap_open(target_rte->relid, NoLock);
+		rel = heap_open(getrelid(result_relation, range_table),NoLock);
 	}
 	else {
 		Assert(command_type == CMD_SELECT || command_type == CMD_GRAPHWRITE);
@@ -146,8 +147,8 @@ preprocess_targetlist(PlannerInfo *root)
 	 */
 	if (result_relation)
 	{
-		// rel = heap_open(getrelid(result_relation, range_table),
-		// 						 NoLock);
+		// if (!rel)
+		// 	rel = heap_open(getrelid(result_relation, range_table),NoLock);
 		RelationLocInfo *rel_loc_info = rel->rd_locator_info;
 
 		/* Is target table distributed ? */
