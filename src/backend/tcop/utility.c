@@ -881,6 +881,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
 		case T_DropSubscriptionStmt:
 		case T_CreateStatsStmt:
 		case T_AlterCollationStmt:
+		case T_CreatePropertyIndexStmt:
 			break;
 
 		default:
@@ -1025,6 +1026,7 @@ ProcessUtilityPost(PlannedStmt *pstmt,
 		case T_CreatePolicyStmt:	/* CREATE POLICY */
 		case T_AlterPolicyStmt: /* ALTER POLICY */
 		case T_CreateAmStmt:
+		case T_CreatePropertyIndexStmt:
 			exec_type = EXEC_ON_ALL_NODES;
 			break;
 
