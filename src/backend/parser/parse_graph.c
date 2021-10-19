@@ -745,6 +745,129 @@ transformCypherMatchClause(ParseState *pstate, CypherClause *clause)
 }
 
 Query *
+transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
+{
+	elog(DEBUG2, "transformCypherCreateMultiClause %s", pstate->p_sourcetext);
+	List	   *exprsLists = NIL;
+	List	   *coltypes = NIL;
+	List	   *coltypmods = NIL;
+	List	   *colcollations = NIL;
+
+	ListCell   *lp;
+	ListCell   *lc;
+	List	   *graphPattern = NIL;
+	CypherCreateClause *detail;
+	Query	   *qry;
+	RangeTblEntry *rte;
+	RangeTblRef *rtr;
+
+	detail = (CypherCreateClause *) clause->detail;
+	Assert(list_length(detail->pattern) > 1);
+
+	qry = makeNode(Query);
+	qry->commandType = CMD_GRAPHWRITE;
+	qry->graph.writeOp = GWROP_CREATE;
+	qry->graph.last = (pstate->parentParseState == NULL);
+#if 0
+	foreach(lp, detail->pattern)
+	{
+		List	   *gchain = NIL;
+		GraphPath  *gpath;
+		ListCell *le;
+		CypherPath *p = lfirst(lp);
+
+		foreach(le, p->chain)
+		{
+			Node *elem = lfirst(le);
+
+			if (IsA(elem, CypherNode))
+			{
+				CypherNode *cnode = (CypherNode *) elem;
+				GraphVertex *gvertex;
+
+				gvertex = transformCreateNode(pstate, cnode, &qry->targetList);
+
+				gchain = lappend(gchain, gvertex);
+
+				//exprsLists = lappend(exprsLists, gvertex->expr);
+			}
+			else
+			{
+				CypherRel  *crel = (CypherRel *) elem;
+				GraphEdge  *gedge;
+
+				Assert(IsA(elem, CypherRel));
+
+				gedge = transformCreateRel(pstate, crel, &qry->targetList);
+
+				gchain = lappend(gchain, gedge);
+
+				//exprsLists = lappend(exprsLists, gedge->expr);
+			}
+		}
+		gpath = makeNode(GraphPath);
+		gpath->chain = gchain;
+
+		graphPattern = lappend(graphPattern, gpath);
+	}
+#else
+	foreach(lp, detail->pattern)
+	{
+		CypherPath *cpath = lfirst(lp);
+
+		graphPattern = transformCreatePattern(pstate, cpath,
+												&qry->targetList);;
+
+		qry->graph.pattern = lappend(qry->graph.pattern, linitial(graphPattern));
+	}
+#endif
+
+	foreach(lc, qry->graph.pattern)
+	{
+		Node	   *val = (Node *) lfirst(lc);
+
+		coltypes = lappend_oid(coltypes, exprType(val));
+		coltypmods = lappend_int(coltypmods, exprTypmod(val));
+		colcollations = lappend_oid(colcollations, InvalidOid);
+	}
+
+	rte = addRangeTableEntryForValues(pstate, qry->graph.pattern,
+									  coltypes, coltypmods, colcollations,
+									  NULL, false, true);
+	rtr = makeNode(RangeTblRef);
+	/* assume new rte is at end */
+	rtr->rtindex = list_length(pstate->p_rtable);
+	Assert(rte == rt_fetch(rtr->rtindex, pstate->p_rtable));
+	pstate->p_joinlist = lappend(pstate->p_joinlist, rtr);
+	//expandRTE(rte, rtr->rtindex, 0, -1, false, NULL, &graphPattern);
+
+	qry->graph.targets = pstate->p_target_labels;
+	qry->graph.nr_modify = pstate->p_nr_modify_clause++;
+
+	qry->targetList = (List *) resolve_future_vertex(pstate,
+													 (Node *) qry->targetList,
+													 FVR_DONT_RESOLVE);
+	markTargetListOrigins(pstate, qry->targetList);
+	// add by young
+	markRTEs(pstate, pstate->p_target_labels);
+	/* done building the range table and jointree */
+	qry->rtable = pstate->p_rtable;
+	qry->jointree = makeFromExpr(pstate->p_joinlist, NULL);
+
+	qry->hasTargetSRFs = pstate->p_hasTargetSRFs;
+	qry->hasSubLinks = pstate->p_hasSubLinks;
+
+	pstate->p_hasGraphwriteClause = true;
+	qry->hasGraphwriteClause = pstate->p_hasGraphwriteClause;
+
+	assign_query_collations(pstate, qry);
+
+	assign_query_eager(qry);
+
+	return qry;
+}
+
+Query *
 transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 {
 	elog(DEBUG2, "transformCypherCreateClause %s", pstate->p_sourcetext);
@@ -758,6 +881,8 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	/* make a CREATE clause for each path in the pattern */
 	if (list_length(detail->pattern) > 1)
 	{
+		return transformCypherCreateMultiClause(pstate, clause);
+	#if 0
 		CypherCreateClause *newcreate;
 		CypherClause *newprev;
 
@@ -770,6 +895,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 		newprev->prev = clause->prev;
 
 		clause->prev = (Node *) newprev;
+	#endif
 	}
 
 	qry = makeNode(Query);
@@ -4168,6 +4294,7 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 	Oid			relid = InvalidOid;
 	TargetEntry	*te;
 	GraphVertex	*gvertex;
+	Node	   *vertex = NIL;
 
 	te = findTarget(*targetList, varname);
 	if (te != NULL &&
@@ -4183,7 +4310,7 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 	{
 		char	   *labname = getCypherName(cnode->label);
 		Relation 	relation;
-		Node	   *vertex;
+		
 		
 		if (labname == NULL)
 		{
@@ -4227,6 +4354,8 @@ transformCreateNode(ParseState *pstate, CypherNode *cnode, List **targetList)
 	gvertex->resno = te->resno;
 	gvertex->create = create;
 	gvertex->relid = relid;
+	if (create)
+		gvertex->expr = vertex;
 
 	return gvertex;
 }
@@ -4313,6 +4442,7 @@ transformCreateRel(ParseState *pstate, CypherRel *crel, List **targetList)
 	}
 	gedge->resno = te->resno;
 	gedge->relid = relid;
+	gedge->expr = edge;
 
 	return gedge;
 }

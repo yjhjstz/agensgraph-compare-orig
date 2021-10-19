@@ -33,5 +33,6 @@ extern Query *transformCypherLoadClause(ParseState *pstate,
 										CypherClause *clause);
 extern Query *transformCypherUnwindClause(ParseState *pstate,
 										  CypherClause *clause);
+extern Query *transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause);
 
 #endif	/* PARSE_GRAPH_H */

@@ -83,7 +83,7 @@ ExecHashJoin(PlanState *pstate)
 	hashtable = node->hj_HashTable;
 	econtext = node->js.ps.ps_ExprContext;
 
-	ENLV1_printf("entering ExecHashJoin loop");
+	//ENL1_printf("entering ExecHashJoin loop");
 	/*
 	 * Reset per-tuple memory context to free any expression evaluation
 	 * storage allocated in the previous tuple cycle.

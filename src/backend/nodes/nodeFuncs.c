@@ -23,7 +23,7 @@
 #include "nodes/relation.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
-
+#include "nodes/graphnodes.h"
 
 static bool expression_returns_set_walker(Node *node, void *context);
 static int	leftmostLoc(int loc1, int loc2);
@@ -276,6 +276,9 @@ exprType(const Node *expr)
 			break;
 		case T_CypherAccessExpr:
 			type = JSONBOID;
+			break;
+		case T_GraphPath:
+			type = GRAPHPATHOID;
 			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
@@ -1967,6 +1970,8 @@ expression_tree_walker(Node *node,
 		case T_NextValueExpr:
 		case T_RangeTblRef:
 		case T_SortGroupClause:
+		case T_GraphPath: //todo
+			//Assert(0);
 			/* primitive node types with no expression subnodes */
 			break;
 		case T_WithCheckOption:
@@ -2659,6 +2664,8 @@ expression_tree_mutator(Node *node,
 		case T_NextValueExpr:
 		case T_RangeTblRef:
 		case T_SortGroupClause:
+		case T_GraphVertex:
+		case T_GraphEdge:
 			return (Node *) copyObject(node);
 		case T_WithCheckOption:
 			{
@@ -3295,6 +3302,16 @@ expression_tree_mutator(Node *node,
 				FLATCOPY(newnode, i, CypherIndices);
 				MUTATE(newnode->lidx, i->lidx, Expr *);
 				MUTATE(newnode->uidx, i->uidx, Expr *);
+				return (Node *) newnode;
+			}
+			break;
+		case T_GraphPath:
+			{
+				GraphPath *i = (GraphPath *) node;
+				GraphPath *newnode;
+
+				FLATCOPY(newnode, i, GraphPath);
+				MUTATE(newnode->chain, i->chain, List *);
 				return (Node *) newnode;
 			}
 			break;
