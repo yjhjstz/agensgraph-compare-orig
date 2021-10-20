@@ -629,7 +629,7 @@ ExecCreateGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	ListCell   *lp;
 
-	ereport(LOG, (errmsg("ExecCreateGraph pxid insert %d", (int)PGXCNodeIdentifier)));
+	ereport(LOG, (errmsg("ExecCreateGraph pxid insert %d", list_length(plan->pattern))));
 
 	ResetExprContext(econtext);
 
@@ -675,7 +675,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 		nvertices = 0;
 		nedges = 0;
 	}
-
+	//Assert(0);
 	foreach(le, path->chain)
 	{
 		Node *elem = (Node *) lfirst(le);
@@ -757,7 +757,8 @@ createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
 	Datum		vertex;
 	Datum		vertexProp;
 	HeapTuple	tuple;
-
+	Jsonb *json;
+	char	   *out;
 	resultRelInfo = getResultRelInfo(mgstate, gvertex->relid);
 	savedResultRelInfo = estate->es_result_relation_info;
 	estate->es_result_relation_info = resultRelInfo;
@@ -769,6 +770,14 @@ createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("jsonb object is expected for property map")));
+
+	json = DatumGetJsonb(vertexProp);
+
+	out = JsonbToCString(NULL, &json->root, VARSIZE(json));
+
+	ereport(LOG, (errmsg("slot %p, vid %lld", slot, GraphidGetLocid(*vid))));
+	ereport(LOG, (errmsg("jsonout %s", out)));
+
 
 	ExecClearTuple(elemTupleSlot);
 

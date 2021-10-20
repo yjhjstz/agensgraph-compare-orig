@@ -222,6 +222,9 @@ set_graph_path(PG_FUNCTION_ARGS)
 	SetConfigOption("graph_path", path,
 						PGC_USERSET, PGC_S_SESSION);
 
+	SetConfigOption("search_path", path,
+						PGC_USERSET, PGC_S_SESSION);
+
 	PG_RETURN_INT32(0);
 }
 

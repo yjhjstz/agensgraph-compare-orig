@@ -131,6 +131,7 @@ ValuesNext(ValuesScanState *node)
 
 		exprstatelist = ExecInitExprList(exprlist, &node->ss.ps);
 
+		ereport(LOG, (errmsg("exprlist  %p, idx %d", exprlist, node->curr_idx)));
 		node->ss.ps.subPlan = oldsubplans;
 
 		/* parser should have checked all sublists are the same length */

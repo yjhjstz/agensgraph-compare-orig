@@ -756,6 +756,7 @@ transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
 	ListCell   *lp;
 	ListCell   *lc;
 	List	   *graphPattern = NIL;
+	List	   *targetList = NIL;
 	CypherCreateClause *detail;
 	Query	   *qry;
 	RangeTblEntry *rte;
@@ -768,7 +769,7 @@ transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
 	qry->commandType = CMD_GRAPHWRITE;
 	qry->graph.writeOp = GWROP_CREATE;
 	qry->graph.last = (pstate->parentParseState == NULL);
-#if 0
+#if 1
 	foreach(lp, detail->pattern)
 	{
 		List	   *gchain = NIL;
@@ -785,11 +786,11 @@ transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
 				CypherNode *cnode = (CypherNode *) elem;
 				GraphVertex *gvertex;
 
-				gvertex = transformCreateNode(pstate, cnode, &qry->targetList);
+				gvertex = transformCreateNode(pstate, cnode, &targetList);
 
 				gchain = lappend(gchain, gvertex);
 
-				//exprsLists = lappend(exprsLists, gvertex->expr);
+				exprsLists = lappend(exprsLists, list_make1(gvertex->expr));
 			}
 			else
 			{
@@ -798,11 +799,11 @@ transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
 
 				Assert(IsA(elem, CypherRel));
 
-				gedge = transformCreateRel(pstate, crel, &qry->targetList);
+				gedge = transformCreateRel(pstate, crel, &targetList);
 
 				gchain = lappend(gchain, gedge);
 
-				//exprsLists = lappend(exprsLists, gedge->expr);
+				exprsLists = lappend(exprsLists, list_make1(gedge->expr));
 			}
 		}
 		gpath = makeNode(GraphPath);
@@ -811,18 +812,24 @@ transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
 		graphPattern = lappend(graphPattern, gpath);
 	}
 #else
+
 	foreach(lp, detail->pattern)
 	{
 		CypherPath *cpath = lfirst(lp);
 
 		graphPattern = transformCreatePattern(pstate, cpath,
-												&qry->targetList);;
+												&qry->targetList);
 
-		qry->graph.pattern = lappend(qry->graph.pattern, linitial(graphPattern));
+		exprsLists = lappend(exprsLists, linitial(graphPattern));
 	}
+	// qry->graph.pattern = graphPattern;
 #endif
+	qry->graph.pattern = lappend(qry->graph.pattern, linitial(graphPattern));
+	qry->targetList = lappend(qry->targetList, linitial(targetList));
+	// qry->graph.pattern = graphPattern;
+	// qry->targetList = targetList;
 
-	foreach(lc, qry->graph.pattern)
+	foreach(lc, (List *) linitial(exprsLists))
 	{
 		Node	   *val = (Node *) lfirst(lc);
 
@@ -831,7 +838,7 @@ transformCypherCreateMultiClause(ParseState *pstate, CypherClause *clause)
 		colcollations = lappend_oid(colcollations, InvalidOid);
 	}
 
-	rte = addRangeTableEntryForValues(pstate, qry->graph.pattern,
+	rte = addRangeTableEntryForValues(pstate, exprsLists,
 									  coltypes, coltypmods, colcollations,
 									  NULL, false, true);
 	rtr = makeNode(RangeTblRef);

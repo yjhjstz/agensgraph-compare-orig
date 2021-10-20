@@ -93,6 +93,10 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 			value = getVertexIdDatum(value);
 		else if (getLocatorDataType(myState->locator) == EDGEOID)
 			value = getEdgeStartDatum(value);
+		else {
+
+		}
+		//Assert(0);
 	}
 
 	ncount = GET_NODES(myState->locator, value, isnull, NULL);
