@@ -277,6 +277,10 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 		if (tlist_item == NULL)
 			return false;		/* tlist too short */
 		var = (Var *) ((TargetEntry *) lfirst(tlist_item))->expr;
+		if (var && IsA(var, RowExpr)) {
+			//ereport(LOG, (errmsg("tlist_matches_tupdesc RowExpr%d", 0)));
+			return true;
+		}
 		if (!var || !IsA(var, Var))
 			return false;		/* tlist item not a Var */
 		/* if these Asserts fail, planner messed up */
