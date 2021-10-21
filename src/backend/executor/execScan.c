@@ -21,6 +21,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
+#include "catalog/pg_type.h"
 
 
 static bool tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc);
@@ -267,7 +268,6 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 	int			attrno;
 	bool		hasoid;
 	ListCell   *tlist_item = list_head(tlist);
-
 	/* Check the tlist attributes */
 	for (attrno = 1; attrno <= numattrs; attrno++)
 	{
@@ -277,9 +277,13 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 		if (tlist_item == NULL)
 			return false;		/* tlist too short */
 		var = (Var *) ((TargetEntry *) lfirst(tlist_item))->expr;
+		// todo yang
 		if (var && IsA(var, RowExpr)) {
-			//ereport(LOG, (errmsg("tlist_matches_tupdesc RowExpr%d", 0)));
-			return true;
+			RowExpr    *rowexpr = (RowExpr *) var;
+			if (rowexpr->row_typeid == VERTEXOID) {
+				///ereport(LOG, (errmsg("tlist_matches_tupdesc RowExpr%d", tupdesc->tdtypmod)));
+				return true;
+			}
 		}
 		if (!var || !IsA(var, Var))
 			return false;		/* tlist item not a Var */
