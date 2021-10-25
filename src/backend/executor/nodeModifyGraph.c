@@ -629,7 +629,7 @@ ExecCreateGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	ListCell   *lp;
 
-	ereport(LOG, (errmsg("ExecCreateGraph pxid insert %d", list_length(plan->pattern))));
+	//ereport(LOG, (errmsg("ExecCreateGraph pxid insert %d", list_length(plan->pattern))));
 
 	ResetExprContext(econtext);
 
@@ -675,7 +675,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 		nvertices = 0;
 		nedges = 0;
 	}
-	//Assert(0);
+	//ereport(LOG, (errmsg("createPath chain %d", list_length(path->chain))));
 	foreach(le, path->chain)
 	{
 		Node *elem = (Node *) lfirst(le);
@@ -771,13 +771,14 @@ createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("jsonb object is expected for property map")));
 
+#ifdef DEBUG
 	json = DatumGetJsonb(vertexProp);
 
 	out = JsonbToCString(NULL, &json->root, VARSIZE(json));
 
 	ereport(LOG, (errmsg("slot %p, vid %lld", slot, GraphidGetLocid(*vid))));
 	ereport(LOG, (errmsg("jsonout %s", out)));
-
+#endif
 
 	ExecClearTuple(elemTupleSlot);
 
@@ -843,7 +844,8 @@ createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 	Datum		edge;
 	Datum		edgeProp;
 	HeapTuple	tuple;
-
+	Jsonb *json;
+	char	   *out;
 	resultRelInfo = getResultRelInfo(mgstate, gedge->relid);
 	savedResultRelInfo = estate->es_result_relation_info;
 	estate->es_result_relation_info = resultRelInfo;
@@ -856,7 +858,14 @@ createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("jsonb object is expected for property map")));
+#ifdef DEBUG
+	json = DatumGetJsonb(edgeProp);
 
+	out = JsonbToCString(NULL, &json->root, VARSIZE(json));
+
+	ereport(LOG, (errmsg("start %lld, end %lld", GraphidGetLocid(start), GraphidGetLocid(end))));
+	ereport(LOG, (errmsg("jsonout %s", out)));
+#endif
 	ExecClearTuple(elemTupleSlot);
 
 	ExecSetSlotDescriptor(elemTupleSlot,
