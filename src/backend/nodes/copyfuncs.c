@@ -2680,6 +2680,7 @@ _copyRangeTblEntry(const RangeTblEntry *from)
 	RangeTblEntry *newnode = makeNode(RangeTblEntry);
 
 	COPY_SCALAR_FIELD(rtekind);
+	COPY_STRING_FIELD(relname);
 	COPY_SCALAR_FIELD(relid);
 	COPY_SCALAR_FIELD(relkind);
 	COPY_NODE_FIELD(tablesample);

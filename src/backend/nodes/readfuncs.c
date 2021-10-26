@@ -2080,6 +2080,7 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(coltypes);
 			READ_NODE_FIELD(coltypmods);
 			READ_NODE_FIELD(colcollations);
+			READ_STRING_FIELD(relname);
 			break;
 		case RTE_CTE:
 			READ_STRING_FIELD(ctename);

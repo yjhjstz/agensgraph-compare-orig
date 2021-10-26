@@ -4401,7 +4401,6 @@ static void
 _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 {
 	WRITE_NODE_TYPE("RTE");
-
 	/* put alias + eref first to make dump more legible */
 	WRITE_NODE_FIELD(alias);
 	WRITE_NODE_FIELD(eref);
@@ -4440,6 +4439,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 			WRITE_NODE_FIELD(coltypes);
 			WRITE_NODE_FIELD(coltypmods);
 			WRITE_NODE_FIELD(colcollations);
+			WRITE_STRING_FIELD(relname);
 			break;
 		case RTE_CTE:
 			WRITE_STRING_FIELD(ctename);
