@@ -675,7 +675,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 		nvertices = 0;
 		nedges = 0;
 	}
-	//ereport(LOG, (errmsg("createPath chain %d", list_length(path->chain))));
+
 	foreach(le, path->chain)
 	{
 		Node *elem = (Node *) lfirst(le);
@@ -707,7 +707,8 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 				else
 				{
 					Assert(gedge->direction == GRAPH_EDGE_DIR_RIGHT);
-
+					// todo
+					if (prevvid > vid) continue;
 					edge = createEdge(mgstate, gedge, prevvid, vid, slot, out);
 				}
 

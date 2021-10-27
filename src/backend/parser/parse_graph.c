@@ -1111,6 +1111,8 @@ transformCypherCreateEdgeCut(ParseState *pstate, CypherClause *clause)
 	rte = addRangeTableEntryForValues(pstate, exprsLists,
 									  coltypes, coltypmods, colcollations,
 									  NULL, false, true);
+	rte->relname = "vev";
+
 	rtr = makeNode(RangeTblRef);
 	/* assume new rte is at end */
 	rtr->rtindex = list_length(pstate->p_rtable);
@@ -1173,7 +1175,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 
 		clause->prev = (Node *) newprev;
 	#endif
-	} else if (list_length(cpath->chain) == 3) {
+	} else if (list_length(cpath->chain) == 3 && clause->prev == NULL) {
 		return transformCypherCreateEdgeCut(pstate, clause);
 	}
 

@@ -26,10 +26,14 @@
 #include "executor/executor.h"
 #include "executor/nodeValuesscan.h"
 #include "utils/expandeddatum.h"
+#include "parser/parsetree.h"
 
+
+#define SwapDatum(a,b)	do {Datum _tmp; _tmp=a; a=b; b=_tmp;} while(0)
+#define SwapBool(a,b)	do {bool _tmp; _tmp=a; a=b; b=_tmp;} while(0)
 
 static TupleTableSlot *ValuesNext(ValuesScanState *node);
-
+static TupleTableSlot *ValuesNextVev(ValuesScanState *node);
 
 /* ----------------------------------------------------------------
  *						Scan Support
@@ -178,6 +182,150 @@ ValuesNext(ValuesScanState *node)
 	return slot;
 }
 
+static TupleTableSlot *
+ValuesNextVev(ValuesScanState *node)
+{
+	TupleTableSlot *slot;
+	EState	   *estate;
+	ExprContext *econtext;
+	ScanDirection direction;
+	List	   *exprlist;
+
+	/*
+	 * get information from the estate and scan state
+	 */
+	estate = node->ss.ps.state;
+	direction = estate->es_direction;
+	slot = node->ss.ss_ScanTupleSlot;
+	econtext = node->rowcontext;
+
+	/*
+	 * Get the next tuple. Return NULL if no more tuples.
+	 */
+	if (ScanDirectionIsForward(direction))
+	{
+		if (node->curr_idx < node->array_len)
+			node->curr_idx++;
+		if (node->curr_idx < node->array_len)
+			exprlist = node->exprlists[node->curr_idx];
+		else
+			exprlist = NIL;
+	}
+	else
+	{
+		if (node->curr_idx >= 0)
+			node->curr_idx--;
+		if (node->curr_idx >= 0)
+			exprlist = node->exprlists[node->curr_idx];
+		else
+			exprlist = NIL;
+	}
+
+	/*
+	 * Always clear the result slot; this is appropriate if we are at the end
+	 * of the data, and if we're not, we still need it as the first step of
+	 * the store-virtual-tuple protocol.  It seems wise to clear the slot
+	 * before we reset the context it might have pointers into.
+	 */
+	//ExecClearTuple(slot);
+
+	if (exprlist)
+	{
+		MemoryContext oldContext;
+		List	   *oldsubplans;
+		List	   *exprstatelist;
+		Datum	   *values;
+		bool	   *isnull;
+		Form_pg_attribute *att;
+		ListCell   *lc;
+		int			resind;
+
+		/*
+		 * Get rid of any prior cycle's leftovers.  We use ReScanExprContext
+		 * not just ResetExprContext because we want any registered shutdown
+		 * callbacks to be called.
+		 */
+		//ReScanExprContext(econtext);
+
+		/*
+		 * Build the expression eval state in the econtext's per-tuple memory.
+		 * This is a tad unusual, but we want to delete the eval state again
+		 * when we move to the next row, to avoid growth of memory
+		 * requirements over a long values list.
+		 */
+		oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+		/*
+		 * The expressions might contain SubPlans (this is currently only
+		 * possible if there's a sub-select containing a LATERAL reference,
+		 * otherwise sub-selects in a VALUES list should be InitPlans). Those
+		 * subplans will want to hook themselves into our subPlan list, which
+		 * would result in a corrupted list after we delete the eval state. We
+		 * can work around this by saving and restoring the subPlan list.
+		 * (There's no need for the functionality that would be enabled by
+		 * having the list entries, since the SubPlans aren't going to be
+		 * re-executed anyway.)
+		 */
+		oldsubplans = node->ss.ps.subPlan;
+		node->ss.ps.subPlan = NIL;
+
+		exprstatelist = ExecInitExprList(exprlist, &node->ss.ps);
+
+		//ereport(LOG, (errmsg("exprlist  %p, idx %d", exprlist, node->curr_idx)));
+		node->ss.ps.subPlan = oldsubplans;
+
+		/* parser should have checked all sublists are the same length */
+		Assert(list_length(exprstatelist) == slot->tts_tupleDescriptor->natts);
+
+		/*
+		 * Compute the expressions and build a virtual result tuple. We
+		 * already did ExecClearTuple(slot).
+		 */
+		values = slot->tts_values;
+		isnull = slot->tts_isnull;
+		att = slot->tts_tupleDescriptor->attrs;
+
+		if (node->curr_idx == 0) {
+			ExecClearTuple(slot);
+			resind = 0;
+			foreach(lc, exprstatelist)
+			{
+				ExprState  *estate = (ExprState *) lfirst(lc);
+
+				values[resind] = ExecEvalExpr(estate,
+											  econtext,
+											  &isnull[resind]);
+
+				/*
+				 * We must force any R/W expanded datums to read-only state, in
+				 * case they are multiply referenced in the plan node's output
+				 * expressions, or in case we skip the output projection and the
+				 * output column is multiply referenced in higher plan nodes.
+				 */
+				values[resind] = MakeExpandedObjectReadOnly(values[resind],
+															isnull[resind],
+															att[resind]->attlen);
+
+				resind++;
+			}
+			MemoryContextSwitchTo(oldContext);
+			/*
+			 * And return the virtual tuple.
+			 */
+			ExecStoreVirtualTuple(slot);
+		} else {
+			SwapDatum(values[0], values[2]);
+			SwapBool(isnull[0], isnull[2]);
+		}
+		
+	} else {
+		ExecClearTuple(slot);
+	}
+
+
+	return slot;
+}
+
 /*
  * ValuesRecheck -- access method routine to recheck a tuple in EvalPlanQual
  */
@@ -202,9 +350,16 @@ ExecValuesScan(PlanState *pstate)
 {
 	ValuesScanState *node = castNode(ValuesScanState, pstate);
 
-	return ExecScan(&node->ss,
+	if (node->vle) {
+		return ExecScan(&node->ss,
+					(ExecScanAccessMtd) ValuesNextVev,
+					(ExecScanRecheckMtd) ValuesRecheck);
+	} else {
+		return ExecScan(&node->ss,
 					(ExecScanAccessMtd) ValuesNext,
 					(ExecScanRecheckMtd) ValuesRecheck);
+	}
+	
 }
 
 /* ----------------------------------------------------------------
@@ -219,7 +374,7 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	ListCell   *vtl;
 	int			i;
 	PlanState  *planstate;
-
+	RangeTblEntry* rte;
 	/*
 	 * ValuesScan should not have any children.
 	 */
@@ -233,7 +388,6 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
 	scanstate->ss.ps.ExecProcNode = ExecValuesScan;
-
 	/*
 	 * Miscellaneous initialization
 	 */
@@ -253,7 +407,7 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	 */
 	ExecInitResultTupleSlot(estate, &scanstate->ss.ps);
 	ExecInitScanTupleSlot(estate, &scanstate->ss);
-
+	
 	/*
 	 * initialize child expressions
 	 */
@@ -266,7 +420,12 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	tupdesc = ExecTypeFromExprList((List *) linitial(node->values_lists));
 
 	ExecAssignScanType(&scanstate->ss, tupdesc);
-
+	// added by young
+	rte = rt_fetch(node->scan.scanrelid, estate->es_range_table);
+	if (rte->relname && strcmp(rte->relname, "vev") == 0)
+	{
+		scanstate->vle = true;
+	}
 	/*
 	 * Other node-specific setup
 	 */

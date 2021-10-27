@@ -1509,6 +1509,7 @@ typedef struct ValuesScanState
 	List	  **exprlists;
 	int			array_len;
 	int			curr_idx;
+	bool 		vle;
 } ValuesScanState;
 
 /* ----------------
