@@ -316,6 +316,7 @@ ValuesNextVev(ValuesScanState *node)
 		} else {
 			SwapDatum(values[0], values[2]);
 			SwapBool(isnull[0], isnull[2]);
+			isnull[1] = true;
 		}
 		
 	} else {

@@ -663,6 +663,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 	ListCell   *le;
 	Graphid		prevvid = 0;
 	GraphEdge  *gedge = NULL;
+	int 		resno = 0;
 
 	if (out)
 	{
@@ -699,6 +700,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 			if (gedge != NULL)
 			{
 				Datum edge;
+				if (slot->tts_isnull[gedge->resno - 1]) continue;
 
 				if (gedge->direction == GRAPH_EDGE_DIR_LEFT)
 				{
@@ -707,8 +709,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 				else
 				{
 					Assert(gedge->direction == GRAPH_EDGE_DIR_RIGHT);
-					// todo
-					if (prevvid > vid) continue;
+
 					edge = createEdge(mgstate, gedge, prevvid, vid, slot, out);
 				}
 
@@ -723,6 +724,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 			Assert(IsA(elem, GraphEdge));
 
 			gedge = (GraphEdge *) elem;
+			//ereport(LOG, (errmsg("gedge resno %d", gedge->resno)));
 		}
 	}
 
