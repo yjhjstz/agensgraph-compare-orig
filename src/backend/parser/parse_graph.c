@@ -1021,17 +1021,16 @@ transformCypherCreateEdgeCut(ParseState *pstate, CypherClause *clause)
 	ListCell   *lc;
 	ListCell   *lp;
 
+	GraphEdge  *gedge;
 	RangeTblEntry *rte;
 	RangeTblRef *rtr;
-	//Node	   *vs_expr, *ve_expr;
-	//GraphVertex *vertex;
 
 	List	   *exprsLists = NIL;
 	List	   *coltypes = NIL;
 	List	   *coltypmods = NIL;
 	List	   *colcollations = NIL;
 	List	   *subList = NIL;
-	List	   *subList2 = NIL;
+	List	   *rsubList = NIL;
 
 	CypherCreateClause *detail;
 	CypherPath *cpath;
@@ -1045,19 +1044,7 @@ transformCypherCreateEdgeCut(ParseState *pstate, CypherClause *clause)
 	qry->graph.writeOp = GWROP_CREATE;
 	qry->graph.last = (pstate->parentParseState == NULL);
 
-#if 0
-	vs_expr = (Node *) makeConst(INT8OID, -1, InvalidOid,
-										   sizeof(int64),
-										   Int64GetDatum(0x01 | 0x02), false,
-										   FLOAT8PASSBYVAL);
-	subList = lappend(subList, vs_expr);
-	te = makeTargetEntry((Expr *) vs_expr,
-							 (AttrNumber) pstate->p_next_resno++,
-							  "mask",
-							 false);
 
-	qry->targetList = lappend(qry->targetList, te);
-#endif
 	qry->graph.pattern = transformCreatePattern(pstate, cpath,
 												&qry->targetList);
 
@@ -1078,26 +1065,32 @@ transformCypherCreateEdgeCut(ParseState *pstate, CypherClause *clause)
 		}
 		else
 		{
-			GraphEdge  *gedge;
-
+			//GraphEdge  *gedge;
 			Assert(IsA(elem, GraphEdge));
 			gedge = (GraphEdge *) elem;
 			subList = lappend(subList, gedge->expr);
 		}
 		resno ++;
 	}
-
+	Assert(gedge);
 	// just copy & revert
-	exprsLists = lappend(exprsLists, subList);
-#if 0
-	ve_expr = (Node *) makeConst(INT8OID, -1, InvalidOid,
-										   sizeof(int64),
-										   Int64GetDatum(0x01), false,
-										   FLOAT8PASSBYVAL);
-#endif
-	subList2 = list_make3(lthird(subList), lsecond(subList), linitial(subList));
+	rsubList = list_make3(lthird(subList), lsecond(subList), linitial(subList));
 
-	exprsLists = lappend(exprsLists, subList2);
+	switch (gedge->direction)
+	{
+		case CYPHER_REL_DIR_LEFT:
+			gedge->direction = CYPHER_REL_DIR_RIGHT;
+			exprsLists = lappend(exprsLists, rsubList);
+			exprsLists = lappend(exprsLists, subList);
+			break;
+		case CYPHER_REL_DIR_RIGHT:
+			exprsLists = lappend(exprsLists, subList);
+			exprsLists = lappend(exprsLists, rsubList);
+			break;
+		case CYPHER_REL_DIR_NONE:
+		default:
+			Assert(!"invalid direction");
+	}
 
 	foreach(lc, (List *) linitial(exprsLists))
 	{
