@@ -1804,6 +1804,9 @@ transformAExprOp(ParseState *pstate, A_Expr *a)
 			if (ltype == GRAPHIDOID || rtype == GRAPHIDOID)
 				return (Node *) make_op(pstate, a->name, l, r, last_srf,
 										a->location);
+			if (ltype == INT8OID || rtype == INT8OID)
+				return (Node *) make_op(pstate, a->name, l, r, last_srf,
+										a->location);
 
 			if (ltype == JSONBOID || rtype == JSONBOID ||
 				!OidIsValid(LookupOperName(pstate, a->name, ltype, rtype,

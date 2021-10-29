@@ -408,6 +408,6 @@ DATA(insert ( 3802 1700 7195 e f ));
 DATA(insert ( 3802  701 7196 e f ));
 
 /* implicit coercion from numeric to graphid */
-DATA(insert ( 1700 7002 7245 i f ));
+//DATA(insert ( 1700 7002 7245 i f ));
 
 #endif							/* PG_CAST_H */

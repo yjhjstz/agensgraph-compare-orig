@@ -4951,7 +4951,7 @@ makeVertexElements(void)
 	constrs = list_make1(notnull);
 
 	id->colname = AG_ELEM_LOCAL_ID;
-	id->typeName = makeTypeName("graphid");
+	id->typeName = makeTypeNameFromOid(INT8OID, -1);
 	id->is_local = true;
 	id->constraints = copyObject(constrs);//list_make1(pk);
 	id->location = -1;
@@ -4994,20 +4994,20 @@ makeEdgeElements(void)
 	constrs = list_make1(notnull);
 
 	id->colname = AG_ELEM_LOCAL_ID;
-	id->typeName = makeTypeName("graphid");
+	id->typeName = makeTypeNameFromOid(INT8OID, -1);
 	id->is_local = true;
 	id->constraints = copyObject(constrs);
 	id->location = -1;
 	//id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
 
 	start->colname = AG_START_ID;
-	start->typeName = makeTypeName("graphid");
+	start->typeName = makeTypeNameFromOid(INT8OID, -1);
 	start->is_local = true;
 	start->constraints = copyObject(constrs);
 	start->location = -1;
 
 	end->colname = AG_END_ID;
-	end->typeName = makeTypeName("graphid");
+	end->typeName = makeTypeNameFromOid(INT8OID, -1);
 	end->is_local = true;
 	end->constraints = copyObject(constrs);
 	end->location = -1;
@@ -5128,6 +5128,7 @@ transformLabelIdDefinition(CreateStmtContext *cxt, ColumnDef *col)
 	TypeCast   *castseq;
 	FuncCall   *fcnextval;
 	FuncCall   *fcgraphid;
+	FuncCall   *funccallnode;
 	Constraint *defid;
 
 	if (strcmp(col->colname, AG_ELEM_LOCAL_ID) != 0)
@@ -5137,6 +5138,7 @@ transformLabelIdDefinition(CreateStmtContext *cxt, ColumnDef *col)
 	RangeVarAdjustRelationPersistence(cxt->relation, snamespaceid);
 
 	snamespace = get_namespace_name(snamespaceid);
+
 	sname = ChooseRelationName(cxt->relation->relname, AG_ELEM_LOCAL_ID,
 							   "seq", snamespaceid);
 
@@ -5177,8 +5179,15 @@ transformLabelIdDefinition(CreateStmtContext *cxt, ColumnDef *col)
 	 *
 	 * graphid(graph_labid(`relname`), nextval(`seqname`::regclass))
 	 */
-
+	// if (cxt->inhRelations)
+	// {
+	// 	RangeVar   *inh = (RangeVar *) linitial(cxt->inhRelations);
+	// 	qname = quote_qualified_identifier(snamespace, inh->relname);
+	// } else {
+	// 	qname = quote_qualified_identifier(snamespace, cxt->relation->relname);
+	// }
 	qname = quote_qualified_identifier(snamespace, cxt->relation->relname);
+
 	relname = makeNode(A_Const);
 	relname->val.type = T_String;
 	relname->val.val.str = qname;
@@ -5194,14 +5203,16 @@ transformLabelIdDefinition(CreateStmtContext *cxt, ColumnDef *col)
 	castseq->typeName = SystemTypeName("regclass");
 	castseq->arg = (Node *) seqname;
 	castseq->location = -1;
-	fcnextval = makeFuncCall(SystemFuncName("nextval"),
-							 list_make1(castseq), -1);
-	fcgraphid = makeFuncCall(SystemFuncName("graphid"),
-							 list_make2(fclabid, fcnextval), -1);
+	// fcnextval = makeFuncCall(SystemFuncName("nextval"),
+	// 						 list_make1(castseq), -1);
+	// fcgraphid = makeFuncCall(SystemFuncName("graphid"),
+	// 						 list_make2(fclabid, fcnextval), -1);
+	funccallnode = makeFuncCall(SystemFuncName("nextval"),
+							list_make1(castseq), -1);
 	defid = makeNode(Constraint);
 	defid->contype = CONSTR_DEFAULT;
 	defid->location = -1;
-	defid->raw_expr = (Node *) fcgraphid;
+	defid->raw_expr = (Node *) funccallnode;
 
 	col->constraints = lappend(col->constraints, defid);
 }
