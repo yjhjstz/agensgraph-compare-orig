@@ -278,13 +278,14 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 			return false;		/* tlist too short */
 		var = (Var *) ((TargetEntry *) lfirst(tlist_item))->expr;
 		// todo yang
-		if (var && IsA(var, RowExpr)) {
-			RowExpr    *rowexpr = (RowExpr *) var;
-			if (rowexpr->row_typeid == VERTEXOID) {
-				///ereport(LOG, (errmsg("tlist_matches_tupdesc RowExpr%d", tupdesc->tdtypmod)));
-				return true;
-			}
-		}
+		// if (var && IsA(var, RowExpr)) {
+		// 	RowExpr    *rowexpr = (RowExpr *) var;
+		// 	if (rowexpr->row_typeid == VERTEXOID) {
+		// 		///ereport(LOG, (errmsg("tlist_matches_tupdesc RowExpr%d", tupdesc->tdtypmod)));
+		// 		//Assert(0);
+		// 		return true;
+		// 	}
+		// }
 		if (!var || !IsA(var, Var))
 			return false;		/* tlist item not a Var */
 		/* if these Asserts fail, planner messed up */
