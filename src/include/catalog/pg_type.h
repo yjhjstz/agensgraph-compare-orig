@@ -673,7 +673,7 @@ DATA(insert OID = 7011 ( _vertex	PGNSP PGUID -1 f b A f t \054 0 7012 0 array_in
 #define VERTEXARRAYOID	7011
 DATA(insert OID = 7012 ( vertex		PGNSP PGUID -1 f c C f t \054 7010 0 7011 record_in record_out record_recv record_send - - - d x f 0 -1 0 0 _null_ _null_ _null_ ));
 #define VERTEXOID		7012
-DATA(insert OID = 7021 ( _edge		PGNSP PGUID -1 f b A f t \054 0 7022 0 array_in _edge_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
+DATA(insert OID = 7021 ( _edge		PGNSP PGUID -1 f b A f t \054 0 7022 0 array_in array_out array_recv array_send - - array_typanalyze d x f 0 -1 0 0 _null_ _null_ _null_ ));
 #define EDGEARRAYOID	7021
 DATA(insert OID = 7022 ( edge		PGNSP PGUID -1 f c C f t \054 7020 0 7021 record_in record_out record_recv record_send - - - d x f 0 -1 0 0 _null_ _null_ _null_ ));
 #define EDGEOID			7022

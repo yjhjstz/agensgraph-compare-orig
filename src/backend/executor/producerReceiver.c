@@ -94,9 +94,8 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 		else if (getLocatorDataType(myState->locator) == EDGEOID)
 			value = getEdgeStartDatum(value);
 		else {
-
+			ereport(LOG, (errmsg("LocatorDataType %d", getLocatorDataType(myState->locator))));
 		}
-		//Assert(0);
 	}
 
 	ncount = GET_NODES(myState->locator, value, isnull, NULL);

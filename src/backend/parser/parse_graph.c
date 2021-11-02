@@ -5593,7 +5593,7 @@ verticesConcat(Node *vertices, Node *expr)
 /*
  * if DETACH
  *
- *     SELECT array_agg((id, start, edge, NULL, ctid)::edge) AS <unique-name>
+ *     SELECT array_agg((id, start, end, NULL, ctid)::edge) AS <unique-name>
  *     FROM ag_edge AS e, unnest(vertices) AS v
  *     WHERE e.start = v.id OR e.end = v.id
  *

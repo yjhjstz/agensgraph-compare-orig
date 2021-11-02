@@ -408,8 +408,8 @@ ExecReScanSeqScan(SeqScanState *node)
 			uint16 labid;
 
 			labid = DatumGetUInt16(DirectFunctionCall1(graphid_labid, graphid));
-			if (node->ss.ss_labid != labid)
-				node->ss.ss_skipLabelScan = true;
+			// if (node->ss.ss_labid != labid)
+			// 	node->ss.ss_skipLabelScan = true;
 		}
 
 		ResetExprContext(econtext);

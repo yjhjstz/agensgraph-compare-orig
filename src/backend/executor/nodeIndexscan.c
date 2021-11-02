@@ -622,8 +622,8 @@ ExecReScanIndexScan(IndexScanState *node)
 
 			labid = DatumGetUInt16(DirectFunctionCall1(graphid_labid,
 			                                           skey->sk_argument));
-			if (node->ss.ss_labid != labid)
-				node->ss.ss_skipLabelScan = true;
+			// if (node->ss.ss_labid != labid)
+			// 	node->ss.ss_skipLabelScan = true;
 		}
 	}
 
