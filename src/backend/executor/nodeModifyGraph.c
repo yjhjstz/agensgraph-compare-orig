@@ -1032,13 +1032,11 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid 
 	Relation	resultRelationDesc;
 	HTSU_Result	result;
 	HeapUpdateFailureData hufd;
-	// relid = get_labid_relid(mgstate->graphid,
-	// 						GraphidGetLabid(DatumGetGraphid(gid)));
+	
 	//char labkind = (type == VERTEXOID) ? LABEL_KIND_VERTEX: LABEL_KIND_EDGE;
 
-	//relid = get_labid_relid_scan(mgstate->graphid, labkind);
 	ereport(LOG, (errmsg("type oid %d, rel %u, n: %lld", type, relid, DatumGetInt64(gid))));
-	ereport(LOG, (errmsg("tid (%u, %u)",ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid))));
+	//ereport(LOG, (errmsg("tid (%u, %u)",ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid))));
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1791,6 +1789,8 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 
 		entry->data.tid =
 				*((ItemPointer) DatumGetPointer(getVertexTidDatum(elem)));
+		entry->elemtype = type;
+		entry->relid = relid;
 	}
 	else if (type == EDGEOID)
 	{
@@ -1815,6 +1815,8 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 
 		entry->data.tid =
 				*((ItemPointer) DatumGetPointer(getEdgeTidDatum(elem)));
+		entry->elemtype = type;
+		entry->relid = relid;
 	}
 	else if (type == VERTEXARRAYOID)
 	{
@@ -1846,7 +1848,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 
 			entry->data.tid =
 					*((ItemPointer) DatumGetPointer(getVertexTidDatum(vtx)));
-			entry->elemtype = type;
+			entry->elemtype = VERTEXOID;
 			entry->relid = relid;
 		}
 	}
@@ -1893,7 +1895,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 
 			entry->data.tid =
 					*((ItemPointer) DatumGetPointer(getEdgeTidDatum(edge)));
-			entry->elemtype = type;
+			entry->elemtype = EDGEOID;
 			entry->relid = relid;
 		}
 	}
@@ -1901,8 +1903,6 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 	{
 		elog(ERROR, "unexpected graph type %d", type);
 	}
-	entry->elemtype = type;
-	entry->relid = relid;
 }
 
 static Datum
@@ -2062,16 +2062,14 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 		Datum	gid = PointerGetDatum(entry->key);
 		Oid		type = entry->elemtype;
 		Oid 	relid = entry->relid;
-		// type = get_labid_typeoid(mgstate->graphid,
-		// 						 GraphidGetLabid(DatumGetGraphid(gid)));
 
 		/* write the object to heap */
 		if (plan->operation == GWROP_DELETE) {
 			if (type == EDGEOID || type == EDGEARRAYOID) {
-				deleteElemEdges(mgstate, gid, &entry->data.tid, type, relid);
-			} else {
-				deleteElem(mgstate, gid, &entry->data.tid, type, relid);
+				ereport(LOG, (errmsg("relid %d ->  %d", relid, DatumGetInt32(gid))));
+				relid = DatumGetInt32(gid); //tableoid, for mutil labels
 			}
+			deleteElem(mgstate, gid, &entry->data.tid, type, relid);
 			
 		}
 		else

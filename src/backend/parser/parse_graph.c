@@ -5490,12 +5490,11 @@ transformDeleteJoinRTE(ParseState *pstate, CypherClause *clause)
 		if (vartype == VERTEXOID)
 		{
 			vertices_var = verticesAppend(vertices_var, pexpr);
-			ereport(LOG, (errmsg("vartype void %d", vartype)));
 		}
 		else if (vartype == EDGEOID)
 		{
 			/* do nothing */
-			ereport(LOG, (errmsg("vartype oid %d", vartype)));
+			//ereport(LOG, (errmsg("vartype oid %d", vartype)));
 		}
 		else if (vartype == GRAPHPATHOID)
 		{
@@ -5679,7 +5678,8 @@ makeEdgesForDetach(void)
 	TypeCast   *edge;
 	FuncCall   *edges;
 
-	id = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_ELEM_ID));
+	//id = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_ELEM_ID));
+	id = makeColumnRef(genQualifiedName(NULL, "tableoid"));
 	start = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_START_ID));
 	end = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_END_ID));
 	prop_map = makeNullAConst();
