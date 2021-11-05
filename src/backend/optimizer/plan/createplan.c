@@ -4546,9 +4546,9 @@ create_modifygraph_plan(PlannerInfo *root, ModifyGraphPath *best_path)
 
 	subplan = create_plan_recurse(root, best_path->subpath, CP_EXACT_TLIST);
 
-	ereport(LOG, (errmsg("subplan %s", nodeToString(subplan))));
+	//ereport(LOG, (errmsg("subplan %s", nodeToString(subplan))));
 
-	ereport(LOG, (errmsg("root %s", nodeToString(root))));
+	//ereport(LOG, (errmsg("root %s", nodeToString(root))));
 
 	apply_tlist_labeling(subplan->targetlist, root->processed_tlist);
 

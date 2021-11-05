@@ -1048,7 +1048,7 @@ InitScanLabelInfo(ScanState *node)
 
 		if (label->labkind == LABEL_KIND_VERTEX)
 		{
-			node->ss_isLabel = true;
+			//node->ss_isLabel = true;
 			node->ss_labid = (uint16) label->labid;
 		}
 

@@ -1257,6 +1257,7 @@ transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 	 */
 	if (detail->detach && pstate->p_delete_edges_resname)
 	{
+
 		TargetEntry *te;
 		Node		*edges;
 		GraphDelElem *gde = makeNode(GraphDelElem);
@@ -1271,8 +1272,9 @@ transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 		/* Add expression for deleting edges related target vertices. */
 		qry->graph.exprs = lappend(qry->graph.exprs, gde);
 
-		if (strcmp(te->resname, pstate->p_delete_edges_resname) == 0)
+		if (strcmp(te->resname, pstate->p_delete_edges_resname) == 0) {
 			te->resjunk = true;
+		}
 
 		pstate->p_delete_edges_resname = NULL;
 	}
@@ -5393,6 +5395,7 @@ transformDeleteEdges(ParseState *pstate, Node *parseTree)
 
 	if (!edges)
 	{
+
 		qry = makeNode(Query);
 		qry->commandType = CMD_SELECT;
 
@@ -5409,7 +5412,7 @@ transformDeleteEdges(ParseState *pstate, Node *parseTree)
 
 		return qry;
 	}
-
+#if 0
 	qry = makeNode(Query);
 	qry->commandType = CMD_GRAPHWRITE;
 	qry->graph.writeOp = GWROP_DELETE;
@@ -5440,6 +5443,7 @@ transformDeleteEdges(ParseState *pstate, Node *parseTree)
 	findAllModifiedLabels(qry);
 
 	return qry;
+#endif
 }
 
 /* See transformMatchOptional() */
@@ -5486,10 +5490,12 @@ transformDeleteJoinRTE(ParseState *pstate, CypherClause *clause)
 		if (vartype == VERTEXOID)
 		{
 			vertices_var = verticesAppend(vertices_var, pexpr);
+			ereport(LOG, (errmsg("vartype void %d", vartype)));
 		}
 		else if (vartype == EDGEOID)
 		{
 			/* do nothing */
+			ereport(LOG, (errmsg("vartype oid %d", vartype)));
 		}
 		else if (vartype == GRAPHPATHOID)
 		{
@@ -5515,8 +5521,11 @@ transformDeleteJoinRTE(ParseState *pstate, CypherClause *clause)
 	}
 
 	vertices = verticesConcat((Node *) vertices_var, vertices_nodes);
-	if (vertices == NULL)
+	if (vertices == NULL) {
+		ereport(LOG, (errmsg("return clause  %p", clause)));
+		//Assert(0);
 		return l_rte;
+	}
 
 	sel_ag_edge = makeSelectEdgesVertices(vertices, detail, &edges_resname);
 	r_alias = makeAliasNoDup(CYPHER_DELETEJOIN_ALIAS, NIL);
@@ -5632,6 +5641,7 @@ makeSelectEdgesVertices(Node *vertices, CypherDeleteClause *delete,
 	}
 	else
 	{
+		/*create null edge*/
 		TypeCast   *nulledge;
 
 		nulledge = makeNode(TypeCast);
@@ -5725,18 +5735,20 @@ makeEdgesVertexQual(void)
 	BoolExpr   *or_expr;
 
 	start = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_START_ID));
-	end = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_END_ID));
+	//end = makeColumnRef(genQualifiedName(DELETE_EDGE_ALIAS, AG_END_ID));
 	vid = makeColumnRef(genQualifiedName(DELETE_VERTEX_ALIAS, AG_ELEM_ID));
 
 	eq_start = makeSimpleA_Expr(AEXPR_OP, "=", start, vid, -1);
-	eq_end = makeSimpleA_Expr(AEXPR_OP, "=", end, vid, -1);
-
+	//eq_end = makeSimpleA_Expr(AEXPR_OP, "=", end, vid, -1);
+#if 0
 	or_expr = makeNode(BoolExpr);
 	or_expr->boolop = OR_EXPR;
 	or_expr->args = list_make2(eq_start, eq_end);
 	or_expr->location = -1;
 
 	return or_expr;
+#endif
+	return (Node *) eq_start;
 }
 
 static List *
@@ -5776,13 +5788,13 @@ extractVerticesExpr(ParseState *pstate, List *exprlist, ParseExprKind exprKind)
 						parser_errposition(pstate, exprLocation(elem))));
 		}
 	}
-
 	return result;
 }
 
 static List *
 extractEdgesExpr(ParseState *pstate, List *exprlist, ParseExprKind exprKind)
 {
+
 	List	   *result = NIL;
 	ListCell   *le;
 
@@ -5816,7 +5828,6 @@ extractEdgesExpr(ParseState *pstate, List *exprlist, ParseExprKind exprKind)
 						parser_errposition(pstate, exprLocation(elem))));
 		}
 	}
-
 	return result;
 }
 
@@ -5853,11 +5864,13 @@ findAllModifiedLabels(Query *qry)
 	{
 		foreach(lc, qry->graph.exprs)
 		{
-			GraphDelElem *gde = lfirst(lc);
+			GraphDelElem  *gde = lfirst(lc);
 			Oid relid = find_target_label(gde->elem, qry);
 			label_oids = lappend_oid(label_oids,
 									 relid);
 			gde->relid = relid;
+			//ereport(LOG, (errmsg("findAllModifiedLabels relid %d, v:%s", gde->relid, gde->variable)));
+
 		}
 	}
 

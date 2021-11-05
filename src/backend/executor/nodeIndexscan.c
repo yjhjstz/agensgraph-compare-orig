@@ -553,11 +553,11 @@ ExecIndexScan(PlanState *pstate)
 {
 	IndexScanState *node = castNode(IndexScanState, pstate);
 
-	if (node->ss.ss_skipLabelScan)
-	{
-		node->ss.ss_skipLabelScan = false;
-		return NULL;
-	}
+	// if (node->ss.ss_skipLabelScan)
+	// {
+	// 	node->ss.ss_skipLabelScan = false;
+	// 	return NULL;
+	// }
 
 	/*
 	 * If we have runtime keys and they've not already been set up, do it now.

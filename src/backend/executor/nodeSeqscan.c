@@ -143,11 +143,11 @@ ExecSeqScan(PlanState *pstate)
 {
 	SeqScanState *node = castNode(SeqScanState, pstate);
 
-	if (node->ss.ss_skipLabelScan)
-	{
-		node->ss.ss_skipLabelScan = false;
-		return NULL;
-	}
+	// if (node->ss.ss_skipLabelScan)
+	// {
+	// 	node->ss.ss_skipLabelScan = false;
+	// 	return NULL;
+	// }
 
 	return ExecScan(&node->ss,
 					(ExecScanAccessMtd) SeqNext,
@@ -177,6 +177,9 @@ InitScanRelation(SeqScanState *node, EState *estate, int eflags)
 
 	/* and report the scan tuple slot's rowtype */
 	ExecAssignScanType(&node->ss, RelationGetDescr(currentRelation));
+
+	ereport(LOG, (errmsg("InitScanRelation rd_id %d", currentRelation->rd_id)));
+
 }
 
 static void
@@ -199,14 +202,17 @@ initScanLabelSkipExpr(SeqScanState *node)
 		if (!is_opclause(expr))
 			continue;
 
-		if (((OpExpr *) expr)->opno != OID_GRAPHID_EQ_OP)
+		if (((OpExpr *) expr)->opno != OID_GRAPHID_EQ_OP) {
+			Assert(0);
 			continue;
-
+		}
 		/* expr is of the form `graphid = graphid` */
 
 		xstate = getScanLabelSkipExpr(node, expr);
-		if (xstate == NULL)
+		if (xstate == NULL) {
+			Assert(0);
 			continue;
+		}
 
 		node->ss.ss_labelSkipExpr = xstate;
 		break;

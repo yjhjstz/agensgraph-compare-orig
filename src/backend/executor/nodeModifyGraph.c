@@ -75,6 +75,8 @@ static bool isDetachRequired(ModifyGraphState *mgstate);
 static bool isEdgeArrayOfPath(List *exprs, char *variable);
 static void deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid,
 					   Oid type, Oid relid);
+static void deleteElemEdges(ModifyGraphState *mgstate, Datum gid, ItemPointer tid,
+					   Oid type, Oid relid);
 
 /* SET */
 static TupleTableSlot *ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind,
@@ -294,6 +296,7 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 
 	mgstate->exprs = ExecInitGraphDelExprs(mgplan->exprs, mgstate);
 	mgstate->sets = ExecInitGraphSets(mgplan->sets, mgstate);
+	//Assert(0);
 
 	initGraphWRStats(mgstate, mgplan->operation);
 
@@ -1018,6 +1021,7 @@ isDetachRequired(ModifyGraphState *mgstate)
 	return nlstate->nl_MatchedOuter;
 }
 
+
 static void
 deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid relid)
 {
@@ -1030,11 +1034,11 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid 
 	HeapUpdateFailureData hufd;
 	// relid = get_labid_relid(mgstate->graphid,
 	// 						GraphidGetLabid(DatumGetGraphid(gid)));
-	//char labkind = (type == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
+	//char labkind = (type == VERTEXOID) ? LABEL_KIND_VERTEX: LABEL_KIND_EDGE;
 
 	//relid = get_labid_relid_scan(mgstate->graphid, labkind);
-	//ereport(LOG, (errmsg("type oid %d, rel %u", type, relid)));
-
+	ereport(LOG, (errmsg("type oid %d, rel %u, n: %lld", type, relid, DatumGetInt64(gid))));
+	ereport(LOG, (errmsg("tid (%u, %u)",ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid))));
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1080,6 +1084,81 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid 
 		Assert(type == EDGEOID);
 
 		graphWriteStats.deleteEdge++;
+	}
+
+	estate->es_result_relation_info = savedResultRelInfo;
+}
+
+
+static void
+deleteElemEdges(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid relid)
+{
+	EState	   *estate = mgstate->ps.state;
+	ResultRelInfo *resultRelInfo;
+	ResultRelInfo *savedResultRelInfo;
+	Relation	resultRelationDesc;
+	HTSU_Result	result;
+	HeapUpdateFailureData hufd;
+	
+	List	   *children;
+	ListCell   *lc;
+
+	savedResultRelInfo = estate->es_result_relation_info;
+
+	children = find_inheritance_children(relid, NoLock);
+
+	//ereport(LOG, (errmsg("tid (%u, %u)",ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid))));
+
+	foreach(lc, children)
+	{
+		Oid			childreloid = lfirst_oid(lc);
+		resultRelInfo = getResultRelInfo(mgstate, childreloid);
+		ereport(LOG, (errmsg("deleteElemEdges type %d, childrel %u, n: %lld", type, childreloid, DatumGetInt64(gid))));
+
+		estate->es_result_relation_info = resultRelInfo;
+		resultRelationDesc = resultRelInfo->ri_RelationDesc;
+
+		/* see ExecDelete() */
+		result = heap_delete(resultRelationDesc, tid,
+							 mgstate->modify_cid + MODIFY_CID_OUTPUT,
+							 estate->es_crosscheck_snapshot, true, &hufd);
+		switch (result)
+		{
+			case HeapTupleSelfUpdated:
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("modifying the same element more than once cannot happen")));
+				return;
+
+			case HeapTupleMayBeUpdated:
+				break;
+
+			case HeapTupleUpdated:
+				/* TODO: A solution to concurrent update is needed. */
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+						 errmsg("could not serialize access due to concurrent update")));
+				return;
+
+			default:
+				elog(ERROR, "unrecognized heap_update status: %u", result);
+				return;
+		}
+
+		/*
+		 * NOTE: VACUUM will delete index tuples associated with the heap tuple
+		 *       later.
+		 */
+
+		if (type == VERTEXOID)
+			graphWriteStats.deleteVertex++;
+		else
+		{
+			//Assert(type == EDGEOID);
+
+			graphWriteStats.deleteEdge++;
+		}
+
 	}
 
 	estate->es_result_relation_info = savedResultRelInfo;
@@ -1767,6 +1846,8 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 
 			entry->data.tid =
 					*((ItemPointer) DatumGetPointer(getVertexTidDatum(vtx)));
+			entry->elemtype = type;
+			entry->relid = relid;
 		}
 	}
 	else if (type == EDGEARRAYOID)
@@ -1812,6 +1893,8 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 
 			entry->data.tid =
 					*((ItemPointer) DatumGetPointer(getEdgeTidDatum(edge)));
+			entry->elemtype = type;
+			entry->relid = relid;
 		}
 	}
 	else
@@ -1983,8 +2066,14 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 		// 						 GraphidGetLabid(DatumGetGraphid(gid)));
 
 		/* write the object to heap */
-		if (plan->operation == GWROP_DELETE)
-			deleteElem(mgstate, gid, &entry->data.tid, type, relid);
+		if (plan->operation == GWROP_DELETE) {
+			if (type == EDGEOID || type == EDGEARRAYOID) {
+				deleteElemEdges(mgstate, gid, &entry->data.tid, type, relid);
+			} else {
+				deleteElem(mgstate, gid, &entry->data.tid, type, relid);
+			}
+			
+		}
 		else
 		{
 			ItemPointer	ctid;
