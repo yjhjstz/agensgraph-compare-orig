@@ -552,6 +552,7 @@ compute_hash(Oid type, Datum value, char locator)
 	switch (type)
 	{
 		case INT8OID:
+		case GRAPHIDOID:
 			/* This gives added advantage that
 			 *	a = 8446744073709551359
 			 * and	a = 8446744073709551359::int8 both work*/
@@ -559,11 +560,11 @@ compute_hash(Oid type, Datum value, char locator)
 			if (locator == LOCATOR_TYPE_HASH)
 				return DirectFunctionCall1(hashint8, value);
 			return tmp64;
-		case GRAPHIDOID:
-			tmp64 = DatumGetGraphid(value);
-			if (locator == LOCATOR_TYPE_HASH)
-				return DirectFunctionCall1(graphid_locid, value);
-			return tmp64;
+		// case GRAPHIDOID:
+		// 	tmp64 = DatumGetGraphid(value);
+		// 	if (locator == LOCATOR_TYPE_HASH)
+		// 		return DirectFunctionCall1(graphid_locid, value);
+		// 	return tmp64;
 		case INT2OID:
 			tmp16 = DatumGetInt16(value);
 			if (locator == LOCATOR_TYPE_HASH)
@@ -659,13 +660,14 @@ get_compute_hash_function(Oid type, char locator)
 	switch (type)
 	{
 		case INT8OID:
+		case GRAPHIDOID:
 			if (locator == LOCATOR_TYPE_HASH)
 				return "hashint8";
 			return NULL;
-		case GRAPHIDOID:
-			if (locator == LOCATOR_TYPE_HASH)
-				return "graphid_locid";
-			return NULL;
+		// case GRAPHIDOID:
+		// 	if (locator == LOCATOR_TYPE_HASH)
+		// 		return "graphid_locid";
+		// 	return NULL;
 		case INT2OID:
 			if (locator == LOCATOR_TYPE_HASH)
 				return "hashint2";

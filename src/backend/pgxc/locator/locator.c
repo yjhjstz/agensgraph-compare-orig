@@ -756,7 +756,7 @@ hash_func_ptr(Oid dataType)
 		case GRAPHIDOID:
 		case VERTEXOID:
 		case EDGEOID:
-			return graphid_locid;
+			return hashint8;
 		default:
 			return NULL;
 	}
@@ -1157,20 +1157,19 @@ locate_hash_insert(Locator *self, Datum value, bool isnull,
 				   bool *hasprimary)
 {
 	int index;
+	unsigned int hash32  = 0;
 	if (hasprimary)
 		*hasprimary = false;
 	if (isnull)
 		index = 0;
 	else
 	{
-		unsigned int hash32;
-
 		hash32 = (unsigned int) DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
 
 		index = compute_modulo(hash32, self->nodeCount);
 	}
-	ereport(LOG, (errmsg("locate_hash_insert index %d", index)));
-	//memset(0, 0 , 1000);
+	ereport(LOG, (errmsg("locate_hash_insert index %d, hash32 %u", index, hash32)));
+	
 	switch (self->listType)
 	{
 		case LOCATOR_LIST_NONE:
