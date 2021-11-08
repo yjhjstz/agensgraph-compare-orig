@@ -70,7 +70,7 @@ producerStartupReceiver(DestReceiver *self, int operation, TupleDesc typeinfo)
 	if (myState->consumer)
 		(*myState->consumer->rStartup) (myState->consumer, operation, typeinfo);
 }
-
+extern uint32			PGXCNodeIdentifier;
 /*
  * Receive a tuple from the executor and dispatch it to the proper consumer
  */
@@ -94,7 +94,7 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 		else if (getLocatorDataType(myState->locator) == EDGEOID)
 			value = getEdgeStartDatum(value);
 		else {
-			ereport(LOG, (errmsg("LocatorDataType %d", getLocatorDataType(myState->locator))));
+			ereport(LOG, (errmsg("router Identifier %d", PGXCNodeIdentifier)));
 		}
 	}
 

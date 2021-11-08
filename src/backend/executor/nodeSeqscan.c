@@ -178,7 +178,7 @@ InitScanRelation(SeqScanState *node, EState *estate, int eflags)
 	/* and report the scan tuple slot's rowtype */
 	ExecAssignScanType(&node->ss, RelationGetDescr(currentRelation));
 
-	ereport(LOG, (errmsg("InitScanRelation rd_id %d", currentRelation->rd_id)));
+	//ereport(LOG, (errmsg("InitScanRelation rd_id %d", currentRelation->rd_id)));
 
 }
 

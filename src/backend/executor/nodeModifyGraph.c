@@ -1043,6 +1043,7 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid 
 	estate->es_result_relation_info = resultRelInfo;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 
+ldelete:;
 	/* see ExecDelete() */
 	result = heap_delete(resultRelationDesc, tid,
 						 mgstate->modify_cid + MODIFY_CID_OUTPUT,
@@ -1060,11 +1061,36 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type, Oid 
 
 		case HeapTupleUpdated:
 			/* TODO: A solution to concurrent update is needed. */
+			Assert(0);
 			ereport(ERROR,
 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 					 errmsg("could not serialize access due to concurrent update")));
 			return;
+	 #if 0
+			if (IsolationUsesXactSnapshot())
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("could not serialize access due to concurrent update")));
+			if (!ItemPointerEquals(tid, &hufd.ctid))
+			{
+				TupleTableSlot *epqslot;
 
+				epqslot = EvalPlanQual(estate,
+									   epqstate,
+									   resultRelationDesc,
+									   resultRelInfo->ri_RangeTableIndex,
+									   LockTupleExclusive,
+									   &hufd.ctid,
+									   hufd.xmax);
+				if (!TupIsNull(epqslot))
+				{
+					*tid = hufd.ctid;
+					goto ldelete;
+				}
+			}
+			/* tuple already deleted; nothing to do */
+			break;
+		#endif
 		default:
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 			return;

@@ -2919,7 +2919,8 @@ genVLELeftChild(ParseState *pstate, CypherRel *crel, bool out, bool pathout)
 		idarr->location = -1;
 		ids = makeNode(TypeCast);
 		ids->arg = (Node *) idarr;
-		ids->typeName = makeTypeName("_graphid");
+		//ids->typeName = makeTypeName("_graphid");
+		ids->typeName = makeTypeName("_int8");
 		ids->location = -1;
 
 		values = list_make3(vid, vid, ids);
@@ -2985,7 +2986,7 @@ genVLELeftChild(ParseState *pstate, CypherRel *crel, bool out, bool pathout)
 		idarr->location = -1;
 		cast = makeNode(TypeCast);
 		cast->arg = (Node *) idarr;
-		cast->typeName = makeTypeName("_graphid");
+		cast->typeName = makeTypeName("_int8");
 		cast->location = -1;
 		ids = makeResTarget((Node *) cast, VLE_COLNAME_IDS);
 
