@@ -5090,7 +5090,7 @@ makeEdgeIndex(RangeVar *label)
 	edge_id_idx->idxname = ChooseRelationName(labname, AG_ELEM_LOCAL_ID,
 											  "idx", graphid);
 	edge_id_idx->relation = copyObject(label);
-	edge_id_idx->accessMethod = "brin";
+	edge_id_idx->accessMethod = "btree";
 	edge_id_idx->indexParams = list_make1(id_col);
 
 	start_idx = makeNode(IndexStmt);
