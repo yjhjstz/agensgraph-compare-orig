@@ -191,6 +191,7 @@ static Const *transformPartitionBoundValue(ParseState *pstate, A_Const *con,
 static List *makeVertexElements(void);
 static List *makeEdgeElements(void);
 static List *makeEdgeIndex(RangeVar *label);
+static List *makeVertexIndex(RangeVar *label);
 static bool isLabelKind(RangeVar *label, char labkind);
 static void transformLabelIdDefinition(CreateStmtContext *cxt, ColumnDef *col);
 static CommentStmt *makeComment(ObjectType type, RangeVar *name, char *desc);
@@ -4675,7 +4676,7 @@ transformCreateLabelStmt(CreateLabelStmt *labelStmt, const char *queryString)
 	{
 		stmt->tableElts = makeVertexElements();
 
-		indexlist = NIL;
+		indexlist = makeVertexIndex(stmt->relation);
 	}
 	else if (labelStmt->labelKind == LABEL_EDGE)
 	{
@@ -5026,6 +5027,35 @@ makeEdgeElements(void)
 	prop_map->location = -1;
 
 	return list_make4(id, start, end, prop_map);
+}
+
+static List *makeVertexIndex(RangeVar *label)
+{
+	char	   *labname;
+	Oid			graphid;
+	IndexElem  *id_col;
+
+	IndexStmt  *vertex_id_idx;
+
+
+	labname = label->relname;
+	graphid = RangeVarGetCreationNamespace(label);
+
+	/* make index elements */
+
+	id_col = makeNode(IndexElem);
+	id_col->name = AG_ELEM_LOCAL_ID;
+
+	/* make indexes */
+
+	vertex_id_idx = makeNode(IndexStmt);
+	vertex_id_idx->idxname = ChooseRelationName(labname, AG_ELEM_LOCAL_ID,
+											  "idx", graphid);
+	vertex_id_idx->relation = copyObject(label);
+	vertex_id_idx->accessMethod = "btree";
+	vertex_id_idx->indexParams = list_make1(id_col);
+
+	return list_make1(vertex_id_idx);
 }
 
 static List *
