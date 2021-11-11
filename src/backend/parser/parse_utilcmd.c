@@ -4977,11 +4977,31 @@ makeVertexElements(void)
 	return list_make2(id, prop_map);
 }
 
+static Node *
+makeColumnRef(List *fields)
+{
+	ColumnRef *n = makeNode(ColumnRef);
+
+	n->fields = fields;
+	n->location = -1;
+	return (Node *)n;
+}
+
+static List *
+genQualifiedName(char *name1, char *name2)
+{
+	if (name1 == NULL)
+		return list_make1(makeString(name2));
+	else
+		return list_make2(makeString(name1), makeString(name2));
+}
+
 /* make table elements for base `edge` table */
 static List *
 makeEdgeElements(void)
 {
 	Constraint *notnull = makeNode(Constraint);
+	Constraint *check = makeNode(Constraint);
 	List	   *constrs;
 	ColumnDef  *id = makeNode(ColumnDef);
 	ColumnDef  *start = makeNode(ColumnDef);
@@ -4989,8 +5009,18 @@ makeEdgeElements(void)
 	Constraint *jsonb_empty_obj = makeNode(Constraint);
 	ColumnDef  *prop_map = makeNode(ColumnDef);
 
+	Node* from, *to;
+
 	notnull->contype = CONSTR_NOTNULL;
 	notnull->location = -1;
+
+	from = makeColumnRef(genQualifiedName(NULL, AG_START_ID));
+	to = makeColumnRef(genQualifiedName(NULL, AG_END_ID));
+	check->contype = CONSTR_CHECK;
+	check->location = -1;
+	check->raw_expr = makeSimpleA_Expr(AEXPR_OP, "<>", from, to, -1);
+	check->skip_validation = false;
+	check->initially_valid = true;
 
 	constrs = list_make1(notnull);
 
@@ -4999,7 +5029,6 @@ makeEdgeElements(void)
 	id->is_local = true;
 	id->constraints = copyObject(constrs);
 	id->location = -1;
-	//id->identity = ATTRIBUTE_IDENTITY_ALWAYS;
 
 	start->colname = AG_START_ID;
 	start->typeName = makeTypeNameFromOid(INT8OID, -1);
@@ -5010,7 +5039,7 @@ makeEdgeElements(void)
 	end->colname = AG_END_ID;
 	end->typeName = makeTypeNameFromOid(INT8OID, -1);
 	end->is_local = true;
-	end->constraints = copyObject(constrs);
+	end->constraints = list_make2(check, notnull);
 	end->location = -1;
 
 	jsonb_empty_obj->contype = CONSTR_DEFAULT;

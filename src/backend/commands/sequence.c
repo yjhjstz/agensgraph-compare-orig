@@ -1021,9 +1021,9 @@ nextval_internal(Oid relid, bool check_permissions)
 	UnlockReleaseBuffer(buf);
 
 	relation_close(seqrel, NoLock);
-
+#ifdef DEBUG
 	ereport(LOG, (errmsg("nextval oid %d, result %lld", relid, result)));
-
+#endif
 	return result;
 }
 

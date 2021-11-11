@@ -94,8 +94,10 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 		else if (getLocatorDataType(myState->locator) == EDGEOID)
 			value = getEdgeStartDatum(value);
 		else {
+#ifdef DEBUG
 			ereport(LOG, (errmsg("router Identifier %d", PGXCNodeIdentifier)));
 		}
+#endif
 	}
 
 	ncount = GET_NODES(myState->locator, value, isnull, NULL);

@@ -836,7 +836,7 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 	RemoteDataRow datarow;
 	bool		free_datarow;
 
-	ereport(LOG, (errmsg("consumerIdx  %d", consumerIdx)));
+	//ereport(LOG, (errmsg("consumerIdx  %d", consumerIdx)));
 
 	Assert(cstate->cs_qlength > 0);
 

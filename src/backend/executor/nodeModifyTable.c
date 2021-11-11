@@ -268,8 +268,9 @@ ExecInsert(ModifyTableState *mtstate,
 	Oid			newId;
 	List	   *recheckIndexes = NIL;
 	TupleTableSlot *result = NULL;
-
+#ifdef DEBUG
 	ereport(LOG, (errmsg("ExecInsert pxid insert %d", (int)PGXCNodeIdentifier)));
+#endif
 	/*
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy

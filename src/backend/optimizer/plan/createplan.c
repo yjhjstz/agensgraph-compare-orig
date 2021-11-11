@@ -5873,7 +5873,7 @@ make_remotesubplan(PlannerInfo *root,
 	{
 		node->distributionType = resultDistribution->distributionType;
 		node->distributionKey = InvalidAttrNumber;
-		ereport(LOG, (errmsg("distributionExpr %p", resultDistribution->distributionExpr)));
+		//ereport(LOG, (errmsg("distributionExpr %p", resultDistribution->distributionExpr)));
 		if (resultDistribution->distributionExpr)
 		{
 			ListCell   *lc;
@@ -5909,14 +5909,14 @@ make_remotesubplan(PlannerInfo *root,
 				if (equal(tle->expr, expr))
 				{
 					node->distributionKey = tle->resno;
-					ereport(LOG, (errmsg("set dkey %d", tle->resno)));
+					//ereport(LOG, (errmsg("set dkey %d", tle->resno)));
 					break;
 				}
 
 			}
-
+		#ifdef DEBUG
 			ereport(LOG, (errmsg("distributionKey1 %d", node->distributionKey)));
-
+		#endif
 			if (node->distributionKey == InvalidAttrNumber)
 			{
 				TargetEntry *newtle;
@@ -5941,7 +5941,9 @@ make_remotesubplan(PlannerInfo *root,
 				}
 
 				node->distributionKey = newtle->resno;
+			#ifdef DEBUG
 				ereport(LOG, (errmsg("distributionKey2 %d", node->distributionKey)));
+			#endif
 			}
 		}
 		/*
