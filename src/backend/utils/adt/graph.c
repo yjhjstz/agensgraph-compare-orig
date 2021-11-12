@@ -1357,7 +1357,8 @@ btgraphidcmp(PG_FUNCTION_ARGS)
 Datum
 graphid_hash(PG_FUNCTION_ARGS)
 {
-	Graphid id = PG_GETARG_GRAPHID(0);
+	//Graphid id = PG_GETARG_GRAPHID(0);
+	Graphid id = PG_GETARG_INT64(0);
 
 	StaticAssertStmt(sizeof(id) == 8, "the size of graphid must be 8");
 

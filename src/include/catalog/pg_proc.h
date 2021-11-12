@@ -5550,7 +5550,7 @@ DATA(insert OID = 7086 ( graphid_ge		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 
 DATA(insert OID = 7094 ( btgraphidcmp	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 23 "7002 7002" _null_ _null_ _null_ _null_ _null_ btgraphidcmp _null_ _null_ _null_ ));
 DESCR("less-equal-greater");
 /* Hash for graphid */
-DATA(insert OID = 7097 ( graphid_hash	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 23 "7002" _null_ _null_ _null_ _null_ _null_ graphid_hash _null_ _null_ _null_ ));
+DATA(insert OID = 7097 ( graphid_hash	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 23 "20" _null_ _null_ _null_ _null_ _null_ graphid_hash _null_ _null_ _null_ ));
 DESCR("hash");
 DATA(insert OID = 7099 ( set_graph_path	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 23 "2275" _null_ _null_ _null_ _null_ _null_ set_graph_path _null_ _null_ _null_ ));
 DESCR("I/O config");
