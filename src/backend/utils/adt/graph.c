@@ -1535,3 +1535,65 @@ gin_compare_partial_graphid(FunctionCallInfo fcinfo)
 
 	PG_RETURN_INT32(res);
 }
+
+static Datum
+getDegree(int64 id, EdgeVertexKind evk)
+{
+	const char *querystr = NULL;
+	char		sqlcmd[256];
+	Datum		values[1];
+	Oid			argTypes[1] = {INT8OID};
+	int			ret;
+	int64		degree;
+	bool		isnull;
+
+	if (evk == EVK_START) {
+		querystr = "SELECT count(" AG_ELEM_LOCAL_ID ") "
+			"FROM \"%s\"." AG_EDGE " WHERE " AG_START_ID " = $1";
+	} else {
+		querystr = "SELECT count(" AG_ELEM_LOCAL_ID ") "
+			"FROM \"%s\"." AG_EDGE " WHERE " AG_END_ID " = $1";
+	}
+
+	snprintf(sqlcmd, sizeof(sqlcmd), querystr, get_graph_path(false));
+
+	//values[0] = tuple_getattr(vertex, Anum_vertex_id);
+	values[0] = DatumGetInt64(id);
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+
+	ret = SPI_execute_with_args(sqlcmd, 2, argTypes, values, NULL, true, 0);
+	if (ret != SPI_OK_SELECT)
+		elog(ERROR, "SPI_execute failed: %s", sqlcmd);
+
+	if (SPI_processed != 1)
+		elog(ERROR, (evk == EVK_START
+					 ? "SPI_execute: only one start vertex of edge exists"
+					 : "SPI_execute: only one end vertex of edge exists"));
+
+	degree = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc,
+						   1, &isnull));
+	Assert(!isnull);
+
+	if (SPI_finish() != SPI_OK_FINISH)
+		elog(ERROR, "SPI_finish failed");
+
+	return Int64GetDatum(degree);
+}
+
+Datum
+get_vertex_indegree(PG_FUNCTION_ARGS)
+{
+	//HeapTupleHeader vertex = PG_GETARG_HEAPTUPLEHEADER(0);
+	int64 vertex = PG_GETARG_INT64(0);
+	return getDegree(vertex, EVK_END);
+}
+
+Datum
+get_vertex_outdegree(PG_FUNCTION_ARGS)
+{
+	//HeapTupleHeader vertex = PG_GETARG_HEAPTUPLEHEADER(0);
+	int64 vertex = PG_GETARG_INT64(0);
+	return getDegree(vertex, EVK_START);
+}

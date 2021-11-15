@@ -5528,10 +5528,10 @@ DATA(insert OID = 7070 ( start_vertex	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0
 DESCR("get the start vertex of edge");
 DATA(insert OID = 7071 ( end_vertex		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 7012 "7022" _null_ _null_ _null_ _null_ _null_ edge_end_vertex _null_ _null_ _null_ ));
 DESCR("get the end vertex of edge");
-DATA(insert OID = 7075 ( labels			PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 3802 "7012" _null_ _null_ _null_ _null_ _null_ vertex_labels _null_ _null_ _null_ ));
-DESCR("get vertex's labels");
-DATA(insert OID = 7076 ( type			PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 3802 "7022" _null_ _null_ _null_ _null_ _null_ edge_label _null_ _null_ _null_ ));
-DESCR("get edge's label");
+DATA(insert OID = 7075 ( out_degree		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 20 "20" _null_ _null_ _null_ _null_ _null_ get_vertex_outdegree _null_ _null_ _null_ ));
+DESCR("get vertex's out degree");
+DATA(insert OID = 7076 ( in_degree		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 20 "20" _null_ _null_ _null_ _null_ _null_ get_vertex_indegree _null_ _null_ _null_ ));
+DESCR("get vertex's in degree");
 DATA(insert OID = 7077 ( startnode		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 7012 "7022" _null_ _null_ _null_ _null_ _null_ edge_start_vertex _null_ _null_ _null_ ));
 DESCR("get the start vertex of edge");
 DATA(insert OID = 7078 ( endnode		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 7012 "7022" _null_ _null_ _null_ _null_ _null_ edge_end_vertex _null_ _null_ _null_ ));
