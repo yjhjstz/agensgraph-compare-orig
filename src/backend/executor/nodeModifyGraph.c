@@ -913,7 +913,7 @@ createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 	estate->es_result_relation_info = savedResultRelInfo;
 
 	if (auto_gather_graphmeta)
-		agstat_count_edge_create(id, start, end);
+		agstat_count_edge_create(gedge->relid, start, end);
 
 	return edge;
 }
@@ -1385,11 +1385,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	LockTupleMode lockmode;
 	HTSU_Result	result;
 	HeapUpdateFailureData hufd;
-	//char labkind = (elemtype == VERTEXOID) ? LABEL_KIND_VERTEX:LABEL_KIND_EDGE;
-
-	//relid = get_labid_relid_scan(mgstate->graphid,
-	//                                              GraphidGetLabid(DatumGetGraphid(gid)));
-	//relid = get_labid_relid_scan(mgstate->graphid, labkind);
+	
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1768,7 +1764,7 @@ createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 	estate->es_result_relation_info = savedResultRelInfo;
 
 	if (auto_gather_graphmeta)
-		agstat_count_edge_create(GraphidGetDatum(getEdgeIdDatum(edge)), start, end);
+		agstat_count_edge_create(gedge->relid, start, end);
 
 	return edge;
 }
@@ -1827,16 +1823,14 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 			return;
 		else
 		{
-			Graphid eid;
 			Graphid start;
 			Graphid end;
 
-			eid = GraphidGetLabid(gid);
-			start = GraphidGetLabid(getEdgeStartDatum(elem));
-			end = GraphidGetLabid(getEdgeEndDatum(elem));
+			start = getEdgeStartDatum(elem);
+			end = getEdgeEndDatum(elem);
 
 			if (auto_gather_graphmeta)
-				agstat_count_edge_delete(eid, start, end);
+				agstat_count_edge_delete(relid, start, end);
 		}
 
 		entry->data.tid =
@@ -1907,16 +1901,14 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type, Oid relid)
 				continue;
 			else
 			{
-				Graphid eid;
 				Graphid start;
 				Graphid end;
 
-				eid = GraphidGetLabid(gid);
-				start = GraphidGetLabid(getEdgeStartDatum(edge));
-				end = GraphidGetLabid(getEdgeEndDatum(edge));
+				start = getEdgeStartDatum(edge);
+				end = getEdgeEndDatum(edge);
 
 				if (auto_gather_graphmeta)
-					agstat_count_edge_delete(eid, start, end);
+					agstat_count_edge_delete(relid, start, end);
 			}
 
 			entry->data.tid =

@@ -6435,7 +6435,6 @@ agstat_count_edge_create(Graphid edge, Graphid start, Graphid end)
 	nest_level = GetCurrentTransactionNestLevel();
 	xact_state = get_agstat_stack_level(nest_level);
 
-	edgelab = GraphidGetLabid(edge);
 	startlab = GraphidGetLabid(start);
 	endlab = GraphidGetLabid(end);
 
