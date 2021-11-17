@@ -202,6 +202,9 @@ static void setFutureVertexExprId(ParseState *pstate, Node *vertex,
 								 bool prev);
 static Node *addQualUniqueEdges(ParseState *pstate, Node *qual, List *ueids,
 								List *ueidarrs);
+static Node *addQualUniqueVertex(ParseState *pstate, Node *qual, List *uvids,
+								List *uvidarrs);
+
 /* MATCH - VLE */
 static Node *vtxArrConcat(ParseState *pstate, Node *array, Node *elem);
 static Node *edgeArrConcat(ParseState *pstate, Node *array, Node *elem);
@@ -2007,6 +2010,7 @@ transformComponents(ParseState *pstate, List *components, List **targetList)
 		ListCell   *lp;
 		List	   *ueids = NIL;
 		List	   *ueidarrs = NIL;
+		List	   *uvids = NIL;
 
 		foreach(lp, c)
 		{
@@ -2084,23 +2088,48 @@ transformComponents(ParseState *pstate, List *components, List **targetList)
 					}
 
 					setInitialVidForVLE(pstate, crel, vertex, NULL, NULL);
+					if (vertex)
+					{
+						uvids = list_append_unique(uvids, vertex);
+					#ifdef DEBUG
+						if (vertex && IsA(vertex, RangeTblEntry)) {
+							RangeTblEntry *rte = (RangeTblEntry *) vertex;
+							ereport(LOG, (errmsg("transformComponents first %s", rte->eref->aliasname)));
+						}
+					#endif
+					}
+
 					edge = transformMatchRel(pstate, crel, targetList,
 											 &eqoList, out);
 
 					qual = addQualNodeIn(pstate, qual, vertex, crel, edge,
 										 false);
+
 				}
 				else
 				{
 					vertex = transformMatchNode(pstate, cnode, out, targetList,
 												&eqoList);
+					
 					qual = addQualNodeIn(pstate, qual, vertex,
 										 prev_crel, prev_edge, true);
+					
 
 					le = lnext(le);
 					/* end of the path */
-					if (le == NULL)
+					if (le == NULL) {
+						if (vertex)
+						{
+							uvids = list_append_unique(uvids, vertex);
+						}
+					#ifdef DEBUG
+						if (vertex && IsA(vertex, RangeTblEntry)) {
+							RangeTblEntry *rte = (RangeTblEntry *) vertex;
+							ereport(LOG, (errmsg("transformComponents last %s", rte->eref->aliasname)));
+						}
+					#endif
 						break;
+					}
 
 					crel = lfirst(le);
 					setInitialVidForVLE(pstate, crel, vertex,
@@ -2184,6 +2213,7 @@ transformComponents(ParseState *pstate, List *components, List **targetList)
 		}
 
 		qual = addQualUniqueEdges(pstate, qual, ueids, ueidarrs);
+		qual = addQualUniqueVertex(pstate, qual, uvids, NIL);
 	}
 
 	/*
@@ -2601,10 +2631,10 @@ setInitialVidForVLE(ParseState *pstate, CypherRel *crel, Node *vertex,
 					CypherRel *prev_crel, RangeTblEntry *prev_edge)
 {
 	ColumnRef  *cref;
-
 	/* nothing to do */
-	if (crel->varlen == NULL)
+	if (crel->varlen == NULL){
 		return;
+	}
 
 	if (vertex == NULL || isFutureVertexExpr(vertex))
 	{
@@ -2627,7 +2657,6 @@ setInitialVidForVLE(ParseState *pstate, CypherRel *crel, Node *vertex,
 			pstate->p_vle_initial_vid = (Node *) cref;
 			pstate->p_vle_initial_rte = prev_edge;
 		}
-
 		return;
 	}
 
@@ -3748,6 +3777,21 @@ addQualUniqueEdges(ParseState *pstate, Node *qual, List *ueids, List *ueidarrs)
 		}
 	}
 
+	return qual;
+}
+
+
+static Node *
+addQualUniqueVertex(ParseState *pstate, Node *qual, List *uvids, List *uvidarrs)
+{
+	RangeTblEntry* lrte = (RangeTblEntry *) linitial(uvids);
+	RangeTblEntry* rrte = (RangeTblEntry *) llast(uvids);
+
+	Node* first = getColumnVar(pstate, lrte, AG_ELEM_LOCAL_ID);
+	Node* last = getColumnVar(pstate, rrte, AG_ELEM_LOCAL_ID);
+	Expr* ne = make_op(pstate, list_make1(makeString("<>")), first, last,
+						 pstate->p_last_srf, -1);
+	qual = qualAndExpr(qual, (Node *) ne);
 	return qual;
 }
 
