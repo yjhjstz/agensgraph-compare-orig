@@ -3784,14 +3784,18 @@ addQualUniqueEdges(ParseState *pstate, Node *qual, List *ueids, List *ueidarrs)
 static Node *
 addQualUniqueVertex(ParseState *pstate, Node *qual, List *uvids, List *uvidarrs)
 {
-	RangeTblEntry* lrte = (RangeTblEntry *) linitial(uvids);
-	RangeTblEntry* rrte = (RangeTblEntry *) llast(uvids);
+	if (uvids && list_length(uvids) == 2)
+	{
+		RangeTblEntry* lrte = (RangeTblEntry *) linitial(uvids);
+		RangeTblEntry* rrte = (RangeTblEntry *) llast(uvids);
 
-	Node* first = getColumnVar(pstate, lrte, AG_ELEM_LOCAL_ID);
-	Node* last = getColumnVar(pstate, rrte, AG_ELEM_LOCAL_ID);
-	Expr* ne = make_op(pstate, list_make1(makeString("<>")), first, last,
-						 pstate->p_last_srf, -1);
-	qual = qualAndExpr(qual, (Node *) ne);
+		Node* first = getColumnVar(pstate, lrte, AG_ELEM_LOCAL_ID);
+		Node* last = getColumnVar(pstate, rrte, AG_ELEM_LOCAL_ID);
+		Expr* ne = make_op(pstate, list_make1(makeString("<>")), first, last,
+							 pstate->p_last_srf, -1);
+		qual = qualAndExpr(qual, (Node *) ne);
+
+	}
 	return qual;
 }
 
