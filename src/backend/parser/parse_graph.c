@@ -2088,14 +2088,12 @@ transformComponents(ParseState *pstate, List *components, List **targetList)
 					}
 
 					setInitialVidForVLE(pstate, crel, vertex, NULL, NULL);
-					if (vertex)
-					{
+
+					if (vertex && IsA(vertex, RangeTblEntry)) {
 						uvids = list_append_unique(uvids, vertex);
 					#ifdef DEBUG
-						if (vertex && IsA(vertex, RangeTblEntry)) {
-							RangeTblEntry *rte = (RangeTblEntry *) vertex;
-							ereport(LOG, (errmsg("transformComponents first %s", rte->eref->aliasname)));
-						}
+						RangeTblEntry *rte = (RangeTblEntry *) vertex;
+						ereport(LOG, (errmsg("transformComponents first %s", rte->eref->aliasname)));
 					#endif
 					}
 
@@ -2118,16 +2116,13 @@ transformComponents(ParseState *pstate, List *components, List **targetList)
 					le = lnext(le);
 					/* end of the path */
 					if (le == NULL) {
-						if (vertex)
-						{
-							uvids = list_append_unique(uvids, vertex);
-						}
-					#ifdef DEBUG
 						if (vertex && IsA(vertex, RangeTblEntry)) {
+							uvids = list_append_unique(uvids, vertex);
+						#ifdef DEBUG
 							RangeTblEntry *rte = (RangeTblEntry *) vertex;
 							ereport(LOG, (errmsg("transformComponents last %s", rte->eref->aliasname)));
+						#endif
 						}
-					#endif
 						break;
 					}
 
@@ -3784,10 +3779,17 @@ addQualUniqueEdges(ParseState *pstate, Node *qual, List *ueids, List *ueidarrs)
 static Node *
 addQualUniqueVertex(ParseState *pstate, Node *qual, List *uvids, List *uvidarrs)
 {
+	Node *v1, *v2;
 	if (uvids && list_length(uvids) == 2)
 	{
-		RangeTblEntry* lrte = (RangeTblEntry *) linitial(uvids);
-		RangeTblEntry* rrte = (RangeTblEntry *) llast(uvids);
+		v1 = linitial(uvids);
+		v2 = llast(uvids);
+
+		AssertArg(IsA(v1, RangeTblEntry));
+		AssertArg(IsA(v2, RangeTblEntry));
+
+		RangeTblEntry* lrte = (RangeTblEntry *) v1;
+		RangeTblEntry* rrte = (RangeTblEntry *) v2;
 
 		Node* first = getColumnVar(pstate, lrte, AG_ELEM_LOCAL_ID);
 		Node* last = getColumnVar(pstate, rrte, AG_ELEM_LOCAL_ID);
