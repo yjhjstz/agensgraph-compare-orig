@@ -1263,7 +1263,7 @@ redistribute_path(PlannerInfo *root, Path *subpath, List *pathkeys,
 	Distribution   *distribution = NULL;
 	RelOptInfo	   *rel = subpath->parent;
 	RemoteSubPath  *pathnode;
-
+	//ereport(LOG, (errmsg("set_joinpath_distribution distributionType %d", distributionType)));
  	if (distributionType != LOCATOR_TYPE_NONE)
 	{
 		distribution = makeNode(Distribution);
@@ -1454,7 +1454,8 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 			(pathnode->jointype == JOIN_INNER ||
 			 pathnode->jointype == JOIN_LEFT ||
 			 pathnode->jointype == JOIN_SEMI ||
-			 pathnode->jointype == JOIN_ANTI))
+			 pathnode->jointype == JOIN_ANTI ||
+			 pathnode->jointype == JOIN_VLE))
 	{
 		/* We need inner relation is defined on all nodes where outer is */
 		if (!outerd || !bms_is_subset(outerd->nodes, innerd->nodes))
@@ -1480,7 +1481,8 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 */
 	if ((outerd && IsLocatorReplicated(outerd->distributionType)) &&
 			(pathnode->jointype == JOIN_INNER ||
-			 pathnode->jointype == JOIN_RIGHT))
+			 pathnode->jointype == JOIN_RIGHT ||
+			 pathnode->jointype == JOIN_VLE))
 	{
 		/* We need outer relation is defined on all nodes where inner is */
 		if (!innerd || !bms_is_subset(innerd->nodes, outerd->nodes))
@@ -1674,7 +1676,8 @@ not_allowed_join:
 			(pathnode->jointype == JOIN_INNER ||
 			 pathnode->jointype == JOIN_LEFT ||
 			 pathnode->jointype == JOIN_SEMI ||
-			 pathnode->jointype == JOIN_ANTI))
+			 pathnode->jointype == JOIN_ANTI ||
+			 pathnode->jointype == JOIN_VLE))
 	{
 		/*
 		 * Since we discard all alternate pathes except one it is OK if all they
@@ -1702,7 +1705,8 @@ not_allowed_join:
 	/* These join types allow replicated outer */
 	if (innerd &&
 			(pathnode->jointype == JOIN_INNER ||
-			 pathnode->jointype == JOIN_RIGHT))
+			 pathnode->jointype == JOIN_RIGHT ||
+			 pathnode->jointype == JOIN_VLE))
 	{
 		/*
 		 * Since we discard all alternate pathes except one it is OK if all they
@@ -3533,6 +3537,8 @@ create_nestloop_path(PlannerInfo *root,
 	pathnode->outerjoinpath = outer_path;
 	pathnode->innerjoinpath = inner_path;
 	pathnode->joinrestrictinfo = restrict_clauses;
+	pathnode->minhops = extra->sjinfo->min_hops;
+	pathnode->maxhops = extra->sjinfo->max_hops;
 
 #ifdef XCP
 	pathnode->movedrestrictinfo = mclauses;

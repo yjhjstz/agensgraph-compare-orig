@@ -1173,6 +1173,8 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 	#endif
 	} else if (list_length(cpath->chain) == 3 && clause->prev == NULL) {
 		return transformCypherCreateEdgeCut(pstate, clause);
+	} else if (list_length(cpath->chain) > 3) {
+		elog(ERROR, "not supported yet");
 	}
 
 	qry = makeNode(Query);
@@ -3775,7 +3777,7 @@ addQualUniqueEdges(ParseState *pstate, Node *qual, List *ueids, List *ueidarrs)
 	return qual;
 }
 
-
+/*todo  getExprField(te->expr, AG_ELEM_LOCAL_ID);*/ 
 static Node *
 addQualUniqueVertex(ParseState *pstate, Node *qual, List *uvids, List *uvidarrs)
 {
@@ -5920,7 +5922,6 @@ findAllModifiedLabels(Query *qry)
 			label_oids = lappend_oid(label_oids,
 									 relid);
 			gde->relid = relid;
-			//ereport(LOG, (errmsg("findAllModifiedLabels relid %d, v:%s", gde->relid, gde->variable)));
 
 		}
 	}
