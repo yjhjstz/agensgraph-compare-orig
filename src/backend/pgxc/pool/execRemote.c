@@ -5283,7 +5283,8 @@ determine_param_types(Plan *plan,  struct find_params_context *context)
 		case T_SetOp:
 		case T_Group:
 			break;
-
+		case T_NestLoopVLE:
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(plan));
