@@ -1535,7 +1535,7 @@ ExecShortestpathProject(ShortestpathState *node,
 	tts_values = slot->tts_values;
 	tts_isnull = slot->tts_isnull;
 
-	tts_values[0] = ExecShortestpathProjectEvalArray(GRAPHIDOID, node->sp_Vertexids, lenVids, econtext);
+	tts_values[0] = ExecShortestpathProjectEvalArray(INT8OID, node->sp_Vertexids, lenVids, econtext);
 	tts_isnull[0] = false;
 	tts_values[1] = ExecShortestpathProjectEvalArray(ROWIDOID, node->sp_Edgeids, lenEids, econtext);
 	tts_isnull[1] = false;

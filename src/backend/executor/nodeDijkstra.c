@@ -173,7 +173,7 @@ eval_array(List *elems, ExprContext *econtext)
 
 	len = list_length(elems);
 
-	element_typeid = GRAPHIDOID;
+	element_typeid =  INT8OID;
 
 	if (len == 0)
 		return PointerGetDatum(construct_empty_array(element_typeid));

@@ -5609,11 +5609,11 @@ DATA(insert OID = 7160 ( rowid_ge		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16
 DATA(insert OID = 7168 ( btrowidcmp		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 23 "7062 7062" _null_ _null_ _null_ _null_ _null_ btrowidcmp _null_ _null_ _null_ ));
 DESCR("less-equal-greater");
 /* Shortestpath */
-DATA(insert OID = 7170 ( dijkstra_vids	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 7001 "" _null_ _null_ _null_ _null_ _null_ dijkstra_vids _null_ _null_ _null_ ));
+DATA(insert OID = 7170 ( dijkstra_vids PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 1016 "" _null_ _null_ _null_ _null_ _null_ dijkstra_vids _null_ _null_ _null_ ));
 DESCR("placeholder");
-DATA(insert OID = 7171 ( dijkstra_eids	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 7001 "" _null_ _null_ _null_ _null_ _null_ dijkstra_eids _null_ _null_ _null_ ));
+DATA(insert OID = 7171 ( dijkstra_eids PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 1016 "" _null_ _null_ _null_ _null_ _null_ dijkstra_eids _null_ _null_ _null_ ));
 DESCR("placeholder");
-DATA(insert OID = 7172 ( shortestpath_graphids	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 7001 "" _null_ _null_ _null_ _null_ _null_ shortestpath_graphids _null_ _null_ _null_ ));
+DATA(insert OID = 7172 ( shortestpath_graphids PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 1016 "" _null_ _null_ _null_ _null_ _null_ shortestpath_graphids _null_ _null_ _null_ ));
 DESCR("placeholder");
 DATA(insert OID = 7173 ( shortestpath_rowids	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 7061 "" _null_ _null_ _null_ _null_ _null_ shortestpath_rowids _null_ _null_ _null_ ));
 DESCR("placeholder");
